@@ -1,0 +1,18 @@
+[Unit]
+Description=BetterAgent Microservice Daemon (Go Core + Python Memory & Cognitive)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=forking
+WorkingDirectory=/opt/BetterAgent
+ExecStart=/bin/bash /opt/BetterAgent/scripts/linux_start.sh
+ExecStop=/bin/bash /opt/BetterAgent/scripts/linux_stop.sh
+PIDFile=/opt/BetterAgent/logs/run.pid
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

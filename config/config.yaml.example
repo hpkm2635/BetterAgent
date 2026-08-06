@@ -1,0 +1,56 @@
+# BetterAgent Central Configuration Example
+# Copy this file to config/config.yaml and customize parameters as needed.
+# Sensitive credentials (API Keys, Phone Numbers) should remain in .env
+
+app:
+  name: "BetterAgent"
+  version: "1.0.0"
+  environment: "development"
+
+# Persona & Character Definition
+persona:
+  name: "Camelia"
+  appearance: "a cute anime catgirl with long silver hair, amber golden eyes, fluffy cat ears and tail, wearing a cozy oversized white hoodie with pink paw prints"
+  art_style: "anime"
+  reference_images_dir: "config/reference_images"
+
+# Network & Proxy Settings (e.g. "http://127.0.0.1:7890")
+network:
+  http_proxy: ""
+  https_proxy: ""
+
+# Infrastructure Microservice Endpoints
+infrastructure:
+  nats_url: "nats://localhost:4222"
+  redis_url: "redis://localhost:6379"
+  qdrant_url: "http://localhost:6333"
+
+# LLM Providers Configuration
+llm:
+  default_provider: "gemini"
+  gemini:
+    model: "gemini-2.5-flash"
+  claude:
+    model: "claude-3-5-sonnet-20241022"
+
+# Tools & Multimodal Extensions
+tools:
+  tts:
+    provider: "cosyvoice"
+    voice_id: "catgirl_cute"
+  image_gen:
+    provider: "gemini_imagen"
+    model: "imagen-3.0-generate-002"
+
+# Ebbinghaus Vector Memory & RAG Parameters
+memory:
+  short_term_max_messages: 20
+  qdrant_collection: "betteragent_memories"
+  ebbinghaus_lambda: 0.0001
+  top_k_rag: 5
+
+# Go Core Engine Heartbeat & Behavioral Delays
+core_engine:
+  clock_tick_seconds: 30
+  typing_delay_seconds: 2
+  anti_spam_max_rate: 5
