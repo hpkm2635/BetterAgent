@@ -64,3 +64,6 @@ sudo systemctl enable --now betteragent
 # 启动前端画面
 cd frontend
 pnpm --filter @proj-airi/stage-web dev
+
+# 特别致谢 Airi 项目
+https://github.com/moeru-ai/airi
