@@ -77,5 +77,13 @@ python runner.py
 cd frontend
 pnpm --filter @proj-airi/stage-web dev
 
-# 特别致谢 Airi 项目
-https://github.com/moeru-ai/airi
+```
+
+---
+
+## 鸣谢 / Acknowledgments
+
+* **Airi 项目**：[moeru-ai/airi](https://github.com/moeru-ai/airi)
+```
+
+---
