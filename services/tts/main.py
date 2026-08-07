@@ -1,0 +1,230 @@
+import asyncio
+import json
+import logging
+import os
+import base64
+import nats
+from dotenv import load_dotenv
+
+from shared.subjects import (
+    SUBJECT_ACTION_DECISION,
+    SUBJECT_AUDIO_CHUNK,
+    SUBJECT_STREAM_CANCEL_REQ,
+    SUBJECT_USER_INTERRUPT,
+)
+from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayload
+from shared.logger import setup_logger
+from services.tts.cosyvoice_client import CosyVoiceClient
+from services.tts.viseme_generator import text_to_visemes
+from services.tts.audio_normalizer import add_wav_header
+
+load_dotenv()
+logger = setup_logger("tts_service")
+
+
+async def error_cb(e):
+    logger.warning(f"NATS Connection event in TTS service: {e}")
+
+
+from shared.config_loader import get_config_val
+
+
+from shared.persona_loader import PersonaLoader
+from services.tts.gpt_sovits_client import GPTSoVITSClient
+from services.tts.cosyvoice_client import CosyVoiceClient
+
+async def get_tts_client():
+    persona_data = PersonaLoader.load_active_persona()
+    provider = persona_data.get("tts", {}).get("provider", "gpt_sovits")
+    if provider == "gpt_sovits":
+        return GPTSoVITSClient()
+    return CosyVoiceClient()
+
+
+async def main():
+    nats_url = os.getenv("NATS_URL", get_config_val("infrastructure.nats_url", "nats://localhost:4222"))
+    try:
+        nc = await nats.connect(nats_url, error_cb=error_cb, max_reconnect_attempts=10)
+        logger.info(f"TTS Service connected to NATS at {nats_url}")
+    except Exception as e:
+        logger.warning(f"Failed to connect to NATS ({e}). TTS Service exiting gracefully.")
+        return
+
+    active_generations: dict[int, int] = {}
+    active_tts_tasks: dict[int, tuple[asyncio.Task, asyncio.Event]] = {}
+    sentence_queues: dict[int, asyncio.Queue] = {}
+    queue_workers: dict[int, asyncio.Task] = {}
+    tts_client = await get_tts_client()
+
+    def cancel_tts_stream(chat_id: int, gen_id: int = 0):
+        if gen_id > active_generations.get(chat_id, 0):
+            active_generations[chat_id] = gen_id
+
+        if chat_id in sentence_queues:
+            q = sentence_queues[chat_id]
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                    q.task_done()
+                except Exception:
+                    break
+
+        if chat_id in active_tts_tasks:
+            task, event = active_tts_tasks[chat_id]
+            event.set()
+            if not task.done():
+                task.cancel()
+            logger.info(f"⚡ Cancelled TTS synthesis for chat_id={chat_id} (active_gen={active_generations.get(chat_id)})")
+
+    async def synthesize_and_publish_tts(act: ActionDecisionPayload, cancel_event: asyncio.Event):
+        chat_id = act.chat_id
+        gen_id = getattr(act, "generation_id", 1)
+        text = act.text_content or ""
+
+        if not text.strip():
+            return
+
+        try:
+            active_gen = active_generations.get(chat_id, 0)
+            if gen_id < active_gen:
+                logger.warn(f"🛡️ GPU Conservation Gate: Skipped TTS request for stale sentence (gen_id={gen_id} < active_gen={active_gen})")
+                return
+
+            client = await get_tts_client()
+            logger.info(f"🎙️ Synthesizing TTS audio ({client.__class__.__name__}) for sentence: '{text[:20]}' (chat_id={chat_id}, gen_id={gen_id})")
+
+            chunk_idx = 0
+            async for audio_bytes, fmt in client.synthesize_stream(text, cancel_event=cancel_event):
+                if cancel_event.is_set():
+                    logger.info(f"⚡ TTS synthesis interrupted mid-stream for chat_id={chat_id}")
+                    break
+
+                # Re-check GPU Conservation Gate during streaming
+                if gen_id < active_generations.get(chat_id, 0):
+                    logger.info(f"🛡️ GPU Gate: Dropped mid-stream TTS chunk for chat_id={chat_id} (stale gen_id={gen_id})")
+                    break
+
+                # Estimate audio duration dynamically based on client sample rate (16-bit mono = sample_rate * 2 bytes/sec)
+                bytes_per_sec = float(getattr(client, "sample_rate", 32000) * 2)
+                duration_sec = len(audio_bytes) / bytes_per_sec if fmt == "pcm" else 1.0
+                visemes = text_to_visemes(text, duration_sec)
+
+                # Wrap raw PCM chunks with 44-byte standard RIFF WAV header for browser AudioContext compatibility
+                sample_rate = getattr(client, "sample_rate", 32000)
+                out_bytes = audio_bytes
+                out_format = fmt
+                if fmt == "pcm":
+                    out_bytes = add_wav_header(audio_bytes, sample_rate=sample_rate)
+                    out_format = "wav"
+
+                audio_b64 = base64.b64encode(out_bytes).decode("utf-8")
+                chunk_payload = StreamAudioChunkPayload(
+                    event_id=act.event_id,
+                    source_component="tts_service",
+                    chat_id=chat_id,
+                    audio_base64=audio_b64,
+                    sample_rate=sample_rate,
+                    format=out_format,
+                    visemes=visemes,
+                )
+
+                envelope = {
+                    "id": act.event_id,
+                    "subject": SUBJECT_AUDIO_CHUNK,
+                    "source": "tts_service",
+                    "payload": chunk_payload.model_dump(),
+                }
+                await nc.publish(SUBJECT_AUDIO_CHUNK, json.dumps(envelope).encode())
+                chunk_idx += 1
+                logger.debug(f"Published TTS Audio Chunk #{chunk_idx} ({len(audio_bytes)} bytes, {len(visemes)} visemes) for chat_id={chat_id}")
+
+            if chunk_idx > 0:
+                logger.info(f"✅ Completed TTS Audio Synthesis for sentence '{text[:15]}...' ({chunk_idx} chunks) for chat_id={chat_id}")
+
+        except asyncio.CancelledError:
+            logger.info(f"⚡ TTS synthesis task for chat_id={chat_id} caught CancelledError & exited cleanly.")
+        except Exception as err:
+            logger.error(f"Error in TTS synthesis: {err}", exc_info=True)
+        finally:
+            active_tts_tasks.pop(chat_id, None)
+
+    async def process_sentence_queue(chat_id: int):
+        """Processes intra-turn sentences sequentially to prevent self-cancellation."""
+        q = sentence_queues[chat_id]
+        while True:
+            try:
+                act, cancel_event = await q.get()
+                current_active_gen = active_generations.get(chat_id, 0)
+                gen_id = getattr(act, "generation_id", 1)
+
+                if gen_id >= current_active_gen and not cancel_event.is_set():
+                    # Register active task for cross-turn cancellation
+                    active_task = asyncio.current_task()
+                    if active_task:
+                        active_tts_tasks[chat_id] = (active_task, cancel_event)
+
+                    await synthesize_and_publish_tts(act, cancel_event)
+
+                q.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in process_sentence_queue for chat_id={chat_id}: {e}")
+
+    async def cancel_handler(msg):
+        try:
+            data = json.loads(msg.data.decode())
+            payload_dict = data.get("payload", {})
+            chat_id = payload_dict.get("chat_id", 0)
+            gen_id = payload_dict.get("generation_id", 0)
+            if chat_id:
+                cancel_tts_stream(chat_id, gen_id)
+        except Exception as e:
+            logger.warning(f"Error handling stream cancel request in TTS: {e}")
+
+    async def action_decision_handler(msg):
+        try:
+            data = json.loads(msg.data.decode())
+            payload_dict = data.get("payload", {})
+            src_channel = payload_dict.get("source_channel", "telegram")
+
+            if src_channel != "web":
+                return
+
+            act = ActionDecisionPayload(**payload_dict)
+            text = act.text_content
+
+            if act.action_type in ("send_message", "send_voice") and text:
+                gen_id = getattr(act, "generation_id", 1)
+                active_gen = active_generations.get(act.chat_id, 0)
+
+                # 🔧 Fix: Only trigger cancellation when new_gen_id > active_gen_id (Cross-Turn User Interrupt)!
+                if gen_id > active_gen:
+                    logger.info(f"⚡ Cross-Turn Interrupt detected for chat_id={act.chat_id} (new_gen={gen_id} > active_gen={active_gen})")
+                    cancel_tts_stream(act.chat_id, gen_id)
+                elif gen_id < active_gen:
+                    logger.warn(f"🛡️ Skipped stale sentence at ActionDecision gate for chat_id={act.chat_id} (gen_id={gen_id} < active_gen={active_gen})")
+                    return
+
+                # Ensure queue & queue worker exist for chat_id
+                if act.chat_id not in sentence_queues:
+                    sentence_queues[act.chat_id] = asyncio.Queue()
+                    queue_workers[act.chat_id] = asyncio.create_task(process_sentence_queue(act.chat_id))
+
+                cancel_event = asyncio.Event()
+                await sentence_queues[act.chat_id].put((act, cancel_event))
+
+        except Exception as err:
+            logger.error(f"Error in TTS action_decision_handler: {err}", exc_info=True)
+
+    await nc.subscribe(SUBJECT_ACTION_DECISION, queue="tts_workers", cb=action_decision_handler)
+    await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
+    await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
+
+    logger.info("CosyVoice TTS Service listening on NATS subjects (Action Decisions & Cancel Control)...")
+    while True:
+        await asyncio.sleep(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
-from persona.catgirl_prompt import CATGIRL_BASE_PROMPT, build_sleepy_prompt
 from shared.schema.payloads import ReasoningRequestPayload
+from shared.persona_loader import PersonaLoader
 
 
 class PromptBuilder:
@@ -10,8 +10,16 @@ class PromptBuilder:
         if payload.system_prompt_override:
             return payload.system_prompt_override
 
+        persona_data = PersonaLoader.load_active_persona()
+        base_prompt = persona_data.get("base_prompt", "你叫 Camelia，是一个猫娘喵~")
+
+        # Check if sleeping/sleepy state
+        if "SLEEPING" in (payload.current_emotion or "").upper() or "SLEEPY" in (payload.current_emotion or "").upper():
+            if persona_data.get("sleepy_prompt"):
+                base_prompt = persona_data["sleepy_prompt"]
+
         prompt_parts = [
-            CATGIRL_BASE_PROMPT,
+            base_prompt,
             "",
             payload.current_emotion,  # Contains emotion + personality + circadian description
         ]

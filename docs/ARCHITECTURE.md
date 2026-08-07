@@ -141,13 +141,32 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> IDLE : system_started
 
+    IDLE --> LISTENING : VAD_SPEECH_START (麦克风听觉激活)
+    LISTENING --> STREAMING_STT : STT_CHUNK_START (开始实时语音转写)
+    STREAMING_STT --> THINKING : STT_FINAL (转写完成)
+    STREAMING_STT --> CANCELLING : USER_INTERRUPT (打断语音转写)
+
     IDLE --> THINKING : INBOUND_MESSAGE / TICK [is_proactive_opportunity == True]
+    THINKING --> STREAMING_TTS : TTS_STREAM_START (流式音视频开始)
+    THINKING --> TALKING : TTS_SINGLE_PLAY
     THINKING --> EXECUTING_ACTION : REASONING_COMPLETED [has_action == True]
     THINKING --> IDLE : REASONING_COMPLETED [action == DO_NOTHING]
-    THINKING --> ERROR_RECOVERY : LLM_API_ERROR 或 DEADMAN_TIMEOUT [>15s]
+    THINKING --> ERROR_RECOVERY : LLM_API_ERROR 或 DEADMAN_TIMEOUT [>45s]
+
+    TALKING --> STREAMING_TTS : TTS_CHUNK_FRAME
+    STREAMING_TTS --> IDLE : TTS_STREAM_END (流式播放完毕)
+    STREAMING_TTS --> CANCELLING : USER_INTERRUPT (Barge-in 打断撤销)
+
+    TALKING --> IDLE : TTS_STREAM_END (说话播放完毕)
+    TALKING --> INTERRUPTED : USER_INTERRUPT (Barge-in 用户打断)
+    TALKING --> EXECUTING_ACTION : TOOL_EXECUTION
+
+    INTERRUPTED --> CANCELLING : CANCEL_IN_FLIGHT_REQUESTS
+    CANCELLING --> THINKING : RE_REASONING (带着最新打断输入重新思考)
+    CANCELLING --> IDLE : PURGE_RESET
 
     EXECUTING_ACTION --> IDLE : ACTION_COMPLETED
-    EXECUTING_ACTION --> ERROR_RECOVERY : TELEGRAM_API_ERROR 或 DEADMAN_TIMEOUT [>25s]
+    EXECUTING_ACTION --> ERROR_RECOVERY : TELEGRAM_API_ERROR 或 DEADMAN_TIMEOUT [>45s]
 
     IDLE --> SLEEPING : TICK [is_sleep_time == True] 或 GOODNIGHT_EVENT
     SLEEPING --> THINKING : INBOUND_MESSAGE [加载犯困/梦话 Prompt]
@@ -165,6 +184,22 @@ stateDiagram-v2
 ## 4. NATS 总线与 Payload 强类型 Schema (Payload Schemas)
 
 数据契约通过 NATS EventEnvelope 进行跨语言传输。Go 侧将 Telegram ID 严格限制为 `int64`。
+
+### 4.1 NATS 点号分级规范 (Subject Hierarchy)
+
+| 领域分类 | NATS Subject | 说明 |
+| :--- | :--- | :--- |
+| **基础中枢** | `agent.tick` / `agent.inbound_message` / `agent.error` | 系统心跳 / 上行消息 / 错误告警 |
+| **记忆与推理** | `agent.enrich_context_req` / `agent.reasoning_request` | 记忆检索请求 / LLM 推理触发 |
+| **决策与执行** | `agent.action_decision` / `agent.action_completed` | 行动决策下发 / 行动完成确认 |
+| **VAD 听觉** | `agent.speech.start` / `agent.speech.end` | 麦克风开始/结束说话 |
+| **打断撤销** | `agent.user.interrupt` / `agent.stream.cancel_req` | 用户打断 (Barge-in) 撤销 |
+| **数字人流** | `agent.audio.chunk` / `agent.viseme.data` / `agent.tts.stream_chunk` | TTS 音频切片 / Viseme 口型 |
+| **流式控制** | `agent.stt.stream_chunk` / `agent.stt.stream_final` / `agent.tts.stream_end` | STT 转写流 / TTS 结束 |
+| **流式状态** | `agent.stream.cancel_ack` / `agent.stream.state_change` | 流式撤销确认 / 状态变更广播 |
+| **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` | 画面快照 / 情绪动作更新 |
+
+### 4.2 Payload 类图 (Class Diagram)
 
 ```mermaid
 classDiagram
@@ -197,6 +232,13 @@ classDiagram
         +String sender_display_name
     }
 
+    class VisionFramePayload {
+        +int64 chat_id
+        +String image_base64
+        +String format
+        +String source_type
+    }
+
     class ReasoningRequestPayload {
         +int64 chat_id
         +int64 user_id
@@ -211,6 +253,7 @@ classDiagram
 
     class ActionDecisionPayload {
         +int64 chat_id
+        +String source_channel
         +String action_type
         +String text_content
         +float typing_delay

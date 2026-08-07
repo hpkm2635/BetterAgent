@@ -48,14 +48,16 @@ class ImageGenTool(BaseTool):
         load_dotenv()
         api_key = os.getenv("GEMINI_API_KEY", "")
 
-        # Config-driven persona appearance and settings
+        # Config-driven persona appearance and settings from active Persona YAML
+        from shared.persona_loader import PersonaLoader
+        persona_data = PersonaLoader.load_active_persona()
         default_appearance = (
             "a cute anime catgirl with long silver hair, amber golden eyes, fluffy cat ears and tail, "
             "wearing a cozy oversized white hoodie with pink paw prints"
         )
-        appearance = get_config_val("persona.appearance", default_appearance)
-        art_style = style or get_config_val("persona.art_style", "anime")
-        ref_dir = get_config_val("persona.reference_images_dir", "config/reference_images")
+        appearance = persona_data.get("appearance", default_appearance)
+        art_style = style or persona_data.get("art_style", "anime")
+        ref_dir = persona_data.get("reference_images_dir", "config/reference_images/catgirl")
 
         # Build category-specific prompt
         if category == "scenery":

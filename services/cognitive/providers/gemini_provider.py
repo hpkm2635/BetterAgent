@@ -194,3 +194,115 @@ class GeminiProvider(BaseLLMProvider):
             "tool_calls": [],
             "finish_reason": "STOP"
         }
+
+    async def generate_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
+        cancel_event: Optional[Any] = None,
+    ):
+        """
+        Pure async streaming generator using google-genai client.aio.models.generate_content_stream
+        Yields raw text delta chunks as they arrive from Gemini API.
+        """
+        last_msg = messages[-1]["content"] if messages else ""
+
+        if not self.client:
+            yield f"喵~ 收到主人的消息了：{last_msg}"
+            return
+
+        try:
+            from google.genai import types
+
+            config_kwargs = {}
+            if system_prompt:
+                config_kwargs["system_instruction"] = system_prompt
+
+            if tools_schema:
+                func_decls = []
+                for t in tools_schema:
+                    props = {}
+                    params = t.get("parameters", {})
+                    raw_props = params.get("properties", {})
+                    req_fields = params.get("required", [])
+
+                    for p_name, p_info in raw_props.items():
+                        desc = p_info.get("description", "") if isinstance(p_info, dict) else ""
+                        props[p_name] = types.Schema(
+                            type="STRING",
+                            description=desc
+                        )
+
+                    decl = types.FunctionDeclaration(
+                        name=t["name"],
+                        description=t.get("description", ""),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties=props,
+                            required=req_fields
+                        )
+                    )
+                    func_decls.append(decl)
+
+                if func_decls:
+                    config_kwargs["tools"] = [types.Tool(function_declarations=func_decls)]
+
+            config = types.GenerateContentConfig(**config_kwargs)
+
+            contents = []
+            for m in messages:
+                role = "user" if m.get("role") == "user" else "model"
+                content_text = m.get("content", "")
+                parts = []
+
+                # Extract photo_path or vision_frame base64 from metadata
+                photo_path = None
+                vision_frame_bytes = None
+                meta = m.get("metadata")
+                if isinstance(meta, dict):
+                    if meta.get("photo_path"):
+                        photo_path = meta.get("photo_path")
+                    if meta.get("vision_frame") and isinstance(meta["vision_frame"], dict):
+                        vf = meta["vision_frame"]
+                        b64_str = vf.get("image_base64", "")
+                        if b64_str:
+                            import base64
+                            try:
+                                vision_frame_bytes = base64.b64decode(b64_str)
+                            except Exception as b_err:
+                                logger.warning(f"Failed to decode vision_frame base64: {b_err}")
+
+                if vision_frame_bytes:
+                    try:
+                        parts.append(types.Part.from_bytes(data=vision_frame_bytes, mime_type="image/jpeg"))
+                    except Exception:
+                        pass
+                elif photo_path and os.path.exists(photo_path):
+                    try:
+                        with open(photo_path, "rb") as pf:
+                            img_bytes = pf.read()
+                        parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+                    except Exception:
+                        pass
+
+                parts.append(types.Part.from_text(text=content_text))
+                contents.append(types.Content(role=role, parts=parts))
+
+            # ⚡ Pure Async Generator Call using self.client.aio
+            response_stream = await self.client.aio.models.generate_content_stream(
+                model=self.model_name,
+                contents=contents if contents else last_msg,
+                config=config,
+            )
+
+            async for chunk in response_stream:
+                if cancel_event and cancel_event.is_set():
+                    logger.info("⚡ Gemini stream cancelled via cancel_event")
+                    break
+                if chunk.text:
+                    yield chunk.text
+
+        except Exception as e:
+            logger.error(f"Gemini API streaming error: {e}")
+            yield f"喵~ 收到主人的消息了：{last_msg}"

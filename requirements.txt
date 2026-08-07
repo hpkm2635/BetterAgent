@@ -1,0 +1,29 @@
+# BetterAgent Unified Dependencies (Python >= 3.12)
+
+# NATS Message Bus
+nats-py>=2.8.0
+
+# Core Data Schemas & Validation
+pydantic>=2.7.0,<2.11.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# AI Provider SDKs
+google-genai>=0.1.0
+anthropic>=0.25.0
+
+# Memory & Storage
+redis>=5.0.0
+qdrant-client>=1.9.0
+sqlalchemy>=2.0.0
+
+# Audio Processing & Network
+numpy>=1.26.0,<2.2.0
+aiohttp>=3.9.0
+
+# Telegram Adapter Utilities
+telethon>=1.34.0
+
+# Development & Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

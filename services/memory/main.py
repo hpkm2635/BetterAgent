@@ -26,8 +26,11 @@ async def error_cb(e):
     logger.warning(f"NATS Connection event: {e}")
 
 
+from shared.config_loader import get_config_val
+
+
 async def main():
-    nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
+    nats_url = os.getenv("NATS_URL", get_config_val("infrastructure.nats_url", "nats://localhost:4222"))
     try:
         nc = await nats.connect(nats_url, error_cb=error_cb, max_reconnect_attempts=10)
         logger.info(f"Connected to NATS at {nats_url}")

@@ -97,6 +97,6 @@ func (ce *ClockEngine) onTick(now time.Time) {
 	if err := ce.bus.Publish(bus.SubjectTick, "clock_engine", payload); err != nil {
 		ce.logger.Error("Failed to publish tick payload", zap.Error(err))
 	} else {
-		ce.logger.Debug("Tick published", zap.Int("counter", ce.counter), zap.String("state", string(ce.stateMachine.GetCurrentState())))
+		ce.logger.Debug("Tick published", zap.Int("counter", ce.counter), zap.String("state", string(ce.stateMachine.GetChatState(0))))
 	}
 }

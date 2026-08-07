@@ -39,6 +39,129 @@ def parse_thought_and_clean_text(raw_text: str) -> Tuple[str, str]:
     return thought, clean_text.strip()
 
 
+def clean_action_descriptions(text: str) -> str:
+    """
+    Zero Hardcoding Structural Protection Algorithm:
+    1. Mask Markdown Links: [title](url) -> __MD_LINK_X__
+    2. Mask Numbered/Bullet Lists: (1), (a), [1], (一) -> __NUM_LIST_X__
+    3. Universal Clean: Strip remaining action/gesture parens (（...）, (...), 【...】, [...], *...*)
+    4. Restore Placeholders
+    """
+    if not text:
+        return ""
+    placeholders = {}
+
+    def mask_md_link(match):
+        key = f"__MD_LINK_{len(placeholders)}__"
+        placeholders[key] = match.group(0)
+        return key
+
+    masked = re.sub(r"\[[^\]]+\]\([^\)]+\)", mask_md_link, text)
+
+    def mask_num_list(match):
+        key = f"__NUM_LIST_{len(placeholders)}__"
+        placeholders[key] = match.group(0)
+        return key
+
+    masked = re.sub(r"[\(\（\[【]\s*([0-9a-zA-Z一二三四五六七八九十]+)\s*[\)\）\]】]", mask_num_list, masked)
+
+    # Clean remaining stage directions / action descriptions
+    cleaned = re.sub(r"（[^）]*）", "", masked)
+    cleaned = re.sub(r"\([^\)]*\)", "", cleaned)
+    cleaned = re.sub(r"【[^】]*】", "", cleaned)
+    cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"\*[^\*]*\*", "", cleaned)
+
+    for key, original in placeholders.items():
+        cleaned = cleaned.replace(key, original)
+
+    return cleaned.strip()
+
+
+class SentenceSegmenter:
+    """
+    Sentence-level punctuation segmenter with <thought> & JSON state machine barrier protection.
+    Prevents mental thoughts (<thought>...</thought>), JSON blocks, and action descriptions from leaking to TTS/NATS!
+    """
+
+    PUNCTUATIONS = set(["。", "！", "？", "~", "\n", "；", "，", ".", "!", "?", ";", ","])
+
+    def __init__(self):
+        self.buffer = ""
+        self.in_thought = False
+
+    def push(self, delta: str) -> List[str]:
+        if not delta:
+            return []
+
+        self.buffer += delta
+
+        # 1. Thought Tag State Machine Barrier Check
+        if "<thought>" in self.buffer:
+            self.in_thought = True
+
+        if self.in_thought:
+            if "</thought>" in self.buffer:
+                # Exit thought block and strip thought content from buffer
+                self.buffer = re.sub(r"[\s\S]*?</thought>", "", self.buffer).lstrip()
+                self.in_thought = False
+            else:
+                # Still inside thought block, suppress sentence slicing
+                return []
+
+        # 2. JSON Code Block Barrier Check
+        if "```" in self.buffer or "{" in self.buffer:
+            if "}" in self.buffer or "```" in self.buffer:
+                self.buffer = re.sub(r"```(?:json)?[\s\S]*?```", "", self.buffer)
+                self.buffer = re.sub(r"\{\s*\"[^\"]+\"[\s\S]*?\}", "", self.buffer).lstrip()
+
+        # 3. Clean fully closed action descriptions from buffer
+        self.buffer = clean_action_descriptions(self.buffer)
+
+        # 4. Unclosed Action Parenthesis Barrier Check
+        # If inside unclosed action description (e.g. '（耳朵抖了抖喵'), wait for closing parenthesis before slicing
+        has_unclosed_paren = (
+            ("（" in self.buffer and "）" not in self.buffer) or
+            ("(" in self.buffer and ")" not in self.buffer) or
+            ("【" in self.buffer and "】" not in self.buffer) or
+            ("[" in self.buffer and "]" not in self.buffer)
+        )
+        if has_unclosed_paren:
+            return []
+
+        # 5. Sentence Punctuation Slicing for User-Facing Text
+        sentences = []
+        idx = 0
+        for i, char in enumerate(self.buffer):
+            if char in self.PUNCTUATIONS:
+                raw_sentence = self.buffer[idx:i + 1].strip()
+                if raw_sentence:
+                    sentence = re.sub(r"</?thought>", "", raw_sentence).strip()
+                    sentence = clean_action_descriptions(sentence)
+                    if sentence:
+                        sentences.append(sentence)
+                idx = i + 1
+
+        if idx > 0:
+            self.buffer = self.buffer[idx:]
+
+        return sentences
+
+    def flush(self) -> List[str]:
+        """Flushes remaining text in buffer upon stream completion."""
+        if self.in_thought:
+            return []
+
+        cleaned = re.sub(r"[\s\S]*?</thought>", "", self.buffer) if "</thought>" in self.buffer else self.buffer
+        cleaned = re.sub(r"```(?:json)?[\s\S]*?```", "", cleaned)
+        cleaned = re.sub(r"\{\s*\"[^\"]+\"[\s\S]*?\}", "", cleaned).strip()
+        cleaned = re.sub(r"</?thought>", "", cleaned).strip()
+        cleaned = clean_action_descriptions(cleaned)
+
+        self.buffer = ""
+        return [cleaned] if cleaned else []
+
+
 class CognitiveEngine:
 
     def __init__(self, default_provider_name: str = "gemini"):
@@ -192,10 +315,14 @@ class CognitiveEngine:
             except Exception as pe:
                 logger.warning(f"Failed to parse ReAct JSON tool call: {pe}")
 
-        # Determine source_channel from inbound_message or default to "telegram"
+        # Determine source_channel & generation_id from payload
         src_channel = "telegram"
-        if payload.inbound_message and getattr(payload.inbound_message, "source_channel", None):
-            src_channel = payload.inbound_message.source_channel
+        gen_id = getattr(payload, "generation_id", 1)
+        if payload.inbound_message:
+            if getattr(payload.inbound_message, "source_channel", None):
+                src_channel = payload.inbound_message.source_channel
+            if getattr(payload.inbound_message, "generation_id", None):
+                gen_id = payload.inbound_message.generation_id
 
         # Execute any tool calls from LLM
         for call in tool_calls:
@@ -212,6 +339,7 @@ class CognitiveEngine:
                             event_id=payload.event_id,
                             source_component="cognitive_engine",
                             chat_id=payload.chat_id,
+                            generation_id=gen_id,
                             source_channel=src_channel,
                             action_type="send_voice",
                             voice_path=tool_output.get("voice_path"),
@@ -225,6 +353,7 @@ class CognitiveEngine:
                             event_id=payload.event_id,
                             source_component="cognitive_engine",
                             chat_id=payload.chat_id,
+                            generation_id=gen_id,
                             source_channel=src_channel,
                             action_type="send_photo",
                             photo_path=tool_output.get("photo_path"),
@@ -237,6 +366,7 @@ class CognitiveEngine:
                             event_id=payload.event_id,
                             source_component="cognitive_engine",
                             chat_id=payload.chat_id,
+                            generation_id=gen_id,
                             source_channel=src_channel,
                             action_type=tool_output.get("action_type",
                                                         "send_message"),
@@ -259,6 +389,7 @@ class CognitiveEngine:
                     event_id=payload.event_id,
                     source_component="cognitive_engine",
                     chat_id=payload.chat_id,
+                    generation_id=gen_id,
                     source_channel=src_channel,
                     action_type="send_sticker",
                     sticker_id=sticker_id,
@@ -281,6 +412,7 @@ class CognitiveEngine:
                     event_id=payload.event_id,
                     source_component="cognitive_engine",
                     chat_id=payload.chat_id,
+                    generation_id=gen_id,
                     source_channel=src_channel,
                     action_type="send_message",
                     text_content=clean_text,
@@ -288,3 +420,103 @@ class CognitiveEngine:
                 ))
 
         return actions
+
+    async def stream_reasoning_loop(
+        self,
+        payload: ReasoningRequestPayload,
+        cancel_event: Optional[Any] = None,
+    ):
+        """
+        Yields sentence-level ActionDecisionPayload chunks in real-time as LLM streams text deltas.
+        Supports cancellation via cancel_event.
+        """
+        if payload.trigger_type == "tick" and not getattr(payload, "is_proactive_opportunity", False):
+            return
+
+        src_channel = "telegram"
+        gen_id = getattr(payload, "generation_id", 1)
+        if payload.inbound_message:
+            if getattr(payload.inbound_message, "source_channel", None):
+                src_channel = payload.inbound_message.source_channel
+            if getattr(payload.inbound_message, "generation_id", None):
+                gen_id = payload.inbound_message.generation_id
+
+        all_schemas = self.tool_registry.get_all_schemas()
+        tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"] if src_channel == "web" else all_schemas
+
+        system_prompt = PromptBuilder.build_system_prompt(payload)
+        messages = PromptBuilder.build_messages(payload)
+
+        for msg in messages:
+            if isinstance(msg.get("metadata"), dict) and "vision_frame" in msg["metadata"]:
+                del msg["metadata"]["vision_frame"]
+
+        vision_frame = self.get_valid_vision_frame(payload.chat_id)
+        if vision_frame and messages:
+            if "metadata" not in messages[-1]:
+                messages[-1]["metadata"] = {}
+            messages[-1]["metadata"]["vision_frame"] = vision_frame
+
+        segmenter = SentenceSegmenter()
+        stream_gen = self.default_provider.generate_stream(
+            messages=messages,
+            tools_schema=tools_schema,
+            system_prompt=system_prompt,
+            cancel_event=cancel_event,
+        )
+
+        try:
+            async for delta in stream_gen:
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"⚡ stream_reasoning_loop cancelled for chat_id={payload.chat_id}")
+                    break
+
+                sentences = segmenter.push(delta)
+                for s in sentences:
+                    sentence_str = s.strip()
+                    if sentence_str:
+                        yield ActionDecisionPayload(
+                            event_id=payload.event_id,
+                            source_component="cognitive_engine",
+                            chat_id=payload.chat_id,
+                            generation_id=gen_id,
+                            source_channel=src_channel,
+                            action_type="send_message",
+                            text_content=sentence_str,
+                            chat_action="typing",
+                            is_final=False,
+                        )
+
+            final_sentences = segmenter.flush()
+            final_clean = [s.strip() for s in final_sentences if s and s.strip()]
+
+            if final_clean:
+                total_final = len(final_clean)
+                for i, sentence in enumerate(final_clean):
+                    is_last = (i == total_final - 1)
+                    yield ActionDecisionPayload(
+                        event_id=payload.event_id,
+                        source_component="cognitive_engine",
+                        chat_id=payload.chat_id,
+                        generation_id=gen_id,
+                        source_channel=src_channel,
+                        action_type="send_message",
+                        text_content=sentence,
+                        chat_action="typing",
+                        is_final=is_last,
+                    )
+            else:
+                # If no sentence emitted in flush, emit empty final marker payload
+                yield ActionDecisionPayload(
+                    event_id=payload.event_id,
+                    source_component="cognitive_engine",
+                    chat_id=payload.chat_id,
+                    generation_id=gen_id,
+                    source_channel=src_channel,
+                    action_type="send_message",
+                    text_content="",
+                    chat_action="typing",
+                    is_final=True,
+                )
+        except Exception as err:
+            logger.error(f"Error in stream_reasoning_loop: {err}")

@@ -99,10 +99,16 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 				chatID = session.ChatID
 			}
 
+			var currentGen uint64 = 1
+			if b.csm != nil {
+				currentGen = b.csm.GetGenerationChat(chatID)
+			}
+
 			inbound := schema.InboundMessagePayload{
 				BasePayload:       schema.NewBasePayload("web_gateway"),
 				ChatID:            chatID,
 				UserID:            chatID,
+				GenerationID:      currentGen,
 				SourceChannel:     "web",
 				RawText:           &p.Text,
 				ChatType:          "private",
@@ -110,7 +116,7 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 				SenderDisplayName: "Web Master",
 			}
 
-			b.logger.Info("WebGateway User Text -> NATS agent.inbound_message", zap.Int64("chat_id", chatID), zap.String("text", p.Text))
+			b.logger.Info("WebGateway User Text -> NATS agent.inbound_message", zap.Int64("chat_id", chatID), zap.Uint64("gen_id", currentGen), zap.String("text", p.Text))
 			_ = b.bus.Publish(bus.SubjectInboundMessage, "web_gateway", inbound)
 
 			// 1. Central State Machine transition to THINKING
@@ -123,6 +129,7 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 				BasePayload:            schema.NewBasePayload("web_gateway"),
 				ChatID:                 chatID,
 				UserID:                 chatID,
+				GenerationID:           currentGen,
 				InboundMessage:         &inbound,
 				CurrentState:           "THINKING",
 				TriggerType:            "user_message",
@@ -150,19 +157,43 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 			}(chatID, enrichReq)
 		}
 
-	case "user.speech_start":
-		b.logger.Info("WebGateway User Speech Start (Barge-in Interrupt) -> Clearing Send Buffer & Publishing NATS Interrupt", zap.Int64("chat_id", session.ChatID))
-
-		// 1. Immediately purge any queued outbound audio chunks/frames in WebGateway send buffer
-		b.sessions.ClearChatBuffers(session.ChatID)
-
-		// 2. Publish user interrupt to NATS to cancel in-flight LLM/TTS workers upstream
-		interrupt := schema.UserInterruptPayload{
-			BasePayload: schema.NewBasePayload("web_gateway"),
-			ChatID:      session.ChatID,
-			UserID:      session.ChatID,
+	case "user.speech_start", "user.interrupt":
+		chatID := session.ChatID
+		var newGenID uint64 = 1
+		if b.csm != nil {
+			newGenID = b.csm.IncrementGenerationChat(chatID)
+			b.csm.TransitionToChat(chatID, engine.StateCancelling, "user_barge_in_interrupt")
 		}
-		_ = b.bus.Publish(bus.SubjectWebUserInterrupt, "web_gateway", interrupt)
+
+		// 1. Immediately purge any queued outbound audio/text/emotion chunks in WebGateway send buffer
+		b.sessions.ClearChatBuffers(chatID)
+
+		cancelPayload := schema.StreamCancelPayload{
+			BasePayload:   schema.NewBasePayload("web_gateway"),
+			ChatID:        chatID,
+			GenerationID:  newGenID,
+			Reason:        "user_barge_in_interrupt",
+			SourceChannel: "web",
+		}
+		b.logger.Info("⚡ User Speech Interrupt -> NATS agent.stream.cancel_req & agent.user.interrupt", zap.Int64("chat_id", chatID), zap.Uint64("gen_id", newGenID))
+		_ = b.bus.Publish(bus.SubjectStreamCancelReq, "web_gateway", cancelPayload)
+		_ = b.bus.Publish(bus.SubjectUserInterrupt, "web_gateway", cancelPayload)
+
+		// 2s Auto-Recovery Timer for CANCELLING state if no user speech follows
+		go func(cID int64, targetGen uint64) {
+			time.Sleep(2 * time.Second)
+			if b.csm != nil && b.csm.GetChatState(cID) == engine.StateCancelling && b.csm.GetGenerationChat(cID) == targetGen {
+				b.csm.TransitionToChat(cID, engine.StateIdle, "cancel_auto_recovery_idle")
+				ackPayload := schema.StreamCancelPayload{
+					BasePayload:   schema.NewBasePayload("web_gateway"),
+					ChatID:        cID,
+					GenerationID:  targetGen,
+					Reason:        "cancel_ack_auto_idle",
+					SourceChannel: "web",
+				}
+				_ = b.bus.Publish(bus.SubjectStreamCancelAck, "web_gateway", ackPayload)
+			}
+		}(chatID, newGenID)
 
 	case "user.speech_end":
 		b.logger.Debug("WebGateway User Speech End", zap.Int64("chat_id", session.ChatID))
@@ -225,6 +256,15 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 		return
 	}
 
+	// Static Generation ID Filter: Drop stale action decisions from past turns
+	if decision.GenerationID != 0 && b.csm != nil {
+		activeGen := b.csm.GetGenerationChat(decision.ChatID)
+		if decision.GenerationID != activeGen {
+			b.logger.Warn("⚠️ Dropped stale ActionDecision from old generation", zap.Int64("chat_id", decision.ChatID), zap.Uint64("decision_gen", decision.GenerationID), zap.Uint64("active_gen", activeGen))
+			return
+		}
+	}
+
 	if decision.TextContent != nil && *decision.TextContent != "" {
 		outBytes, _ := json.Marshal(WSMessage{
 			Type: "agent.text_delta",
@@ -249,9 +289,17 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)
 	}
 
-	// 1. Central State Machine transition back to IDLE
+	// 1. Central State Machine Management for Stream Reasoning & Audio:
 	if b.csm != nil {
-		b.csm.TransitionToChat(decision.ChatID, engine.StateIdle, "action_completed")
+		if !decision.IsFinal {
+			// Streaming in progress: Maintain STREAMING_TTS and extend watchdog
+			b.csm.TransitionToChat(decision.ChatID, engine.StateStreamingTTS, "stream_reasoning_chunk")
+			b.csm.TouchWatchdogChat(decision.ChatID, 30*time.Second)
+		} else {
+			// IsFinal == true: Text reasoning completed.
+			// Set 5-second smooth audio flush window instead of jumping immediately to IDLE
+			b.csm.TouchWatchdogChat(decision.ChatID, 5*time.Second)
+		}
 	}
 
 	// 2. Publish ActionCompleted to NATS
@@ -298,9 +346,15 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 
+	// TouchWatchdog & Maintain STREAMING_TTS while audio chunks arrive
+	if b.csm != nil {
+		b.csm.TransitionToChat(p.ChatID, engine.StateStreamingTTS, "audio_chunk_streaming")
+		b.csm.TouchWatchdogChat(p.ChatID, 30*time.Second)
+	}
+
 	// 2. High-Performance Zero-Copy Binary WebSocket Frame (0% Base64 Overhead)
 	if rawAudioBytes, err := base64.StdEncoding.DecodeString(p.AudioBase64); err == nil && len(rawAudioBytes) > 0 {
-		binFrame := EncodeBinaryAudioFrame(p.ChatID, 1, rawAudioBytes)
+		binFrame := EncodeBinaryAudioFrame(p.ChatID, b.csm.GetGenerationChat(p.ChatID), rawAudioBytes)
 		b.sessions.SendBinaryToChat(p.ChatID, binFrame)
 	}
 }

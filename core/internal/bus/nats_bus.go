@@ -24,12 +24,24 @@ const (
 	SubjectConsolidateMemoryReq = "agent.consolidate_memory_req"
 	SubjectError                = "agent.error"
 
-	// Digital Human & Web Gateway Realtime Subjects
-	SubjectWebUserInterrupt = "agent.web.user_interrupt"
-	SubjectAudioChunk       = "agent.audio_chunk"
-	SubjectVisemeData       = "agent.viseme_data"
-	SubjectEmotionUpdate    = "agent.emotion_update"
-	SubjectVisionFrame      = "agent.vision_frame"
+	// Digital Human & Realtime Multimodal Subjects
+	SubjectSpeechStart      = "agent.speech.start"
+	SubjectSpeechEnd        = "agent.speech.end"
+	SubjectUserInterrupt    = "agent.user.interrupt"
+	SubjectWebUserInterrupt = "agent.user.interrupt"
+	SubjectAudioChunk       = "agent.audio.chunk"
+	SubjectVisemeData       = "agent.viseme.data"
+	SubjectEmotionUpdate    = "agent.emotion.update"
+	SubjectVisionFrame      = "agent.vision.frame"
+
+	// 7 Realtime Cancelable Streaming Subjects
+	SubjectSTTStreamChunk   = "agent.stt.stream_chunk"
+	SubjectSTTStreamFinal   = "agent.stt.stream_final"
+	SubjectTTSStreamChunk   = "agent.tts.stream_chunk"
+	SubjectTTSStreamEnd     = "agent.tts.stream_end"
+	SubjectStreamCancelReq  = "agent.stream.cancel_req"
+	SubjectStreamCancelAck  = "agent.stream.cancel_ack"
+	SubjectStreamStateChange = "agent.stream.state_change"
 )
 
 type NatsBus struct {

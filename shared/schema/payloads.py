@@ -12,6 +12,7 @@ class BasePayload(BaseModel):
 class InboundMessagePayload(BasePayload):
     chat_id: int
     user_id: int
+    generation_id: int = 1
     message_id: int
     source_channel: str = "telegram"  # "telegram" | "web"
     raw_text: Optional[str] = None
@@ -39,6 +40,7 @@ class TickPayload(BasePayload):
 class EnrichContextReqPayload(BasePayload):
     chat_id: int
     user_id: int
+    generation_id: int = 1
     inbound_message: Optional[InboundMessagePayload] = None
     current_state: str
     trigger_type: str  # "user_message" | "proactive" | "tick"
@@ -50,6 +52,7 @@ class EnrichContextReqPayload(BasePayload):
 class ReasoningRequestPayload(BasePayload):
     chat_id: int
     user_id: int
+    generation_id: int = 1
     system_prompt_override: Optional[str] = None
     short_term_history: List[Dict[str, Any]] = Field(default_factory=list)
     user_profile: Dict[str, Any] = Field(default_factory=dict)
@@ -79,6 +82,7 @@ class ReasoningRequestPayload(BasePayload):
 
 class ActionDecisionPayload(BasePayload):
     chat_id: int
+    generation_id: int = 1
     source_channel: str = "telegram"  # "telegram" | "web"
     action_type: str  # "send_message" | "CHAT_ACTION" | "send_sticker"
     text_content: Optional[str] = None
@@ -90,6 +94,7 @@ class ActionDecisionPayload(BasePayload):
     chat_action: Optional[str] = "typing"
     sticker_id: Optional[str] = None
     reaction_emoji: Optional[str] = None
+    is_final: bool = False
 
 
 class ActionCompletedPayload(BasePayload):
@@ -113,3 +118,34 @@ class ErrorPayload(BasePayload):
     error_message: str
     stack_trace: Optional[str] = None
     caused_by_event_id: Optional[str] = None
+
+
+class StreamChunkPayload(BasePayload):
+    chat_id: int
+    generation_id: int = 1
+    chunk_index: int = 0
+    is_final: bool = False
+    source_channel: str = "web"
+    text_delta: Optional[str] = None
+    audio_base64: Optional[str] = None
+    sample_rate: Optional[int] = 24000
+    format: Optional[str] = "pcm"
+    visemes: Optional[List[Dict[str, Any]]] = None
+
+
+StreamAudioChunkPayload = StreamChunkPayload
+
+
+class StreamCancelPayload(BasePayload):
+    chat_id: int
+    generation_id: int = 1
+    reason: str = "barge_in_interrupt"
+    source_channel: str = "web"
+
+
+class StreamStateChangePayload(BasePayload):
+    chat_id: int
+    generation_id: int = 1
+    state: str = "IDLE"
+    source_channel: str = "web"
+

@@ -21,6 +21,7 @@ type InboundMessagePayload struct {
 	BasePayload
 	ChatID            int64   `json:"chat_id"`
 	UserID            int64   `json:"user_id"`
+	GenerationID      uint64  `json:"generation_id,omitempty"`
 	MessageID         int     `json:"message_id"`
 	SourceChannel     string  `json:"source_channel,omitempty"` // "telegram" | "web"
 	RawText           *string `json:"raw_text,omitempty"`
@@ -50,6 +51,7 @@ type EnrichContextReqPayload struct {
 	BasePayload
 	ChatID                 int64                  `json:"chat_id"`
 	UserID                 int64                  `json:"user_id"`
+	GenerationID           uint64                 `json:"generation_id,omitempty"`
 	InboundMessage         *InboundMessagePayload `json:"inbound_message,omitempty"`
 	CurrentState           string                 `json:"current_state"`
 	TriggerType            string                 `json:"trigger_type"`
@@ -62,6 +64,7 @@ type ReasoningRequestPayload struct {
 	BasePayload
 	ChatID               int64                  `json:"chat_id"`
 	UserID               int64                  `json:"user_id"`
+	GenerationID         uint64                 `json:"generation_id,omitempty"`
 	SystemPromptOverride *string                `json:"system_prompt_override,omitempty"`
 	ShortTermHistory     []map[string]interface{}`json:"short_term_history"`
 	UserProfile          map[string]interface{} `json:"user_profile"`
@@ -89,7 +92,8 @@ func (r *ReasoningRequestPayload) EnsureDefaults() {
 type ActionDecisionPayload struct {
 	BasePayload
 	ChatID           int64   `json:"chat_id"`
-	SourceChannel    string  `json:"source_channel,omitempty"`
+	GenerationID     uint64  `json:"generation_id,omitempty"`
+	SourceChannel    string  `json:"source_channel,omitempty"` // "telegram" | "web"
 	ActionType       string  `json:"action_type"`
 	TextContent      *string `json:"text_content,omitempty"`
 	TypingDelay      float64 `json:"typing_delay"`
@@ -100,6 +104,7 @@ type ActionDecisionPayload struct {
 	ChatAction       *string `json:"chat_action,omitempty"`
 	StickerID        *string `json:"sticker_id,omitempty"`
 	ReactionEmoji    *string `json:"reaction_emoji,omitempty"`
+	IsFinal          bool    `json:"is_final,omitempty"`
 }
 
 type ActionCompletedPayload struct {
@@ -122,11 +127,12 @@ type ErrorPayload struct {
 
 type StreamAudioChunkPayload struct {
 	BasePayload
-	ChatID     int64    `json:"chat_id"`
-	AudioBase64 string   `json:"audio_base64"`
-	SampleRate int      `json:"sample_rate"`
-	Format     string   `json:"format"`
-	Visemes    []Viseme `json:"visemes,omitempty"`
+	ChatID       int64    `json:"chat_id"`
+	GenerationID uint64   `json:"generation_id,omitempty"`
+	AudioBase64  string   `json:"audio_base64"`
+	SampleRate   int      `json:"sample_rate"`
+	Format       string   `json:"format"`
+	Visemes      []Viseme `json:"visemes,omitempty"`
 }
 
 type Viseme struct {
@@ -154,6 +160,36 @@ type VisionFramePayload struct {
 	ImageBase64 string `json:"image_base64"`
 	Format      string `json:"format"`      // "jpeg" | "webp"
 	SourceType  string `json:"source_type"` // "screen" | "camera"
+}
+
+type StreamChunkPayload struct {
+	BasePayload
+	ChatID        int64    `json:"chat_id"`
+	GenerationID  uint64   `json:"generation_id"`
+	ChunkIndex    int      `json:"chunk_index"`
+	IsFinal       bool     `json:"is_final"`
+	SourceChannel string   `json:"source_channel,omitempty"`
+	TextDelta     string   `json:"text_delta,omitempty"`
+	AudioBase64   string   `json:"audio_base64,omitempty"`
+	SampleRate    int      `json:"sample_rate,omitempty"`
+	Format        string   `json:"format,omitempty"`
+	Visemes       []Viseme `json:"visemes,omitempty"`
+}
+
+type StreamCancelPayload struct {
+	BasePayload
+	ChatID        int64  `json:"chat_id"`
+	GenerationID  uint64 `json:"generation_id"`
+	Reason        string `json:"reason"`
+	SourceChannel string `json:"source_channel,omitempty"`
+}
+
+type StreamStateChangePayload struct {
+	BasePayload
+	ChatID        int64  `json:"chat_id"`
+	GenerationID  uint64 `json:"generation_id"`
+	State         string `json:"state"`
+	SourceChannel string `json:"source_channel,omitempty"`
 }
 
 func NewBasePayload(source string) BasePayload {

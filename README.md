@@ -15,53 +15,65 @@
 - **Python Services**: `services/`
   - `memory-service`: 记忆与检索服务 (`MemoryHub`, `VectorMemoryStore` 艾宾浩斯遗忘曲线, `ShortTermBuffer`, `TokenBudgetManager`)
   - `cognitive-service`: 认知推理与工具调度 (`CognitiveEngine`, `PromptBuilder`, `GeminiProvider`, `ClaudeProvider`, `TTSTool`, `ImageGenTool`, `TelegramActionTool`)
+  - `tts-service`: 语音合成服务 (`GPTSoVITSClient`, `CosyVoiceClient`, `AudioNormalizer`)
 
 - **Infrastructure**: `deploy/`
   - NATS Server (Pub/Sub + JetStream)
   - Redis (状态锁与缓冲)
   - Qdrant (向量记忆存储)
 
-## 启动指南
+---
 
-1. **启动基础设施**:
-   ```bash
-   cd deploy
-   docker-compose up -d
-   ```
+## 快速启动指南
 
-2. **启动 Python 计算服务**:
-   ```bash
-   # Terminal 1: Memory Service
-   cd services/memory
-   pip install -r requirements.txt
-   python main.py
+### 1. 环境准备 (Python 3.12+)
 
-   # Terminal 2: Cognitive Service
-   cd services/cognitive
-   pip install -r requirements.txt
-   python main.py
-   ```
+创建标准的虚拟环境并安装统一依赖：
 
-3. **启动 Go 核心进程**:
-   ```bash
-   cd core
-   cp ../.env.example .env # 填入 TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE
-   go run ./cmd/main.go
-   ```
+```bash
+# 创建虚拟环境 (.venv)
+python -m venv .venv
 
-💡 本地常用命令：
+# 激活环境 (Windows)
+.\.venv\Scripts\activate
+# 激活环境 (Linux/macOS)
+source .venv/bin/activate
 
-# 启动所有服务
+# 安装项目统一依赖
+pip install -r requirements.txt
+```
+
+### 2. 拷贝环境配置
+
+```bash
+cp .env.example .env
+# 编辑 .env 填入 TELEGRAM_API_ID, TELEGRAM_API_HASH 等配置
+```
+
+### 3. 一键编排启动（支持 Windows / Linux / macOS）
+
+使用内置的跨平台守护进程 `runner.py`（支持自动拉起微服务、进程健康检查与自动重启）：
+
+```bash
+# 直接使用 runner 启动（跨平台通用）
+python runner.py
+
+# 或在 Windows 下使用脚本：
 .\scripts\win_start.ps1
-# 停止所有服务
+
+# 或在 Linux 下使用脚本：
+./scripts/linux_start.sh
+```
+
+---
+
+## 本地开发常用指令
+
+```bash
+# 停止所有微服务
 .\scripts\win_stop.ps1
 
-# 复制脚本后配置 Systemd 保活
-sudo cp deploy/betteragent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now betteragent
-
-# 启动前端画面
+# 启动 Web UI 调试端
 cd frontend
 pnpm --filter @proj-airi/stage-web dev
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,7 @@ type GotdAdapter struct {
 	peerMu           sync.RWMutex
 	peerAccessHashes map[int64]int64
 	peerUsernames    map[int64]string
+	textBuffer       map[int64][]string
 }
 
 func NewGotdAdapter(
@@ -78,6 +80,7 @@ func NewGotdAdapter(
 		logger:           logger,
 		peerAccessHashes: make(map[int64]int64),
 		peerUsernames:    make(map[int64]string),
+		textBuffer:       make(map[int64][]string),
 	}
 
 	adapter.typingMgr = NewTypingHeartbeatManager(adapter, logger)
@@ -409,8 +412,10 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 		return
 	}
 
-	// Stop typing heartbeat
-	a.typingMgr.StopHeartbeat(action.ChatID)
+	// Stop typing heartbeat ONLY when IsFinal == true (end of streaming)
+	if action.IsFinal {
+		a.typingMgr.StopHeartbeat(action.ChatID)
+	}
 
 	// Calculate humanization delay
 	text := ""
@@ -556,19 +561,39 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 		}
 
 	default:
-		// send_message and all other action types
+		// Stream Reasoning Chunk Buffering:
+		// Accumulate text_content into textBuffer[action.ChatID] while IsFinal is false.
+		// Only send ONE single consolidated Telegram message when IsFinal becomes true!
+		a.peerMu.Lock()
 		if action.TextContent != nil && *action.TextContent != "" {
+			a.textBuffer[action.ChatID] = append(a.textBuffer[action.ChatID], *action.TextContent)
+		}
+
+		if !action.IsFinal {
+			a.peerMu.Unlock()
+			// Keep typing heartbeat active and maintain streaming state for non-final chunks
+			a.stateMachine.TransitionToChat(action.ChatID, engine.StateStreamingTTS, "stream_reasoning_chunk")
+			a.stateMachine.TouchWatchdogChat(action.ChatID, 30*time.Second)
+			return
+		}
+
+		// IsFinal == true: Flush and send consolidated Telegram message
+		fullText := strings.Join(a.textBuffer[action.ChatID], "")
+		a.textBuffer[action.ChatID] = nil // Reset buffer
+		a.peerMu.Unlock()
+
+		if fullText != "" {
 			inputPeer, perr := a.resolveInputPeer(ctx, action.ChatID)
 			if perr == nil {
 				target := a.sender.To(inputPeer)
-				_, err := target.Text(ctx, *action.TextContent)
+				_, err := target.Text(ctx, fullText)
 				if err != nil {
 					status = "failed"
 					errStr := err.Error()
 					errDetail = &errStr
-					a.logger.Error("Failed to send message to Telegram", zap.Int64("chat_id", action.ChatID), zap.Error(err))
+					a.logger.Error("Failed to send consolidated message to Telegram", zap.Int64("chat_id", action.ChatID), zap.Error(err))
 				} else {
-					a.logger.Info("Sent message to Telegram", zap.Int64("chat_id", action.ChatID), zap.String("text", *action.TextContent))
+					a.logger.Info("Sent consolidated message to Telegram", zap.Int64("chat_id", action.ChatID), zap.Int("total_len", len(fullText)))
 				}
 			} else {
 				status = "failed"
@@ -577,8 +602,14 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 		}
 	}
 
-	// Transition per-chat state machine back to IDLE
-	a.stateMachine.TransitionToChat(action.ChatID, engine.StateIdle, "action_completed")
+	// State Machine Management for Telegram Streaming:
+	if !action.IsFinal {
+		a.stateMachine.TransitionToChat(action.ChatID, engine.StateStreamingTTS, "stream_reasoning_chunk")
+		a.stateMachine.TouchWatchdogChat(action.ChatID, 30*time.Second)
+	} else {
+		// IsFinal == true: Set 5-second smooth audio/send buffer window instead of jumping immediately to IDLE
+		a.stateMachine.TouchWatchdogChat(action.ChatID, 5*time.Second)
+	}
 
 	// Publish ActionCompleted to NATS
 	completedPayload := schema.ActionCompletedPayload{

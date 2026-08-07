@@ -9,6 +9,8 @@ from shared.subjects import (
     SUBJECT_ACTION_DECISION,
     SUBJECT_REASONING_COMPLETED,
     SUBJECT_VISION_FRAME,
+    SUBJECT_STREAM_CANCEL_REQ,
+    SUBJECT_USER_INTERRUPT,
 )
 from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
 from shared.logger import setup_logger
@@ -22,8 +24,11 @@ async def error_cb(e):
     logger.warning(f"NATS Connection event: {e}")
 
 
+from shared.config_loader import get_config_val
+
+
 async def main():
-    nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
+    nats_url = os.getenv("NATS_URL", get_config_val("infrastructure.nats_url", "nats://localhost:4222"))
     try:
         nc = await nats.connect(nats_url, error_cb=error_cb, max_reconnect_attempts=10)
         logger.info(f"Connected to NATS at {nats_url}")
@@ -32,22 +37,34 @@ async def main():
         return
 
     engine = CognitiveEngine()
+    active_tasks: dict[int, tuple[asyncio.Task, asyncio.Event]] = {}
 
-    async def reasoning_handler(msg):
-        req_chat_id = 0
-        req_event_id = "evt_err"
+    def cancel_chat_stream(chat_id: int):
+        if chat_id in active_tasks:
+            task, event = active_tasks[chat_id]
+            event.set()
+            if not task.done():
+                task.cancel()
+            logger.info(f"⚡ Cancelled in-flight LLM stream for chat_id={chat_id}")
+
+    async def cancel_handler(msg):
         try:
             data = json.loads(msg.data.decode())
             payload_dict = data.get("payload", {})
-            req_chat_id = payload_dict.get("chat_id", 0)
-            req_event_id = payload_dict.get("event_id", data.get("id", "evt_err"))
-            req = ReasoningRequestPayload(**payload_dict)
+            chat_id = payload_dict.get("chat_id", 0)
+            if chat_id:
+                cancel_chat_stream(chat_id)
+        except Exception as e:
+            logger.warning(f"Error handling stream cancel request: {e}")
 
-            logger.info(f"Processing ReasoningRequest for chat_id={req.chat_id}")
-            actions = await engine.execute_reasoning_loop(req)
+    async def run_streaming_reasoning(req: ReasoningRequestPayload, cancel_event: asyncio.Event):
+        actions_count = 0
+        try:
+            async for act in engine.stream_reasoning_loop(req, cancel_event=cancel_event):
+                if cancel_event.is_set():
+                    logger.info(f"⚡ Stream loop stopped mid-reasoning for chat_id={req.chat_id}")
+                    break
 
-            # Publish each ActionDecision Payload
-            for act in actions:
                 envelope = {
                     "id": req.event_id,
                     "subject": SUBJECT_ACTION_DECISION,
@@ -55,7 +72,8 @@ async def main():
                     "payload": act.model_dump(),
                 }
                 await nc.publish(SUBJECT_ACTION_DECISION, json.dumps(envelope).encode())
-                logger.info(f"Published ActionDecision: {act.action_type} to chat_id={act.chat_id}")
+                actions_count += 1
+                logger.info(f"Published Stream Sentence Chunk: '{act.text_content}' to chat_id={act.chat_id}")
 
             # Publish Reasoning Completed
             completed_envelope = {
@@ -64,41 +82,54 @@ async def main():
                 "source": "cognitive_service",
                 "payload": {
                     "chat_id": req.chat_id,
-                    "has_action": len(actions) > 0,
+                    "has_action": actions_count > 0,
                 },
             }
             await nc.publish(SUBJECT_REASONING_COMPLETED, json.dumps(completed_envelope).encode())
 
+        except asyncio.CancelledError:
+            logger.info(f"⚡ Streaming reasoning task for chat_id={req.chat_id} caught CancelledError & terminated cleanly.")
         except Exception as e:
-            logger.error(f"Error handling reasoning request: {e}", exc_info=True)
-            # FAIL-FAST: Publish Fallback Error ActionDecision & ReasoningCompleted so Go Core never deadlocks
-            if req_chat_id:
+            logger.error(f"Error in streaming reasoning task: {e}", exc_info=True)
+            if req.chat_id:
                 fallback_act = ActionDecisionPayload(
-                    event_id=req_event_id,
+                    event_id=req.event_id,
                     source_component="cognitive_service",
-                    chat_id=req_chat_id,
+                    chat_id=req.chat_id,
+                    generation_id=getattr(req, "generation_id", 1),
+                    source_channel=getattr(req, "source_channel", "web"),
                     action_type="send_message",
                     text_content="呜……人家的大脑突然打了个瞌睡喵，主人能不能过一会儿再理我一次？",
                     chat_action="typing",
                 )
                 err_envelope = {
-                    "id": req_event_id,
+                    "id": req.event_id,
                     "subject": SUBJECT_ACTION_DECISION,
                     "source": "cognitive_service",
                     "payload": fallback_act.model_dump(),
                 }
                 await nc.publish(SUBJECT_ACTION_DECISION, json.dumps(err_envelope).encode())
+        finally:
+            # 🧹 Always clean up task entry from active_tasks dictionary
+            active_tasks.pop(req.chat_id, None)
 
-                completed_envelope = {
-                    "id": req_event_id,
-                    "subject": SUBJECT_REASONING_COMPLETED,
-                    "source": "cognitive_service",
-                    "payload": {
-                        "chat_id": req_chat_id,
-                        "has_action": True,
-                    },
-                }
-                await nc.publish(SUBJECT_REASONING_COMPLETED, json.dumps(completed_envelope).encode())
+    async def reasoning_handler(msg):
+        try:
+            data = json.loads(msg.data.decode())
+            payload_dict = data.get("payload", {})
+            req = ReasoningRequestPayload(**payload_dict)
+
+            logger.info(f"Processing Stream ReasoningRequest for chat_id={req.chat_id} (gen_id={getattr(req, 'generation_id', 1)})")
+
+            # Cancel any previous task for the same chat_id
+            cancel_chat_stream(req.chat_id)
+
+            cancel_event = asyncio.Event()
+            task = asyncio.create_task(run_streaming_reasoning(req, cancel_event))
+            active_tasks[req.chat_id] = (task, cancel_event)
+
+        except Exception as e:
+            logger.error(f"Error handling reasoning request initialization: {e}", exc_info=True)
 
     async def vision_handler(msg):
         try:
@@ -117,8 +148,10 @@ async def main():
 
     await nc.subscribe(SUBJECT_REASONING_REQUEST, queue="cognitive_workers", cb=reasoning_handler)
     await nc.subscribe(SUBJECT_VISION_FRAME, cb=vision_handler)
+    await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
+    await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
 
-    logger.info("Cognitive service listening on NATS subjects (Reasoning & Vision Frame)...")
+    logger.info("Cognitive service listening on NATS subjects (Stream Reasoning, Vision & Cancel Controls)...")
     while True:
         await asyncio.sleep(1)
 
