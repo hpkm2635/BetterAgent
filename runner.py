@@ -273,6 +273,15 @@ class ServiceManager:
             print(" [✓] NATS Server is already running on port 4222.")
             return True
 
+        # 1. 如果本地没有 nats-server，自动调用 install_local_deps 脚本下载！
+        if not NATS_BINARY_PATH.exists():
+            print(" [!] NATS binary missing in bin/. Auto-downloading via install_local_deps.py...")
+            try:
+                from scripts.install_local_deps import download_nats
+                download_nats()
+            except Exception as e:
+                print(f" [✗] Failed to auto-download NATS: {e}")
+                
         if NATS_BINARY_PATH.exists():
             print(" [1/5] Starting native NATS Server...")
             nats_log = open(LOGS_DIR / "nats_server.log", "a", encoding="utf-8")
@@ -581,6 +590,19 @@ def main():
             )
     except Exception:
         pass
+    
+    # 0. 自动检测并拉起 Docker 中的 Redis 和 Qdrant 基础设施
+    docker_compose_file = ROOT_DIR / "deploy" / "docker-compose.yml"
+    if docker_compose_file.exists():
+        print(" [0/5] Checking Docker infrastructure (Redis, Qdrant)...")
+        try:
+            # 自动执行 docker compose up -d
+            subprocess.run(
+                ["docker", "compose", "-f", str(docker_compose_file), "up", "-d"],
+                check=False
+            )
+        except FileNotFoundError:
+            print(" [!] Warning: 'docker' command not found. Please ensure Docker Desktop is running.")
 
     # 1. NATS Infrastructure Check (True readiness probe)
     if not mgr.start_nats_if_needed():
