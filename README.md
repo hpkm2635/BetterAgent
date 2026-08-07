@@ -85,5 +85,3 @@ pnpm --filter @proj-airi/stage-web dev
 
 * **Airi 项目**：[moeru-ai/airi](https://github.com/moeru-ai/airi)
 ```
-
----
