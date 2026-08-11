@@ -74,6 +74,12 @@ func (ce *ClockEngine) onTick(now time.Time) {
 	emotionSig := ce.emotionalState.CheckTrigger()
 	ce.stateMachine.EvaluateTick(isSleepHours, emotionSig)
 
+	// Bound chatStates map growth: evict IDLE chats that have been inactive
+	// for a while (e.g. one-off WebGateway sessions that never return).
+	if pruned := ce.stateMachine.PruneInactive(ChatStateInactivityTTL); pruned > 0 {
+		ce.logger.Debug("Pruned inactive chat state machines", zap.Int("pruned", pruned))
+	}
+
 	// Determine time of day string
 	timeOfDay := "afternoon"
 	if hour >= 6 && hour < 12 {

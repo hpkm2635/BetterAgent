@@ -1,5 +1,9 @@
+import logging
 from typing import Dict, Any, Optional
 from services.cognitive.tools.base_tool import BaseTool
+from services.cognitive.tools.validation import is_safe_media_filename
+
+logger = logging.getLogger("telegram_action_tool")
 
 
 class TelegramActionTool(BaseTool):
@@ -37,6 +41,13 @@ class TelegramActionTool(BaseTool):
                       action_type: str,
                       sticker_id: Optional[str] = None,
                       reaction_emoji: Optional[str] = None) -> Dict[str, Any]:
+        # sticker_id is model-controlled and is used downstream as a local
+        # filename -- reject anything that isn't a bare filename so it can
+        # never be used to reference a file outside the managed temp dir.
+        if sticker_id is not None and not is_safe_media_filename(sticker_id):
+            logger.warning(f"Rejected unsafe sticker_id from LLM tool call: {sticker_id!r}")
+            sticker_id = None
+
         return {
             "status": "success",
             "action_type": action_type,

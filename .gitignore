@@ -32,6 +32,8 @@ out/
 .output/
 .eslintcache/
 .vite-inspect/
+.turbo/
+**/.turbo/
 **/*.tsbuildinfo
 
 # ==========================================
@@ -76,7 +78,7 @@ temp/
 *.mp4
 
 # ==========================================
-# 7. IDE 与操作系统垃圾
+# 7. IDE、AI 助手与操作系统临时文件
 # ==========================================
 .DS_Store
 Thumbs.db
@@ -84,6 +86,15 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/tasks.json
 .idea/
+
+# AI 助手本地运行状态与缓存 (Claude / Cursor / Gemini)
+.devcontainer/
+.claude/
+**/.claude/
+.cursor/
+**/.cursor/
+.gemini/
+**/.gemini/
 
 # ==========================================
 # 版权资产隔离 (Booth 购买的付费 3D/VRM 模型)

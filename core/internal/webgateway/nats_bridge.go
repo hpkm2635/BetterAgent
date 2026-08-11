@@ -94,10 +94,10 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 	case "user.text":
 		var p UserTextMessagePayload
 		if err := json.Unmarshal(wsMsg.Payload, &p); err == nil && p.Text != "" {
-			chatID := p.ChatID
-			if chatID == 0 {
-				chatID = session.ChatID
-			}
+			// chat_id is always pinned to the authenticated session, never
+			// taken from the message body -- otherwise a client could
+			// address (and read the memory of) an arbitrary chat_id per message.
+			chatID := session.ChatID
 
 			var currentGen uint64 = 1
 			if b.csm != nil {
@@ -117,7 +117,9 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 			}
 
 			b.logger.Info("WebGateway User Text -> NATS agent.inbound_message", zap.Int64("chat_id", chatID), zap.Uint64("gen_id", currentGen), zap.String("text", p.Text))
-			_ = b.bus.Publish(bus.SubjectInboundMessage, "web_gateway", inbound)
+			if err := b.bus.Publish(bus.SubjectInboundMessage, "web_gateway", inbound); err != nil {
+				b.logger.Error("Failed to publish InboundMessage to NATS", zap.Int64("chat_id", chatID), zap.Error(err))
+			}
 
 			// 1. Central State Machine transition to THINKING
 			if b.csm != nil {
@@ -143,7 +145,9 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 				reasoningReq, err := b.bus.Request(bus.SubjectEnrichContextReq, "web_gateway", req, 5*time.Second)
 				if err != nil {
 					b.logger.Warn("WebGateway EnrichContext timeout/fallback to async publish", zap.Error(err))
-					_ = b.bus.Publish(bus.SubjectEnrichContextReq, "web_gateway", req)
+					if pubErr := b.bus.Publish(bus.SubjectEnrichContextReq, "web_gateway", req); pubErr != nil {
+						b.logger.Error("Failed to publish EnrichContextReq fallback to NATS", zap.Int64("chat_id", cID), zap.Error(pubErr))
+					}
 					return
 				}
 				if reasoningReq.ChatID == 0 {
@@ -153,7 +157,9 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 					reasoningReq.UserID = cID
 				}
 				b.logger.Info("WebGateway EnrichContext -> NATS agent.reasoning_request to Python Cognitive Engine", zap.Int64("chat_id", cID))
-				_ = b.bus.Publish(bus.SubjectReasoningRequest, "web_gateway", reasoningReq)
+				if err := b.bus.Publish(bus.SubjectReasoningRequest, "web_gateway", reasoningReq); err != nil {
+					b.logger.Error("Failed to publish ReasoningRequest to NATS", zap.Int64("chat_id", cID), zap.Error(err))
+				}
 			}(chatID, enrichReq)
 		}
 
@@ -176,8 +182,12 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 			SourceChannel: "web",
 		}
 		b.logger.Info("⚡ User Speech Interrupt -> NATS agent.stream.cancel_req & agent.user.interrupt", zap.Int64("chat_id", chatID), zap.Uint64("gen_id", newGenID))
-		_ = b.bus.Publish(bus.SubjectStreamCancelReq, "web_gateway", cancelPayload)
-		_ = b.bus.Publish(bus.SubjectUserInterrupt, "web_gateway", cancelPayload)
+		if err := b.bus.Publish(bus.SubjectStreamCancelReq, "web_gateway", cancelPayload); err != nil {
+			b.logger.Error("Failed to publish StreamCancelReq to NATS", zap.Int64("chat_id", chatID), zap.Error(err))
+		}
+		if err := b.bus.Publish(bus.SubjectUserInterrupt, "web_gateway", cancelPayload); err != nil {
+			b.logger.Error("Failed to publish UserInterrupt to NATS", zap.Int64("chat_id", chatID), zap.Error(err))
+		}
 
 		// 2s Auto-Recovery Timer for CANCELLING state if no user speech follows
 		go func(cID int64, targetGen uint64) {
@@ -191,7 +201,9 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 					Reason:        "cancel_ack_auto_idle",
 					SourceChannel: "web",
 				}
-				_ = b.bus.Publish(bus.SubjectStreamCancelAck, "web_gateway", ackPayload)
+				if err := b.bus.Publish(bus.SubjectStreamCancelAck, "web_gateway", ackPayload); err != nil {
+					b.logger.Error("Failed to publish StreamCancelAck to NATS", zap.Int64("chat_id", cID), zap.Error(err))
+				}
 			}
 		}(chatID, newGenID)
 
@@ -201,10 +213,8 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 	case "user.vision_frame":
 		var p UserVisionFramePayload
 		if err := json.Unmarshal(wsMsg.Payload, &p); err == nil && p.ImageBase64 != "" {
-			chatID := p.ChatID
-			if chatID == 0 {
-				chatID = session.ChatID
-			}
+			// See user.text above: chat_id always comes from the session, never the payload.
+			chatID := session.ChatID
 
 			format := p.Format
 			if format == "" {
@@ -228,7 +238,9 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 				zap.String("source_type", sourceType),
 				zap.Int("image_base64_len", len(p.ImageBase64)),
 			)
-			_ = b.bus.Publish(bus.SubjectVisionFrame, "web_gateway", visionFrame)
+			if err := b.bus.Publish(bus.SubjectVisionFrame, "web_gateway", visionFrame); err != nil {
+				b.logger.Error("Failed to publish VisionFrame to NATS", zap.Int64("chat_id", chatID), zap.Error(err))
+			}
 		}
 
 	default:

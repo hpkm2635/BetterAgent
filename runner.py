@@ -27,6 +27,16 @@ BIN_DIR = ROOT_DIR / "bin"
 LOGS_DIR.mkdir(exist_ok=True)
 BIN_DIR.mkdir(exist_ok=True)
 
+# Load root .env into this process's environment BEFORE spawning any child
+# process (native nats-server, `docker compose`, Go core, Python services),
+# so NATS_USER/NATS_PASSWORD and other secrets are inherited consistently
+# regardless of which working directory runner.py was launched from.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT_DIR / ".env")
+except ImportError:
+    pass
+
 IS_WINDOWS = os.name == "nt"
 GO_BINARY_NAME = "betteragent_core.exe" if IS_WINDOWS else "betteragent-core"
 GO_BINARY_PATH = BIN_DIR / GO_BINARY_NAME
@@ -230,15 +240,31 @@ def wait_for_readiness(
 
 
 def build_go_core_if_needed() -> bool:
-    """Builds Go core binary if not present."""
-    if GO_BINARY_PATH.exists():
-        print(f" [✓] Go Core binary found at {GO_BINARY_PATH}")
+    """Builds Go core binary if missing, or rebuilds it if any .go source
+    file under core/ is newer than the existing binary. Without this
+    staleness check, a binary compiled before a Go code change (e.g. before
+    NATS auth was added) would silently keep running forever -- it looks
+    "installed" but is actually behaviorally out of date."""
+    core_dir = ROOT_DIR / "core"
+
+    needs_build = not GO_BINARY_PATH.exists()
+    if not needs_build:
+        try:
+            binary_mtime = GO_BINARY_PATH.stat().st_mtime
+            needs_build = any(
+                go_file.stat().st_mtime > binary_mtime
+                for go_file in core_dir.rglob("*.go")
+            )
+        except OSError:
+            needs_build = True
+
+    if not needs_build:
+        print(f" [✓] Go Core binary found at {GO_BINARY_PATH} (up to date)")
         return True
 
     go_cmd = "go.exe" if IS_WINDOWS else "go"
     try:
-        print(" [!] Go Core binary missing. Attempting to build with 'go build'...")
-        core_dir = ROOT_DIR / "core"
+        print(" [!] Go Core binary missing or stale. Rebuilding with 'go build'...")
         cmd = [go_cmd, "build", "-o", str(GO_BINARY_PATH), "./cmd/main.go"]
         res = subprocess.run(cmd, cwd=str(core_dir), capture_output=True, text=True)
         if res.returncode == 0 and GO_BINARY_PATH.exists():
@@ -273,6 +299,13 @@ class ServiceManager:
             print(" [✓] NATS Server is already running on port 4222.")
             return True
 
+        nats_user = os.environ.get("NATS_USER")
+        nats_password = os.environ.get("NATS_PASSWORD")
+        if not nats_user or not nats_password:
+            print(" [✗] NATS_USER / NATS_PASSWORD are not set in .env. Refusing to start an unauthenticated NATS server.")
+            print("     Copy .env.example to .env and set both values (see NATS_USER/NATS_PASSWORD).")
+            return False
+
         # 1. 如果本地没有 nats-server，自动调用 install_local_deps 脚本下载！
         if not NATS_BINARY_PATH.exists():
             print(" [!] NATS binary missing in bin/. Auto-downloading via install_local_deps.py...")
@@ -281,15 +314,29 @@ class ServiceManager:
                 download_nats()
             except Exception as e:
                 print(f" [✗] Failed to auto-download NATS: {e}")
-                
+
         if NATS_BINARY_PATH.exists():
-            print(" [1/5] Starting native NATS Server...")
+            print(" [1/5] Starting native NATS Server (with auth)...")
             nats_log = open(LOGS_DIR / "nats_server.log", "a", encoding="utf-8")
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
             preexec = get_linux_pdeathsig_preexec()
 
+            # Deliberately NOT binding to a specific loopback address (e.g.
+            # -a 127.0.0.1) here: clients connect via the hostname
+            # "localhost", which can resolve to ::1 or 127.0.0.1 depending on
+            # OS resolver order. An earlier attempt to bind -a 127.0.0.1 broke
+            # every Python NATS client on Windows (nats.py's asyncio transport
+            # tries resolved addresses sequentially with no Happy-Eyeballs
+            # fallback, so a slow/blocked ::1 attempt exhausted the connect
+            # timeout before ever trying 127.0.0.1) while the Go core kept
+            # working (Go's net.Dial races IPv4/IPv6 concurrently by
+            # default). Leaving this unbound (dual-stack default) accepts
+            # both ::1 and 127.0.0.1 unambiguously. NATS_USER/NATS_PASSWORD
+            # auth remains the actual security boundary here -- see
+            # docs/SECURITY.md §2.8.
+            nats_cmd = [str(NATS_BINARY_PATH), "-js", "--user", nats_user, "--pass", nats_password]
             proc = subprocess.Popen(
-                [str(NATS_BINARY_PATH), "-js"],
+                nats_cmd,
                 stdout=nats_log,
                 stderr=subprocess.STDOUT,
                 cwd=str(ROOT_DIR),
@@ -300,7 +347,7 @@ class ServiceManager:
 
             self.services["nats-server"] = {
                 "proc": proc,
-                "cmd": [str(NATS_BINARY_PATH), "-js"],
+                "cmd": nats_cmd,
                 "out_fd": nats_log,
                 "err_fd": None,
                 "restart": True,
@@ -593,14 +640,15 @@ def main():
     
     # 0. 自动检测并拉起 Docker 中的 Redis 和 Qdrant 基础设施
     docker_compose_file = ROOT_DIR / "deploy" / "docker-compose.yml"
+    env_file = ROOT_DIR / ".env"
     if docker_compose_file.exists():
         print(" [0/5] Checking Docker infrastructure (Redis, Qdrant)...")
         try:
-            # 自动执行 docker compose up -d
-            subprocess.run(
-                ["docker", "compose", "-f", str(docker_compose_file), "up", "-d"],
-                check=False
-            )
+            cmd = ["docker", "compose", "-f", str(docker_compose_file)]
+            if env_file.exists():
+                cmd.extend(["--env-file", str(env_file)])
+            cmd.extend(["up", "-d"])
+            subprocess.run(cmd, check=False)
         except FileNotFoundError:
             print(" [!] Warning: 'docker' command not found. Please ensure Docker Desktop is running.")
 

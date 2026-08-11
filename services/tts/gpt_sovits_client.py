@@ -12,6 +12,19 @@ from services.tts.audio_normalizer import AudioNormalizer, add_wav_header
 logger = logging.getLogger("gpt_sovits_client")
 
 
+import re
+
+def sanitize_text_for_tts(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r"\.{2,}", "，", text)
+    text = re.sub(r"…+", "，", text)
+    text = re.sub(r"！{2,}", "！", text)
+    text = re.sub(r"？{2,}", "？", text)
+    text = re.sub(r"，{2,}", "，", text)
+    return text.strip()
+
+
 class GPTSoVITSClient:
     """
     GPT-SoVITS TTS Async Client connecting to local FastAPI (http://127.0.0.1:9880/tts).
@@ -28,6 +41,8 @@ class GPTSoVITSClient:
         if not text or not text.strip():
             return
 
+        text = sanitize_text_for_tts(text)
+
         persona_data = PersonaLoader.load_active_persona()
         tts_cfg = persona_data.get("tts", {})
         prompt_audio = tts_cfg.get("prompt_audio", "config/audio/vocal_patra3.wav_10.wav")
@@ -43,10 +58,10 @@ class GPTSoVITSClient:
             "prompt_lang": prompt_lang,
             "top_k": 15,
             "top_p": 1.0,
-            "temperature": 0.8,
-            "text_split_method": "cut5",
+            "temperature": 0.7,
+            "text_split_method": "cut0",
             "batch_size": 1,
-            "speed_factor": 0.9,
+            "speed_factor": 1.0,
             "streaming_mode": True,
             "media_type": "raw",
         }
@@ -69,8 +84,7 @@ class GPTSoVITSClient:
                                     if usable_bytes > 0:
                                         frame_bytes = bytes(pcm_buffer[:usable_bytes])
                                         pcm_buffer = pcm_buffer[usable_bytes:]
-                                        norm_chunk = AudioNormalizer.normalize_pcm_16bit(frame_bytes)
-                                        wav_chunk = add_wav_header(norm_chunk, sample_rate=self.sample_rate)
+                                        wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
                                         yield (wav_chunk, "wav")
                         except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as spe:
                             logger.debug(f"GPT-SoVITS HTTP stream completed with connection close: {spe}")
@@ -78,8 +92,7 @@ class GPTSoVITSClient:
                         if pcm_buffer and len(pcm_buffer) >= 2:
                             usable_bytes = (len(pcm_buffer) // 2) * 2
                             frame_bytes = bytes(pcm_buffer[:usable_bytes])
-                            norm_chunk = AudioNormalizer.normalize_pcm_16bit(frame_bytes)
-                            wav_chunk = add_wav_header(norm_chunk, sample_rate=self.sample_rate)
+                            wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
                             yield (wav_chunk, "wav")
                         return
         except ModuleNotFoundError:
@@ -110,15 +123,13 @@ class GPTSoVITSClient:
                     if usable_bytes > 0:
                         frame_bytes = bytes(pcm_buffer[:usable_bytes])
                         pcm_buffer = pcm_buffer[usable_bytes:]
-                        norm_chunk = AudioNormalizer.normalize_pcm_16bit(frame_bytes)
-                        wav_chunk = add_wav_header(norm_chunk, sample_rate=self.sample_rate)
+                        wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
                         yield (wav_chunk, "wav")
 
                 if pcm_buffer and len(pcm_buffer) >= 2:
                     usable_bytes = (len(pcm_buffer) // 2) * 2
                     frame_bytes = bytes(pcm_buffer[:usable_bytes])
-                    norm_chunk = AudioNormalizer.normalize_pcm_16bit(frame_bytes)
-                    wav_chunk = add_wav_header(norm_chunk, sample_rate=self.sample_rate)
+                    wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
                     yield (wav_chunk, "wav")
                 return
             except Exception as err:

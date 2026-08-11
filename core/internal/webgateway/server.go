@@ -3,6 +3,7 @@ package webgateway
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -15,16 +16,26 @@ import (
 	"betteragent-core/internal/engine"
 )
 
+// WebNamespaceOffset partitions all WebGateway-originated chat IDs into a
+// range that Telegram's numeric user/channel IDs can never reach, so a web
+// client can never address (and thus never read the memory of) a real
+// Telegram chat, even with a valid WEBGATEWAY_TOKEN.
+const WebNamespaceOffset int64 = 9_000_000_000_000_000
+
 type Server struct {
-	addr       string
-	sessions   *SessionManager
-	bridge     *NatsBridge
-	logger     *zap.Logger
-	httpServer *http.Server
+	addr           string
+	token          string
+	allowedOrigins []string
+	sessions       *SessionManager
+	bridge         *NatsBridge
+	logger         *zap.Logger
+	httpServer     *http.Server
 }
 
 func NewServer(
 	addr string,
+	token string,
+	allowedOrigins []string,
 	bus *bus.NatsBus,
 	csm *engine.CentralStateMachine,
 	emoState *emotion.EmotionalState,
@@ -36,10 +47,12 @@ func NewServer(
 	bridge := newNatsBridge(bus, sessions, csm, emoState, personality, circadian, logger)
 
 	return &Server{
-		addr:     addr,
-		sessions: sessions,
-		bridge:   bridge,
-		logger:   logger,
+		addr:           addr,
+		token:          token,
+		allowedOrigins: allowedOrigins,
+		sessions:       sessions,
+		bridge:         bridge,
+		logger:         logger,
 	}
 }
 
@@ -81,9 +94,29 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // Allow cross-origin WebSocket connections from local stage-web dev server
-	})
+	// Reject before upgrading: an anonymous WS client could otherwise pick
+	// any chat_id and read/inject into another user's conversation.
+	suppliedToken := r.URL.Query().Get("token")
+	if subtle.ConstantTimeCompare([]byte(suppliedToken), []byte(s.token)) != 1 {
+		s.logger.Warn("Rejected WebSocket handshake with invalid/missing token", zap.String("remote_addr", r.RemoteAddr))
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// The token check above is the real access control. Origin is a second,
+	// browser-only layer: if WEBGATEWAY_ALLOWED_ORIGINS is configured, only
+	// those origins may open cross-origin WebSockets (same-host and
+	// non-browser clients without an Origin header are always allowed
+	// regardless). Left unset, Origin isn't checked at all -- e.g. for a
+	// frontend served from a different domain than the Go core.
+	acceptOpts := &websocket.AcceptOptions{}
+	if len(s.allowedOrigins) > 0 {
+		acceptOpts.OriginPatterns = s.allowedOrigins
+	} else {
+		acceptOpts.InsecureSkipVerify = true
+	}
+
+	conn, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		s.logger.Warn("Failed to accept WebSocket upgrade", zap.Error(err))
 		return
@@ -118,19 +151,23 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// parseOrGenerateChatID resolves the chat_id for a new WebSocket session.
+// A client-supplied sub-id (for reconnecting to the same session across tabs)
+// is honored, but always folded into WebNamespaceOffset so it can never
+// collide with a real Telegram chat/user ID.
 func parseOrGenerateChatID(r *http.Request) int64 {
 	rawChatID := r.URL.Query().Get("chat_id")
 	if rawChatID != "" {
 		if parsed, err := strconv.ParseInt(rawChatID, 10, 64); err == nil && parsed > 0 {
-			return parsed
+			return WebNamespaceOffset + parsed
 		}
 	}
 
-	// Fallback: Generate random 64-bit ID in range [1000000, 999999999] for isolated web sessions
+	// Fallback: Generate random 64-bit sub-id in range [1000000, 999999999] for isolated web sessions
 	nBig, err := rand.Int(rand.Reader, big.NewInt(998999999))
 	if err == nil {
-		return nBig.Int64() + 1000000
+		return WebNamespaceOffset + nBig.Int64() + 1000000
 	}
 
-	return 900000001
+	return WebNamespaceOffset + 900000001
 }

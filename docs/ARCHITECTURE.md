@@ -2,6 +2,8 @@
 
 本文档为 `BetterAgent` 项目的文本化架构规范与系统需求说明书（SRS）。所有图纸均使用 **Mermaid** 格式描述，可以直接进行 Git 版本控制与 AI Agent 语义解析，防止设计资产“文档腐化”。
 
+> 各组件间的鉴权机制、信任边界与部署前检查清单见配套文档 [SECURITY.md](./SECURITY.md)。图中标注的 NATS / WebGateway 等通道均已要求鉴权，细节以该文档为准。
+
 ---
 
 ## 1. 系统总体拓扑架构 (System Topology & Microservices)

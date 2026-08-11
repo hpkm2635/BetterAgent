@@ -47,8 +47,20 @@ type GotdAdapter struct {
 	peerMu           sync.RWMutex
 	peerAccessHashes map[int64]int64
 	peerUsernames    map[int64]string
+	peerLastSeen     map[int64]time.Time
+	peerCachePruned  time.Time
 	textBuffer       map[int64][]string
 }
+
+// peerCacheIdleTTL/peerCachePruneEvery bound the growth of the AccessHash/
+// Username cache. It's a legitimate long-lived cache (avoids re-hitting
+// Telegram's API, which has its own flood-wait limits) bounded by real
+// MTProto interactions, so the TTL is generous -- this is defense in depth
+// against unbounded growth over a long-running process, not a hot path fix.
+const (
+	peerCacheIdleTTL    = 30 * 24 * time.Hour
+	peerCachePruneEvery = 24 * time.Hour
+)
 
 func NewGotdAdapter(
 	cfg *config.Config,
@@ -80,6 +92,7 @@ func NewGotdAdapter(
 		logger:           logger,
 		peerAccessHashes: make(map[int64]int64),
 		peerUsernames:    make(map[int64]string),
+		peerLastSeen:     make(map[int64]time.Time),
 		textBuffer:       make(map[int64][]string),
 	}
 
@@ -88,6 +101,12 @@ func NewGotdAdapter(
 	csm.SetTimeoutCallback(func(chatID int64, state engine.State) {
 		logger.Warn("State machine watchdog callback triggered: stopping typing heartbeat", zap.Int64("chat_id", chatID), zap.String("stuck_state", string(state)))
 		adapter.typingMgr.StopHeartbeat(chatID)
+		// Also drop any partially-buffered stream text: if IsFinal never
+		// arrives (crashed/buggy upstream), textBuffer would otherwise grow
+		// unbounded for that chat.
+		adapter.peerMu.Lock()
+		delete(adapter.textBuffer, chatID)
+		adapter.peerMu.Unlock()
 	})
 
 	sessionPath := "gotd.session.json"
@@ -196,6 +215,7 @@ func (a *GotdAdapter) Start(ctx context.Context) error {
 					for _, u := range d.Users {
 						if user, ok := u.AsNotEmpty(); ok && user.AccessHash != 0 {
 							a.peerAccessHashes[user.ID] = user.AccessHash
+							a.peerLastSeen[user.ID] = time.Now()
 							if user.Username != "" {
 								a.peerUsernames[user.ID] = user.Username
 							}
@@ -204,12 +224,14 @@ func (a *GotdAdapter) Start(ctx context.Context) error {
 					for _, ch := range d.Chats {
 						if channel, ok := ch.(*tg.Channel); ok && channel.AccessHash != 0 {
 							a.peerAccessHashes[-1000000000000-channel.ID] = channel.AccessHash
+							a.peerLastSeen[-1000000000000-channel.ID] = time.Now()
 						}
 					}
 				case *tg.MessagesDialogsSlice:
 					for _, u := range d.Users {
 						if user, ok := u.AsNotEmpty(); ok && user.AccessHash != 0 {
 							a.peerAccessHashes[user.ID] = user.AccessHash
+							a.peerLastSeen[user.ID] = time.Now()
 							if user.Username != "" {
 								a.peerUsernames[user.ID] = user.Username
 							}
@@ -218,9 +240,11 @@ func (a *GotdAdapter) Start(ctx context.Context) error {
 					for _, ch := range d.Chats {
 						if channel, ok := ch.(*tg.Channel); ok && channel.AccessHash != 0 {
 							a.peerAccessHashes[-1000000000000-channel.ID] = channel.AccessHash
+							a.peerLastSeen[-1000000000000-channel.ID] = time.Now()
 						}
 					}
 				}
+				a.pruneStalePeersLocked()
 				a.peerMu.Unlock()
 				a.logger.Info("Pre-populated Telegram peer AccessHash cache from dialogs", zap.Int("cached_peers", len(a.peerAccessHashes)))
 			}
@@ -261,6 +285,7 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 	if senderUser, found := e.Users[userID]; found && senderUser != nil {
 		if senderUser.AccessHash != 0 {
 			a.peerAccessHashes[userID] = senderUser.AccessHash
+			a.peerLastSeen[userID] = time.Now()
 		}
 		if senderUser.Username != "" {
 			a.peerUsernames[userID] = senderUser.Username
@@ -269,8 +294,10 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 	for chID, ch := range e.Channels {
 		if ch != nil && ch.AccessHash != 0 {
 			a.peerAccessHashes[-1000000000000-chID] = ch.AccessHash
+			a.peerLastSeen[-1000000000000-chID] = time.Now()
 		}
 	}
+	a.pruneStalePeersLocked()
 	a.peerMu.Unlock()
 
 	// Build InboundMessagePayload
@@ -342,7 +369,9 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 	}
 
 	// Publish InboundMessage to NATS
-	_ = a.bus.Publish(bus.SubjectInboundMessage, "gotd_adapter", inboundPayload)
+	if err := a.bus.Publish(bus.SubjectInboundMessage, "gotd_adapter", inboundPayload); err != nil {
+		a.logger.Error("Failed to publish InboundMessage to NATS", zap.Int64("chat_id", chatID), zap.Error(err))
+	}
 
 	// Central State Machine transition to THINKING for this chatID
 	a.stateMachine.TransitionToChat(chatID, engine.StateThinking, "inbound_message")
@@ -368,7 +397,9 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 	if err != nil {
 		a.logger.Warn("EnrichContext request timeout/failed, continuing via async pub", zap.Error(err))
 		// Publish async fallback request
-		_ = a.bus.Publish(bus.SubjectEnrichContextReq, "gotd_adapter", enrichReq)
+		if pubErr := a.bus.Publish(bus.SubjectEnrichContextReq, "gotd_adapter", enrichReq); pubErr != nil {
+			a.logger.Error("Failed to publish EnrichContextReq fallback to NATS", zap.Int64("chat_id", chatID), zap.Error(pubErr))
+		}
 		return nil
 	}
 
@@ -441,20 +472,15 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 		// Attempt to upload the local photo file to Telegram
 		photoSent := false
 		if action.PhotoPath != nil && *action.PhotoPath != "" {
-			photoPath := *action.PhotoPath
-			f, ferr := os.Open(photoPath)
-			if ferr != nil {
-				// Try alternate path relative to temp directory
-				altPath := filepath.Join("temp", filepath.Base(photoPath))
-				if fAlt, errAlt := os.Open(altPath); errAlt == nil {
-					f = fAlt
-					ferr = nil
-				} else if fParent, errParent := os.Open(filepath.Join("..", "temp", filepath.Base(photoPath))); errParent == nil {
-					f = fParent
-					ferr = nil
-				}
-			}
-			if ferr == nil {
+			// PhotoPath ultimately comes from LLM output via NATS -- treat as
+			// untrusted and resolve strictly within the managed temp dir.
+			// See docs/SECURITY.md §2.7.
+			resolvedPath, presolveErr := a.mediaMgr.ResolveMediaPath(*action.PhotoPath)
+			if presolveErr != nil {
+				a.logger.Warn("Rejected photo path outside managed temp dir", zap.String("reported_path", *action.PhotoPath), zap.Error(presolveErr))
+			} else if f, ferr := os.Open(resolvedPath); ferr != nil {
+				a.logger.Warn("Photo file not found", zap.String("path", resolvedPath), zap.Error(ferr))
+			} else {
 				defer f.Close()
 				data, rerr := io.ReadAll(f)
 				if rerr == nil {
@@ -481,8 +507,6 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 						}
 					}
 				}
-			} else {
-				a.logger.Warn("Photo file not found", zap.String("path", *action.PhotoPath), zap.Error(ferr))
 			}
 		}
 		// Fall back to sending text caption if photo failed
@@ -507,20 +531,17 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 		if action.StickerID != nil && *action.StickerID != "" {
 			inputPeer, perr := a.resolveInputPeer(ctx, action.ChatID)
 			if perr == nil {
-				stickerID := *action.StickerID
 				stickerSent := false
 
-				// Check if StickerID is a local webp/png/tgs sticker file
-				f, ferr := os.Open(stickerID)
-				if ferr != nil {
-					altPath := filepath.Join("temp", filepath.Base(stickerID))
-					if fAlt, errAlt := os.Open(altPath); errAlt == nil {
-						f = fAlt
-						ferr = nil
-					}
-				}
-
-				if ferr == nil {
+				// StickerID ultimately comes from LLM output via NATS -- treat
+				// as untrusted and resolve strictly within the managed temp
+				// dir. See docs/SECURITY.md §2.7.
+				resolvedPath, presolveErr := a.mediaMgr.ResolveMediaPath(*action.StickerID)
+				if presolveErr != nil {
+					a.logger.Warn("Rejected sticker path outside managed temp dir", zap.String("reported_sticker_id", *action.StickerID), zap.Error(presolveErr))
+				} else if f, ferr := os.Open(resolvedPath); ferr != nil {
+					a.logger.Warn("Sticker file not found", zap.String("path", resolvedPath), zap.Error(ferr))
+				} else {
 					defer f.Close()
 					data, rerr := io.ReadAll(f)
 					if rerr == nil {
@@ -552,7 +573,7 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 				}
 
 				if !stickerSent {
-					a.logger.Info("Sticker action processed for Telegram", zap.Int64("chat_id", action.ChatID), zap.String("sticker_id", stickerID))
+					a.logger.Info("Sticker action processed for Telegram", zap.Int64("chat_id", action.ChatID), zap.String("sticker_id", *action.StickerID))
 				}
 			} else {
 				status = "failed"
@@ -579,7 +600,7 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 
 		// IsFinal == true: Flush and send consolidated Telegram message
 		fullText := strings.Join(a.textBuffer[action.ChatID], "")
-		a.textBuffer[action.ChatID] = nil // Reset buffer
+		delete(a.textBuffer, action.ChatID) // Actually drop the key, not just nil the slice
 		a.peerMu.Unlock()
 
 		if fullText != "" {
@@ -627,6 +648,25 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 	}
 }
 
+// pruneStalePeersLocked sweeps peerAccessHashes/peerUsernames/peerLastSeen of
+// entries not seen for peerCacheIdleTTL, gated by peerCachePruneEvery so it
+// doesn't do a full scan on every call. Caller must hold a.peerMu (write lock).
+func (a *GotdAdapter) pruneStalePeersLocked() {
+	now := time.Now()
+	if now.Sub(a.peerCachePruned) < peerCachePruneEvery {
+		return
+	}
+	a.peerCachePruned = now
+
+	for peerID, seen := range a.peerLastSeen {
+		if now.Sub(seen) > peerCacheIdleTTL {
+			delete(a.peerAccessHashes, peerID)
+			delete(a.peerUsernames, peerID)
+			delete(a.peerLastSeen, peerID)
+		}
+	}
+}
+
 func (a *GotdAdapter) resolveInputPeer(ctx context.Context, chatID int64) (tg.InputPeerClass, error) {
 	if chatID > 0 {
 		a.peerMu.RLock()
@@ -652,9 +692,11 @@ func (a *GotdAdapter) resolveInputPeer(ctx context.Context, chatID int64) (tg.In
 			if u, ok := users[0].AsNotEmpty(); ok && u.AccessHash != 0 {
 				a.peerMu.Lock()
 				a.peerAccessHashes[chatID] = u.AccessHash
+				a.peerLastSeen[chatID] = time.Now()
 				if u.Username != "" {
 					a.peerUsernames[chatID] = u.Username
 				}
+				a.pruneStalePeersLocked()
 				a.peerMu.Unlock()
 				a.logger.Info("Fetched MTProto user AccessHash on demand via UsersGetUsers", zap.Int64("user_id", chatID))
 				return &tg.InputPeerUser{UserID: chatID, AccessHash: u.AccessHash}, nil

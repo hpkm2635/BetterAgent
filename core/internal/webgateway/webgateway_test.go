@@ -51,11 +51,12 @@ func TestWSMessageMarshalUnmarshal(t *testing.T) {
 }
 
 func TestDynamicChatIDResolution(t *testing.T) {
-	// Test 1: URL with explicit chat_id parameter
+	// Test 1: URL with explicit chat_id parameter is folded into the web namespace,
+	// so it can never collide with a real Telegram chat/user ID.
 	reqWithQuery := httptest.NewRequest("GET", "http://localhost:8080/ws?chat_id=2024", nil)
 	chatID1 := parseOrGenerateChatID(reqWithQuery)
-	if chatID1 != 2024 {
-		t.Errorf("expected parsed chat_id 2024, got %d", chatID1)
+	if chatID1 != WebNamespaceOffset+2024 {
+		t.Errorf("expected parsed chat_id %d, got %d", WebNamespaceOffset+2024, chatID1)
 	}
 
 	// Test 2: URL without chat_id parameter generates unique ID

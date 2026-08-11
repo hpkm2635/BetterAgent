@@ -392,6 +392,161 @@ const playbackManager = createPlaybackManager<AudioBuffer>({
   ownerOverflowPolicy: 'steal-oldest',
 })
 
+// --- BetterAgent pre-synthesized audio playback ---
+// BetterAgent's own TTS service (GPT-SoVITS) already synthesizes audio
+// server-side and streams the finished chunks over betteragent-ws.ts's
+// onAudioChunk. Re-synthesizing that text through speechPipeline's
+// cloud-provider tts() below would be the wrong voice (and a no-op by
+// default, since activeSpeechProvider is 'speech-noop' unless the user
+// configured their own cloud TTS) -- so we play the audio directly.
+//
+// This does NOT go through playbackManager.schedule(): that hand-off
+// between queued items is driven by JS promises/callbacks
+// (source.onended -> finalize() -> pick next item -> start()), which is
+// fine for AIRI's own one-item-per-sentence items but produces an audible
+// gap on EVERY chunk boundary here -- GPT-SoVITS streams dozens of small
+// chunks per sentence (23-87 observed for a single short sentence), so
+// that per-chunk gap becomes constant audible stutter, and each
+// start/stop also toggled nowSpeaking, which is what caused the flicker.
+// Instead we schedule each AudioBufferSourceNode at a precise, precomputed
+// time on audioContext's own clock -- standard gapless-streaming technique,
+// immune to JS timing jitter between chunks.
+const BETTERAGENT_SILENCE_TIMEOUT_MS = 600
+let betterAgentBridgePollId: ReturnType<typeof setInterval> | undefined
+let betterAgentAudioUnsub: (() => void) | undefined
+let betterAgentNextChunkStartTime = 0
+let betterAgentSilenceTimer: ReturnType<typeof setTimeout> | undefined
+const betterAgentActiveSources = new Set<AudioBufferSourceNode>()
+
+// Chunks arrive rapidly (dozens per sentence) and decoding is async, so
+// naive fire-and-forget playback can decode/schedule chunk N+1 before
+// chunk N if the browser's audio decoder happens to resolve them out of
+// order -- chaining onto this promise forces strictly sequential
+// processing in receive order. betterAgentGeneration lets an interrupt
+// (barge-in / new message / mute) invalidate chunks that are already
+// queued in the chain so they get silently dropped instead of playing
+// after the "stop" was requested.
+let betterAgentProcessingChain: Promise<void> = Promise.resolve()
+let betterAgentGeneration = 0
+
+function stopBetterAgentAudio(_reason: string) {
+  betterAgentGeneration++
+  betterAgentProcessingChain = Promise.resolve()
+  if (betterAgentSilenceTimer) {
+    clearTimeout(betterAgentSilenceTimer)
+    betterAgentSilenceTimer = undefined
+  }
+  for (const source of [...betterAgentActiveSources]) {
+    try {
+      source.stop()
+      source.disconnect()
+    }
+    catch {}
+  }
+  betterAgentActiveSources.clear()
+  betterAgentNextChunkStartTime = 0
+  if (nowSpeaking.value)
+    resetSpeakingState()
+}
+
+async function playBetterAgentAudioChunk(audioBase64: string, generation: number) {
+  if (!audioContext || speechMuted.value)
+    return
+
+  const binary = atob(audioBase64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++)
+    bytes[i] = binary.charCodeAt(i)
+
+  const audioBuffer = await audioContext.decodeAudioData(bytes.buffer)
+  if (generation !== betterAgentGeneration)
+    return // stopped while decoding
+
+  if (audioContext.state === 'suspended') {
+    try {
+      await audioContext.resume()
+    }
+    catch {
+      return
+    }
+    if (generation !== betterAgentGeneration)
+      return
+  }
+
+  if (stageModelRenderer.value === 'live2d' && !lipSyncStarted.value) {
+    setupAnalyser()
+    await setupLipSync()
+    if (generation !== betterAgentGeneration)
+      return
+  }
+
+  const source = audioContext.createBufferSource()
+  source.buffer = audioBuffer
+  source.connect(audioContext.destination)
+  if (audioAnalyser.value)
+    source.connect(audioAnalyser.value)
+  if (lipSyncNode.value)
+    source.connect(lipSyncNode.value)
+
+  // Back-to-back scheduling: if the previous chunk's end time is still
+  // ahead of us, start exactly there (gapless); otherwise (first chunk,
+  // or a real pause longer than the queued audio) start immediately.
+  const startTime = Math.max(audioContext.currentTime, betterAgentNextChunkStartTime)
+  betterAgentNextChunkStartTime = startTime + audioBuffer.duration
+
+  betterAgentActiveSources.add(source)
+  source.onended = () => {
+    betterAgentActiveSources.delete(source)
+    try {
+      source.disconnect()
+    }
+    catch {}
+  }
+
+  source.start(startTime)
+
+  nowSpeaking.value = true
+  if (betterAgentSilenceTimer)
+    clearTimeout(betterAgentSilenceTimer)
+  // Only actually stop "speaking" after chunks have stopped arriving for a
+  // bit -- covers both the tiny gaps between chunks within a sentence and
+  // the short pause between sentences, without needing an explicit
+  // end-of-utterance signal from the backend (tts_service.py never sets
+  // is_final on these chunks today).
+  betterAgentSilenceTimer = setTimeout(() => {
+    betterAgentSilenceTimer = undefined
+    resetSpeakingState()
+  }, BETTERAGENT_SILENCE_TIMEOUT_MS)
+}
+
+function queueBetterAgentAudioChunk(audioBase64: string) {
+  const generation = betterAgentGeneration
+  betterAgentProcessingChain = betterAgentProcessingChain
+    .then(() => {
+      if (generation !== betterAgentGeneration)
+        return
+      return playBetterAgentAudioChunk(audioBase64, generation)
+    })
+    .catch((error) => {
+      console.error('[Stage] Failed to decode/play BetterAgent audio chunk', error)
+    })
+}
+
+if (typeof window !== 'undefined') {
+  betterAgentBridgePollId = setInterval(() => {
+    const bridge = (window as any).__betterAgentWSBridge
+    if (bridge) {
+      clearInterval(betterAgentBridgePollId)
+      betterAgentBridgePollId = undefined
+      betterAgentAudioUnsub = bridge.onAudioChunk((audioBase64: string) => {
+        queueBetterAgentAudioChunk(audioBase64)
+      })
+      // eslint-disable-next-line no-console
+      console.log('[BetterAgent] Hooked BetterAgent WS Bridge audio chunks to Stage gapless player!')
+    }
+  }, 300)
+}
+
 /**
  * Classifies chat auto-TTS voice usage before forwarding analytics to the server.
  */
@@ -712,6 +867,7 @@ function stopSpeechOutput(reason: string) {
   currentSession = null
   speechPipeline.stopAll(reason)
   playbackManager.stopAll(reason)
+  stopBetterAgentAudio(reason)
   resetAssistantSpeechSurface(reason)
 }
 
@@ -836,6 +992,7 @@ watch(speechMuted, (muted) => {
 chatHookCleanups.push(onBeforeMessageComposed(async (_message, context) => {
   officialAutoTtsTrackedForTurn = false
   playbackManager.stopAll('new-message')
+  stopBetterAgentAudio('new-message')
   resetAssistantSpeechSurface('new-message')
 
   currentSession?.cancel('new-message')
@@ -1041,6 +1198,10 @@ onUnmounted(() => {
   resetLive2dLipSync()
   chatHookCleanups.forEach(dispose => dispose?.())
   viewUpdateCleanups.forEach(dispose => dispose?.())
+  if (betterAgentBridgePollId)
+    clearInterval(betterAgentBridgePollId)
+  betterAgentAudioUnsub?.()
+  stopBetterAgentAudio('unmount')
   // Tear down any in-flight TTS session (segmenter or streaming) and
   // drain playback. Without this, a still-open streaming ws keeps
   // feeding sentences into a playbackManager whose listeners still

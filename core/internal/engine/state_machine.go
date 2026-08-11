@@ -35,6 +35,12 @@ const (
 	StreamingTTSTimeoutDuration    = 30 * time.Second
 	CancellingTimeoutDuration       = 10 * time.Second
 	ExecutingActionTimeoutDuration = 45 * time.Second
+
+	// ChatStateInactivityTTL bounds how long an IDLE per-chat state machine is
+	// kept around before CentralStateMachine.PruneInactive evicts it. Prevents
+	// unbounded growth of chatStates from chats/sessions that never come back
+	// (e.g. throwaway WebGateway sessions). Never evicts a chat mid-conversation.
+	ChatStateInactivityTTL = 2 * time.Hour
 )
 
 // IsValidTransition enforces state machine transition rules for Digital Human & Multimodal Agent
@@ -288,6 +294,34 @@ func (sm *CentralStateMachine) getOrCreateChatSM(chatID int64) *ChatStateMachine
 		sm.chatStates[chatID] = csm
 	}
 	return csm
+}
+
+// PruneInactive evicts chat state machines that are IDLE and have been
+// untouched for longer than maxIdle. It never evicts a chat mid-conversation
+// (only IDLE is eligible), so eviction is always safe: if the chat becomes
+// active again, getOrCreateChatSM transparently recreates a fresh IDLE entry.
+// Returns the number of entries evicted.
+func (sm *CentralStateMachine) PruneInactive(maxIdle time.Duration) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	pruned := 0
+	now := time.Now()
+	for chatID, csm := range sm.chatStates {
+		csm.mu.Lock()
+		idle := csm.currentState == StateIdle && now.Sub(csm.lastTransition) > maxIdle
+		if idle && csm.watchdogTimer != nil {
+			csm.watchdogTimer.Stop()
+			csm.watchdogTimer = nil
+		}
+		csm.mu.Unlock()
+
+		if idle {
+			delete(sm.chatStates, chatID)
+			pruned++
+		}
+	}
+	return pruned
 }
 
 func (sm *CentralStateMachine) GetCurrentState() State {

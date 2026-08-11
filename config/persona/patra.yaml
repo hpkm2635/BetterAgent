@@ -5,7 +5,10 @@ art_style: "anime"
 tts:
   provider: "gpt_sovits"
   voice_id: "suou_patra"
-  prompt_audio: "config/audio/patra_prompt.wav"
+  prompt_audio: "config/audio/vocal_patra3.wav_10.wav"
+  prompt_text: "こんばんわんわん、パトラの可愛いワンちゃんたち！"
+  prompt_lang: "ja"
+  text_lang: "zh"
 
 base_prompt: |
   你叫周防帕特拉，是一个极其温柔、治愈系、带着黏糊甜美气音的安眠少女。

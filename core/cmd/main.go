@@ -35,8 +35,15 @@ func main() {
 
 	cfg := config.LoadConfig()
 
+	if cfg.NatsUser == "" || cfg.NatsPassword == "" {
+		logger.Fatal("NATS_USER / NATS_PASSWORD are not set. Refusing to start with an unauthenticated message bus (see .env.example).")
+	}
+	if cfg.WebGatewayToken == "" {
+		logger.Fatal("WEBGATEWAY_TOKEN is not set. Refusing to start an unauthenticated WebGateway WebSocket endpoint (see .env.example).")
+	}
+
 	// Initialize NATS Bus
-	natsBus, err := bus.NewNatsBus(cfg.NatsURL, logger)
+	natsBus, err := bus.NewNatsBus(cfg.NatsURL, cfg.NatsUser, cfg.NatsPassword, logger)
 	if err != nil {
 		logger.Fatal("Failed to connect to NATS", zap.Error(err))
 	}
@@ -54,7 +61,7 @@ func main() {
 	clockEngine := engine.NewClockEngine(30*time.Second, natsBus, csm, emoState, circadian, logger)
 
 	// Initialize WebGateway WebSocket Server (Port 8080)
-	webServer := webgateway.NewServer(":8080", natsBus, csm, emoState, personality, circadian, logger)
+	webServer := webgateway.NewServer(":8080", cfg.WebGatewayToken, cfg.WebGatewayAllowedOrigins, natsBus, csm, emoState, personality, circadian, logger)
 	if err := webServer.Start(); err != nil {
 		logger.Error("Failed to start WebGateway server", zap.Error(err))
 	}

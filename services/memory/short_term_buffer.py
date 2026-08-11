@@ -15,10 +15,14 @@ class ShortTermMemoryBuffer:
         self.buffers: Dict[int, List[Dict[str, Any]]] = collections.defaultdict(list)
         self.redis_client = None
 
-        redis_url = get_config_val("infrastructure.redis_url", os.getenv("REDIS_URL", "redis://localhost:6379"))
+        # 127.0.0.1, not "localhost" -- see docs/SECURITY.md §2.8.
+        redis_url = get_config_val("infrastructure.redis_url", os.getenv("REDIS_URL", "redis://127.0.0.1:6379"))
+        redis_password = os.getenv("REDIS_PASSWORD")
+        if not redis_password:
+            logger.warning("REDIS_PASSWORD is not set -- connecting to Redis without authentication (see .env.example)")
         try:
             import redis
-            self.redis_client = redis.Redis.from_url(redis_url, decode_responses=True, socket_connect_timeout=2)
+            self.redis_client = redis.Redis.from_url(redis_url, password=redis_password, decode_responses=True, socket_connect_timeout=2)
             self.redis_client.ping()
             logger.info(f"ShortTermMemoryBuffer connected to Redis persistent storage at {redis_url}")
         except Exception as e:

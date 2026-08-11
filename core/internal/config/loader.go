@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
@@ -52,9 +53,16 @@ type Config struct {
 	TelegramPhone   string
 	GeminiAPIKey    string
 	NatsURL         string
+	NatsUser        string
+	NatsPassword    string
 	RedisURL        string
 	QdrantURL       string
-	YAML            YAMLConfig
+	WebGatewayToken string
+	// WebGatewayAllowedOrigins, if set, restricts which browser Origins may
+	// open the /ws WebSocket (glob patterns, e.g. "example.com", "*.example.com").
+	// If empty, Origin is not checked (WEBGATEWAY_TOKEN is still required either way).
+	WebGatewayAllowedOrigins []string
+	YAML                     YAMLConfig
 }
 
 func LoadConfig() *Config {
@@ -89,29 +97,41 @@ func LoadConfig() *Config {
 		}
 	}
 
-	// Environment variable overrides for infrastructure
+	// Environment variable overrides for infrastructure.
+	// Defaults use 127.0.0.1 explicitly, not "localhost" -- see docs/SECURITY.md §2.8.
 	natsURL := getEnv("NATS_URL", yc.Infrastructure.NatsURL)
 	if natsURL == "" {
-		natsURL = "nats://localhost:4222"
+		natsURL = "nats://127.0.0.1:4222"
 	}
 	redisURL := getEnv("REDIS_URL", yc.Infrastructure.RedisURL)
 	if redisURL == "" {
-		redisURL = "redis://localhost:6379"
+		redisURL = "redis://127.0.0.1:6379"
 	}
 	qdrantURL := getEnv("QDRANT_URL", yc.Infrastructure.QdrantURL)
 	if qdrantURL == "" {
-		qdrantURL = "http://localhost:6333"
+		qdrantURL = "http://127.0.0.1:6333"
+	}
+
+	var allowedOrigins []string
+	for _, o := range strings.Split(getEnv("WEBGATEWAY_ALLOWED_ORIGINS", ""), ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			allowedOrigins = append(allowedOrigins, trimmed)
+		}
 	}
 
 	return &Config{
-		TelegramAPIID:   apiID,
-		TelegramAPIHash: getEnv("TELEGRAM_API_HASH", ""),
-		TelegramPhone:   getEnv("TELEGRAM_PHONE", ""),
-		GeminiAPIKey:    getEnv("GEMINI_API_KEY", ""),
-		NatsURL:         natsURL,
-		RedisURL:        redisURL,
-		QdrantURL:       qdrantURL,
-		YAML:            yc,
+		TelegramAPIID:            apiID,
+		TelegramAPIHash:          getEnv("TELEGRAM_API_HASH", ""),
+		TelegramPhone:            getEnv("TELEGRAM_PHONE", ""),
+		GeminiAPIKey:             getEnv("GEMINI_API_KEY", ""),
+		NatsURL:                  natsURL,
+		NatsUser:                 getEnv("NATS_USER", ""),
+		NatsPassword:             getEnv("NATS_PASSWORD", ""),
+		RedisURL:                 redisURL,
+		QdrantURL:                qdrantURL,
+		WebGatewayToken:          getEnv("WEBGATEWAY_TOKEN", ""),
+		WebGatewayAllowedOrigins: allowedOrigins,
+		YAML:                     yc,
 	}
 }
 

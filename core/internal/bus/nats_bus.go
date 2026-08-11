@@ -50,8 +50,9 @@ type NatsBus struct {
 	logger *zap.Logger
 }
 
-func NewNatsBus(url string, logger *zap.Logger) (*NatsBus, error) {
+func NewNatsBus(url string, user string, password string, logger *zap.Logger) (*NatsBus, error) {
 	nc, err := nats.Connect(url,
+		nats.UserInfo(user, password),
 		nats.Name("betteragent-core"),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(2*time.Second),

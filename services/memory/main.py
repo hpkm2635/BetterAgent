@@ -30,9 +30,15 @@ from shared.config_loader import get_config_val
 
 
 async def main():
-    nats_url = os.getenv("NATS_URL", get_config_val("infrastructure.nats_url", "nats://localhost:4222"))
+    # 127.0.0.1, not "localhost" -- see docs/SECURITY.md §2.8.
+    nats_url = os.getenv("NATS_URL", get_config_val("infrastructure.nats_url", "nats://127.0.0.1:4222"))
+    nats_user = os.getenv("NATS_USER")
+    nats_password = os.getenv("NATS_PASSWORD")
+    if not nats_user or not nats_password:
+        logger.error("NATS_USER / NATS_PASSWORD are not set. Refusing to connect to an unauthenticated message bus (see .env.example).")
+        return
     try:
-        nc = await nats.connect(nats_url, error_cb=error_cb, max_reconnect_attempts=10)
+        nc = await nats.connect(nats_url, user=nats_user, password=nats_password, error_cb=error_cb, max_reconnect_attempts=10)
         logger.info(f"Connected to NATS at {nats_url}")
     except Exception as e:
         logger.warning(f"Failed to connect to NATS ({e}). Service exiting gracefully.")

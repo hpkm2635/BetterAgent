@@ -51,6 +51,20 @@ export class BetterAgentWSBridge {
       const defaultChatID = Math.floor(1000000 + Math.random() * 9000000)
       serverUrl += (serverUrl.includes('?') ? '&' : '?') + `chat_id=${defaultChatID}`
     }
+
+    // WebGateway rejects the handshake without ?token= matching the Go
+    // core's WEBGATEWAY_TOKEN (see docs/SECURITY.md). Configure via
+    // VITE_BETTERAGENT_WS_TOKEN in .env -- see .env.example.
+    if (!serverUrl.includes('token=')) {
+      const token = import.meta.env.VITE_BETTERAGENT_WS_TOKEN
+      if (token) {
+        serverUrl += (serverUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`
+      }
+      else {
+        console.warn('[BetterAgentWSBridge] VITE_BETTERAGENT_WS_TOKEN is not set -- the WebGateway will reject this connection (see .env.example)')
+      }
+    }
+
     this.url = serverUrl
   }
 
@@ -121,13 +135,16 @@ export class BetterAgentWSBridge {
           break
 
         case 'agent.audio_chunk':
-          if (msg.payload?.audio_base64) {
-            this.audioChunkListeners.forEach(cb => cb(
-              msg.payload.audio_base64,
-              msg.payload.sample_rate || 24000,
-              msg.payload.visemes
-            ))
-          }
+          // Every audio chunk is sent TWICE by the Go WebGateway: once as
+          // this JSON message, once as a raw binary frame (see
+          // nats_bridge.go#handleAudioChunkMsg, both unconditional, not
+          // alternatives). handleBinaryFrame() below already forwards the
+          // same audio to audioChunkListeners -- doing it again here would
+          // play every chunk twice back-to-back (heard as the audio being
+          // dragged out / distorted). Intentionally not calling
+          // audioChunkListeners here; this message currently carries no
+          // data the binary path doesn't already provide (visemes aren't
+          // consumed by any listener yet).
           break
 
         case 'agent.state_change':

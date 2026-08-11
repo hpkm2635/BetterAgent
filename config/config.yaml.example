@@ -20,10 +20,11 @@ network:
   https_proxy: ""
 
 # Infrastructure Microservice Endpoints
+# Use 127.0.0.1 explicitly, not "localhost" -- see docs/SECURITY.md §2.8 for why.
 infrastructure:
-  nats_url: "nats://localhost:4222"
-  redis_url: "redis://localhost:6379"
-  qdrant_url: "http://localhost:6333"
+  nats_url: "nats://127.0.0.1:4222"
+  redis_url: "redis://127.0.0.1:6379"
+  qdrant_url: "http://127.0.0.1:6333"
 
 # LLM Providers Configuration
 llm:

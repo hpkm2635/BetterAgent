@@ -48,7 +48,7 @@ try {
 # 4. Stop Docker Compose dependencies if present
 if (Get-Command docker -ErrorAction SilentlyContinue) {
     Write-Host "Stopping Docker containers..." -ForegroundColor Yellow
-    docker compose -f deploy/docker-compose.yml stop
+    docker compose -f deploy/docker-compose.yml --env-file .env stop
 }
 
 Write-Host "==========================================" -ForegroundColor Cyan

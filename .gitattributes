@@ -1,0 +1,11 @@
+# 强制所有文本文件统一使用 LF 换行符
+* text=auto eol=lf
+
+# 显式指定代码文件的 LF 格式
+*.go text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf

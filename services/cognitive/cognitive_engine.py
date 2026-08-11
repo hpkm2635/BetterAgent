@@ -7,6 +7,7 @@ from services.cognitive.providers.gemini_provider import GeminiProvider
 from services.cognitive.providers.claude_provider import ClaudeProvider
 from services.cognitive.tool_registry import ToolRegistry
 from services.cognitive.prompt_builder import PromptBuilder
+from services.cognitive.tools.validation import is_safe_media_filename
 
 logger = logging.getLogger("cognitive_engine")
 
@@ -129,12 +130,20 @@ class SentenceSegmenter:
         if has_unclosed_paren:
             return []
 
+        # 4.5 Sanitize multi-dot ellipses in buffer before slicing (e.g. '......', '...', '…')
+        # Prevents '......' from being chopped into 6 individual single-period ('.') fragments that break TTS!
+        self.buffer = re.sub(r"\.{2,}", "，", self.buffer)
+        self.buffer = re.sub(r"…+", "，", self.buffer)
+
         # 5. Sentence Punctuation Slicing for User-Facing Text
         sentences = []
         idx = 0
         for i, char in enumerate(self.buffer):
             if char in self.PUNCTUATIONS:
-                raw_sentence = self.buffer[idx:i + 1].strip()
+                chunk = self.buffer[idx:i + 1].strip()
+                if char in (",", "，") and len(chunk) < 15:
+                    continue
+                raw_sentence = chunk
                 if raw_sentence:
                     sentence = re.sub(r"</?thought>", "", raw_sentence).strip()
                     sentence = clean_action_descriptions(sentence)
@@ -384,17 +393,25 @@ class CognitiveEngine:
 
         if sticker_match:
             sticker_id = sticker_match.group(3) if len(sticker_match.groups()) >= 3 else sticker_match.group(1)
-            actions.append(
-                ActionDecisionPayload(
-                    event_id=payload.event_id,
-                    source_component="cognitive_engine",
-                    chat_id=payload.chat_id,
-                    generation_id=gen_id,
-                    source_channel=src_channel,
-                    action_type="send_sticker",
-                    sticker_id=sticker_id,
+            # This path bypasses TelegramActionTool entirely (it's a
+            # fallback for when the model leaks a tool-call-shaped JSON blob
+            # into plain text instead of using real function calling), so it
+            # must apply the same untrusted-filename check independently.
+            # See docs/SECURITY.md.
+            if is_safe_media_filename(sticker_id):
+                actions.append(
+                    ActionDecisionPayload(
+                        event_id=payload.event_id,
+                        source_component="cognitive_engine",
+                        chat_id=payload.chat_id,
+                        generation_id=gen_id,
+                        source_channel=src_channel,
+                        action_type="send_sticker",
+                        sticker_id=sticker_id,
+                    )
                 )
-            )
+            else:
+                logger.warning(f"Rejected unsafe sticker_id parsed from raw LLM text: {sticker_id!r}")
 
         # Robustly clean markdown code blocks and multi-line JSON objects from text response
         cleaned_raw_text = re.sub(r"```(?:json)?\s*[\s\S]*?```", "", raw_text, flags=re.MULTILINE)
