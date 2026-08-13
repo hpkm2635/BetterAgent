@@ -1,0 +1,6 @@
+.github/**
+.vscode/**
+.vscode-test/**
+src/**
+tsconfig.json
+tsdown.config.ts

@@ -12,6 +12,10 @@ python-dotenv>=1.0.0
 google-genai>=0.1.0
 anthropic>=0.25.0
 
+# MCP client/server (presenter tools: services/cognitive/mcp/, services/mcp_ppt/, services/mcp_vscode/)
+# Pinned below 2.0: mcp 2.0.0 renamed the server API (FastMCP -> MCPServer).
+mcp>=1.2.0,<2.0.0
+
 # Memory & Storage
 redis>=5.0.0
 qdrant-client>=1.9.0

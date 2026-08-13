@@ -43,6 +43,19 @@ tools:
     provider: "gemini_imagen"
     model: "imagen-3.0-generate-002"
 
+# MCP Presenter Sessions (PPT narration / VSCode code walkthrough)
+# Servers are spawned on-demand (stdio child process) by presenter_mode(activate,...)
+# and torn down on deactivate or after idle_timeout_seconds -- see docs/ARCHITECTURE.md.
+# PresenterSessionManager appends `--root <path>` itself at spawn time from the
+# activating tool call's root_path, so it is NOT part of the command below.
+mcp:
+  presenter:
+    idle_timeout_seconds: 600
+    ppt:
+      command: ["python", "-m", "services.mcp_ppt.server"]
+    vscode:
+      command: ["python", "-m", "services.mcp_vscode.server", "--signal-path", "temp/vscode_highlight_signal.json"]
+
 # Ebbinghaus Vector Memory & RAG Parameters
 memory:
   short_term_max_messages: 20

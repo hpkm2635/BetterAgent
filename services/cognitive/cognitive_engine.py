@@ -3,11 +3,13 @@ import re
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
+from shared.config_loader import get_config_val
 from services.cognitive.providers.gemini_provider import GeminiProvider
 from services.cognitive.providers.claude_provider import ClaudeProvider
 from services.cognitive.tool_registry import ToolRegistry
 from services.cognitive.prompt_builder import PromptBuilder
 from services.cognitive.tools.validation import is_safe_media_filename
+from services.cognitive.mcp.presenter_manager import PresenterSessionManager
 
 logger = logging.getLogger("cognitive_engine")
 
@@ -120,12 +122,16 @@ class SentenceSegmenter:
         self.buffer = clean_action_descriptions(self.buffer)
 
         # 4. Unclosed Action Parenthesis Barrier Check
-        # If inside unclosed action description (e.g. '（耳朵抖了抖喵'), wait for closing parenthesis before slicing
+        # If inside unclosed action description (e.g. '（耳朵抖了抖喵'), wait for closing parenthesis before slicing.
+        # Backticks count too: an inline code span like '`services/foo.py`' is exactly
+        # where the naive dot-splitting below would otherwise slice a filename/identifier
+        # in half (see the bug this barrier and the dot-guard below were added to fix).
         has_unclosed_paren = (
             ("（" in self.buffer and "）" not in self.buffer) or
             ("(" in self.buffer and ")" not in self.buffer) or
             ("【" in self.buffer and "】" not in self.buffer) or
-            ("[" in self.buffer and "]" not in self.buffer)
+            ("[" in self.buffer and "]" not in self.buffer) or
+            (self.buffer.count("`") % 2 == 1)
         )
         if has_unclosed_paren:
             return []
@@ -140,6 +146,18 @@ class SentenceSegmenter:
         idx = 0
         for i, char in enumerate(self.buffer):
             if char in self.PUNCTUATIONS:
+                # A bare '.' between two word characters is very likely a filename/
+                # module extension ('cognitive_engine.py') or a decimal/abbreviation,
+                # not an English sentence end -- slicing there is what produced
+                # "我已经帮你读取了 `services/c" + "py` 的前 50 行代码了。" as two
+                # separate malformed TTS requests. If the char after the dot hasn't
+                # streamed in yet either, hold off rather than guess: waiting a few
+                # more characters is cheap, slicing wrong here is not.
+                if char == "." and i > 0 and self.buffer[i - 1].isalnum() and (
+                    i + 1 >= len(self.buffer) or self.buffer[i + 1].isalnum()
+                ):
+                    continue
+
                 chunk = self.buffer[idx:i + 1].strip()
                 if char in (",", "，") and len(chunk) < 15:
                     continue
@@ -173,8 +191,16 @@ class SentenceSegmenter:
 
 class CognitiveEngine:
 
+    # Bounds the "call tool -> feed result back -> generate again" loop in
+    # stream_reasoning_loop so a tool-happy model can't spin forever.
+    MAX_TOOL_ROUNDS = 4
+
     def __init__(self, default_provider_name: str = "gemini"):
-        self.tool_registry = ToolRegistry()
+        self.presenter_manager = PresenterSessionManager(
+            server_commands=self._load_presenter_server_commands(),
+            idle_timeout_seconds=get_config_val("mcp.presenter.idle_timeout_seconds", 600),
+        )
+        self.tool_registry = ToolRegistry(presenter_manager=self.presenter_manager)
         self.providers = {
             "gemini": GeminiProvider(),
             "claude": ClaudeProvider(),
@@ -182,6 +208,19 @@ class CognitiveEngine:
         self.default_provider = self.providers.get(default_provider_name,
                                                    self.providers["gemini"])
         self.latest_vision_frames: Dict[int, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _load_presenter_server_commands() -> Dict[str, List[str]]:
+        import sys
+        commands: Dict[str, List[str]] = {}
+        for target in ("ppt", "vscode"):
+            cmd = get_config_val(f"mcp.presenter.{target}.command")
+            if cmd:
+                cmd_list = list(cmd)
+                if cmd_list and cmd_list[0] in ("python", "python3"):
+                    cmd_list[0] = sys.executable
+                commands[target] = cmd_list
+        return commands
 
     def update_vision_frame(self, chat_id: int, image_base64: str, source_type: str = "screen", format: str = "jpeg"):
         self.latest_vision_frames[chat_id] = {
@@ -201,6 +240,121 @@ class CognitiveEngine:
             del self.latest_vision_frames[chat_id]
             return None
         return frame
+
+    @staticmethod
+    def _build_local_tool_action(
+        tool_name: str,
+        tool_output: Dict[str, Any],
+        payload: ReasoningRequestPayload,
+        gen_id: int,
+        src_channel: str,
+    ) -> Optional[ActionDecisionPayload]:
+        """
+        Maps a *fire-and-forget* local embodiment tool's output onto a
+        structured ActionDecisionPayload. Only TTS/image/telegram_action live
+        here -- they don't need their result shown back to the model, so no
+        round trip is required (the model's own text from this same
+        generation round is used as the accompanying message). Returns None
+        for anything else (e.g. presenter_mode, MCP tools), signalling the
+        caller that this call instead needs the round-trip path.
+        """
+        if tool_name == "generate_tts_speech":
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type="send_voice",
+                voice_path=tool_output.get("voice_path"),
+                text_content=tool_output.get("text"),
+                media_type="voice",
+                chat_action="record_audio",
+            )
+        if tool_name == "generate_image":
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type="send_photo",
+                photo_path=tool_output.get("photo_path"),
+                text_content=None,  # Caption will come from LLM text response below
+                media_type="photo",
+            )
+        if tool_name == "telegram_action":
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type=tool_output.get("action_type", "send_message"),
+                sticker_id=tool_output.get("sticker_id"),
+                reaction_emoji=tool_output.get("reaction_emoji"),
+            )
+        return None
+
+    @staticmethod
+    def _append_tool_round_trip(
+        messages: List[Dict[str, Any]],
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_output: Dict[str, Any],
+        thought_signature: Optional[bytes] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Appends a (function_call, function_response) turn pair so the next
+        generate_stream() round shows the model what the tool actually
+        returned, instead of it improvising -- this is what makes
+        ppt_get_slide_text-style read tools ground the model's narration in
+        real content. See GeminiProvider._messages_to_contents.
+        """
+        messages = list(messages)
+        fc_meta: Dict[str, Any] = {"name": tool_name, "args": tool_args}
+        if thought_signature:
+            fc_meta["thought_signature"] = thought_signature
+        messages.append({
+            "role": "model",
+            "content": "",
+            "metadata": {"function_call": fc_meta},
+        })
+        messages.append({
+            "role": "user",
+            "content": "",
+            "metadata": {"function_response": {"name": tool_name, "response": tool_output}},
+        })
+        return messages
+
+    def _unknown_tool_error(self, chat_id: int, tool_name: str) -> Dict[str, Any]:
+        """
+        Builds the round-trip error payload for a tool name that matched
+        neither the local ToolRegistry nor an active presenter session.
+
+        This is the LLM's *only* recovery signal for two very different
+        situations: it hallucinated a plausible-but-wrong name for a real
+        presenter tool (e.g. "vscode_search_content" instead of
+        "vscode_search"), or it tried to use a presenter tool before ever
+        calling presenter_mode(activate). A bare "unknown tool" string gives
+        it nothing to act on and the model tends to narrate the failure to
+        the user instead of self-correcting -- so tell it explicitly what IS
+        available (or how to make something available) in the same turn.
+        """
+        active_names = [s["name"] for s in self.presenter_manager.get_active_tool_schemas(chat_id)]
+        if active_names:
+            detail = (
+                f"unknown tool '{tool_name}'. It does not exist -- do not retry it. "
+                f"Tools currently available in this session: {', '.join(active_names)}."
+            )
+        else:
+            detail = (
+                f"unknown tool '{tool_name}'. No presenter session is active for this chat, so no "
+                "ppt_*/vscode_* tool exists yet. Call presenter_mode(action='activate', "
+                "target='ppt' or 'vscode', root_path=<deck or workspace directory>) first, then retry "
+                "using one of the tool names it reports as available."
+            )
+        return {"error": True, "detail": detail}
 
     async def execute_reasoning_loop(
             self, payload: ReasoningRequestPayload
@@ -340,48 +494,9 @@ class CognitiveEngine:
             tool = self.tool_registry.get_tool(tool_name)
             if tool:
                 tool_output = await tool.execute(**tool_args)
-
-                # Formulate action decision depending on tool
-                if tool_name == "generate_tts_speech":
-                    actions.append(
-                        ActionDecisionPayload(
-                            event_id=payload.event_id,
-                            source_component="cognitive_engine",
-                            chat_id=payload.chat_id,
-                            generation_id=gen_id,
-                            source_channel=src_channel,
-                            action_type="send_voice",
-                            voice_path=tool_output.get("voice_path"),
-                            text_content=tool_output.get("text"),
-                            media_type="voice",
-                            chat_action="record_audio",
-                        ))
-                elif tool_name == "generate_image":
-                    actions.append(
-                        ActionDecisionPayload(
-                            event_id=payload.event_id,
-                            source_component="cognitive_engine",
-                            chat_id=payload.chat_id,
-                            generation_id=gen_id,
-                            source_channel=src_channel,
-                            action_type="send_photo",
-                            photo_path=tool_output.get("photo_path"),
-                            text_content=None,  # Caption will come from LLM text response below
-                            media_type="photo",
-                        ))
-                elif tool_name == "telegram_action":
-                    actions.append(
-                        ActionDecisionPayload(
-                            event_id=payload.event_id,
-                            source_component="cognitive_engine",
-                            chat_id=payload.chat_id,
-                            generation_id=gen_id,
-                            source_channel=src_channel,
-                            action_type=tool_output.get("action_type",
-                                                        "send_message"),
-                            sticker_id=tool_output.get("sticker_id"),
-                            reaction_emoji=tool_output.get("reaction_emoji"),
-                        ))
+                action = self._build_local_tool_action(tool_name, tool_output, payload, gen_id, src_channel)
+                if action is not None:
+                    actions.append(action)
 
         # Main text response payload
         raw_text = result.get("text", "")
@@ -446,6 +561,14 @@ class CognitiveEngine:
         """
         Yields sentence-level ActionDecisionPayload chunks in real-time as LLM streams text deltas.
         Supports cancellation via cancel_event.
+
+        Also drives a bounded (MAX_TOOL_ROUNDS) tool-call round trip: a fire-and-
+        forget local tool (TTS/image/telegram_action) maps straight to an
+        ActionDecisionPayload with no round trip, same as before. Anything else
+        -- presenter_mode, or an active presenter's MCP tools (ppt_*/vscode_*) --
+        has its result fed back into `messages` and triggers another
+        generate_stream() round, so the model's next text is grounded in the
+        real tool result instead of guessed.
         """
         if payload.trigger_type == "tick" and not getattr(payload, "is_proactive_opportunity", False):
             return
@@ -457,9 +580,6 @@ class CognitiveEngine:
                 src_channel = payload.inbound_message.source_channel
             if getattr(payload.inbound_message, "generation_id", None):
                 gen_id = payload.inbound_message.generation_id
-
-        all_schemas = self.tool_registry.get_all_schemas()
-        tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"] if src_channel == "web" else all_schemas
 
         system_prompt = PromptBuilder.build_system_prompt(payload)
         messages = PromptBuilder.build_messages(payload)
@@ -475,34 +595,149 @@ class CognitiveEngine:
             messages[-1]["metadata"]["vision_frame"] = vision_frame
 
         segmenter = SentenceSegmenter()
-        stream_gen = self.default_provider.generate_stream(
-            messages=messages,
-            tools_schema=tools_schema,
-            system_prompt=system_prompt,
-            cancel_event=cancel_event,
-        )
 
         try:
-            async for delta in stream_gen:
-                if cancel_event and cancel_event.is_set():
-                    logger.info(f"⚡ stream_reasoning_loop cancelled for chat_id={payload.chat_id}")
+            for round_idx in range(self.MAX_TOOL_ROUNDS):
+                # Recomputed every round, not just once up front: a
+                # presenter_mode(activate) call in round N must make its
+                # ppt_*/vscode_* tools visible to round N+1 in this same
+                # turn, not just to some future reasoning call.
+                all_schemas = self.tool_registry.get_all_schemas() + self.presenter_manager.get_active_tool_schemas(payload.chat_id)
+                tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"] if src_channel == "web" else all_schemas
+
+                stream_gen = self.default_provider.generate_stream(
+                    messages=messages,
+                    tools_schema=tools_schema,
+                    system_prompt=system_prompt,
+                    cancel_event=cancel_event,
+                )
+
+                pending_calls: List[Dict[str, Any]] = []
+                cancelled = False
+
+                async for event in stream_gen:
+                    if cancel_event and cancel_event.is_set():
+                        logger.info(f"⚡ stream_reasoning_loop cancelled for chat_id={payload.chat_id}")
+                        cancelled = True
+                        break
+
+                    if event.get("type") == "tool_calls":
+                        pending_calls.extend(event.get("calls", []))
+                        continue
+
+                    sentences = segmenter.push(event.get("delta", ""))
+                    for s in sentences:
+                        sentence_str = s.strip()
+                        if sentence_str:
+                            yield ActionDecisionPayload(
+                                event_id=payload.event_id,
+                                source_component="cognitive_engine",
+                                chat_id=payload.chat_id,
+                                generation_id=gen_id,
+                                source_channel=src_channel,
+                                action_type="send_message",
+                                text_content=sentence_str,
+                                chat_action="typing",
+                                is_final=False,
+                            )
+
+                if cancelled:
+                    return
+
+                if not pending_calls:
                     break
 
-                sentences = segmenter.push(delta)
-                for s in sentences:
-                    sentence_str = s.strip()
-                    if sentence_str:
-                        yield ActionDecisionPayload(
-                            event_id=payload.event_id,
-                            source_component="cognitive_engine",
-                            chat_id=payload.chat_id,
-                            generation_id=gen_id,
-                            source_channel=src_channel,
-                            action_type="send_message",
-                            text_content=sentence_str,
-                            chat_action="typing",
-                            is_final=False,
-                        )
+                # Heartbeat: a round that produced only tool_calls (no text) is
+                # about to spend real time executing them -- MCP tool calls can
+                # involve a subprocess cold start, and each further
+                # generate_stream() round is its own LLM round trip -- with
+                # nothing published to NATS in between, Go core's per-chat
+                # watchdog (ThinkingTimeoutDuration / whatever window a prior
+                # chunk set) has no way to know this turn is still alive and
+                # will force the state machine back to IDLE mid-turn (see
+                # engine/state_machine.go's deadman switch). This empty,
+                # non-final chunk carries no visible text -- WebGateway/gotd
+                # adapter only forward non-empty TextContent to the user -- but
+                # both still extend the watchdog window on any non-final
+                # ActionDecision, which is exactly what's needed here.
+                yield ActionDecisionPayload(
+                    event_id=payload.event_id,
+                    source_component="cognitive_engine",
+                    chat_id=payload.chat_id,
+                    generation_id=gen_id,
+                    source_channel=src_channel,
+                    action_type="send_message",
+                    text_content="",
+                    chat_action="typing",
+                    is_final=False,
+                )
+
+                needs_another_round = False
+                for call in pending_calls:
+                    tool_name = call.get("name")
+                    tool_args = call.get("args", {}) or {}
+                    tool = self.tool_registry.get_tool(tool_name)
+
+                    if tool is not None:
+                        if tool_name == "presenter_mode":
+                            tool_output = await tool.execute(**tool_args, chat_id=payload.chat_id)
+                        else:
+                            tool_output = await tool.execute(**tool_args)
+
+                        action = self._build_local_tool_action(tool_name, tool_output, payload, gen_id, src_channel)
+                        if action is not None:
+                            yield action
+                        else:
+                            messages = self._append_tool_round_trip(messages, tool_name, tool_args, tool_output, thought_signature=call.get("thought_signature"))
+                            needs_another_round = True
+                    else:
+                        mcp_output = await self.presenter_manager.call_tool(payload.chat_id, tool_name, tool_args)
+                        if mcp_output is None:
+                            logger.warning(f"Received unknown tool call from LLM: {tool_name!r} (chat_id={payload.chat_id})")
+                            mcp_output = self._unknown_tool_error(payload.chat_id, tool_name)
+                        messages = self._append_tool_round_trip(messages, tool_name, tool_args, mcp_output, thought_signature=call.get("thought_signature"))
+                        needs_another_round = True
+
+                if not needs_another_round:
+                    break
+            else:
+                # Round budget exhausted while a tool call still needed a
+                # round trip -- without this, the turn would just end here:
+                # segmenter.flush() has nothing in it (every round so far was
+                # tool_calls, no text), so the user gets a silent empty
+                # final marker and no reply at all. Force one last round
+                # with tools_schema=[] -- the model literally cannot call
+                # another tool, so it must wrap up in plain text using
+                # whatever it already learned from the tool results appended
+                # to `messages` across the rounds above.
+                logger.warning(f"stream_reasoning_loop hit MAX_TOOL_ROUNDS for chat_id={payload.chat_id}, forcing text-only wrap-up round")
+                wrapup_stream = self.default_provider.generate_stream(
+                    messages=messages,
+                    tools_schema=[],
+                    system_prompt=system_prompt,
+                    cancel_event=cancel_event,
+                )
+                async for event in wrapup_stream:
+                    if cancel_event and cancel_event.is_set():
+                        logger.info(f"⚡ stream_reasoning_loop cancelled during wrap-up for chat_id={payload.chat_id}")
+                        return
+                    if event.get("type") == "tool_calls":
+                        continue  # tools_schema=[] should preclude this; ignore defensively
+                    sentences = segmenter.push(event.get("delta", ""))
+                    for s in sentences:
+                        sentence_str = s.strip()
+                        if sentence_str:
+                            yield ActionDecisionPayload(
+                                event_id=payload.event_id,
+                                source_component="cognitive_engine",
+                                chat_id=payload.chat_id,
+                                generation_id=gen_id,
+                                source_channel=src_channel,
+                                action_type="send_message",
+                                text_content=sentence_str,
+                                chat_action="typing",
+                                is_final=False,
+                            )
 
             final_sentences = segmenter.flush()
             final_clean = [s.strip() for s in final_sentences if s and s.strip()]

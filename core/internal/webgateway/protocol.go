@@ -35,7 +35,8 @@ type UserVisionFramePayload struct {
 // Outbound Agent Messages (WebGateway -> Browser)
 
 type AgentTextDeltaPayload struct {
-	Text string `json:"text"`
+	Text    string `json:"text"`
+	IsFinal bool   `json:"is_final,omitempty"` // true on the last sentence of a reasoning turn; see nats_bridge.go handleActionDecisionMsg
 }
 
 type AgentEmotionPayload struct {

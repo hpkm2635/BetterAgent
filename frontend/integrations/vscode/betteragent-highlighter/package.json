@@ -1,0 +1,48 @@
+{
+  "publisher": "betteragent",
+  "name": "betteragent-highlighter",
+  "displayName": "BetterAgent Code Highlighter",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Applies editor decorations requested by the BetterAgent VSCode presenter MCP server (services/mcp_vscode) so the agent can highlight code while narrating a walkthrough.",
+  "categories": [
+    "Other"
+  ],
+  "preview": true,
+  "main": "./dist/extension.cjs",
+  "engines": {
+    "vscode": "^1.116.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "betteragent-highlighter.clear",
+        "title": "BetterAgent: Clear Highlight"
+      }
+    ],
+    "configuration": {
+      "title": "BetterAgent Highlighter",
+      "properties": {
+        "betteragent-highlighter.signalPath": {
+          "type": "string",
+          "default": "temp/vscode_highlight_signal.json",
+          "description": "Path to the highlight signal file written by services/mcp_vscode/server.py (must match that server's --signal-path). Relative paths resolve against the first workspace folder."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "dev": "tsdown --watch",
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/vscode": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:"
+  }
+}

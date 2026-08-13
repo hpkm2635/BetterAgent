@@ -281,7 +281,8 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 		outBytes, _ := json.Marshal(WSMessage{
 			Type: "agent.text_delta",
 			Payload: marshalRaw(AgentTextDeltaPayload{
-				Text: *decision.TextContent,
+				Text:    *decision.TextContent,
+				IsFinal: decision.IsFinal,
 			}),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)

@@ -8,6 +8,12 @@ tts:
   prompt_audio: "config/audio/vocal_patra3.wav_10.wav"
   prompt_text: "こんばんわんわん、パトラの可愛いワンちゃんたち！"
   prompt_lang: "ja"
+  # Keep "zh": "auto" was tried to handle embedded English/CamelCase (see
+  # gpt_sovits_client.py's sanitize_text_for_tts for that fix instead) but
+  # caused a worse regression -- combined with the ja reference audio above,
+  # "auto" started misdetecting plain Chinese segments (helped along by cat-
+  # girl particles/kaomoji) as Japanese and reading hanzi with Japanese
+  # on'yomi/kun'yomi instead of Mandarin pinyin.
   text_lang: "zh"
 
 base_prompt: |

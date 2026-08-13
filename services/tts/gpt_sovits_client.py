@@ -22,6 +22,16 @@ def sanitize_text_for_tts(text: str) -> str:
     text = re.sub(r"！{2,}", "！", text)
     text = re.sub(r"？{2,}", "？", text)
     text = re.sub(r"，{2,}", "，", text)
+    # "PresenterControlTool" -> "Presenter Control Tool": GPT-SoVITS's zh-mode
+    # embedded-English handling looks up recognizable English words fine, but
+    # an unbroken CamelCase compound isn't one -- that mismatch is the
+    # concrete trigger behind a mid-stream truncation bug (HTTP stream
+    # aborted while emitting "PresenterC..."). text_lang="auto" was tried as a
+    # broader fix and reverted: it caused GPT-SoVITS to misdetect Chinese
+    # segments (helped by the ja reference audio) as Japanese and read hanzi
+    # with Japanese on'yomi/kun'yomi instead of Mandarin pinyin.
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
     return text.strip()
 
 
@@ -87,7 +97,17 @@ class GPTSoVITSClient:
                                         wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
                                         yield (wav_chunk, "wav")
                         except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as spe:
-                            logger.debug(f"GPT-SoVITS HTTP stream completed with connection close: {spe}")
+                            # This is the signature of GPT-SoVITS's G2P frontend
+                            # throwing mid-synthesis (see text_lang comment above) --
+                            # the server aborts the chunked response early and
+                            # everything after this point in the sentence is lost.
+                            # Was logged at debug (invisible in *_stderr.log by
+                            # default), which is why this failure mode went
+                            # unnoticed until a full audio review caught it.
+                            logger.warning(
+                                f"GPT-SoVITS HTTP stream for chat text {text[:30]!r}... ended early ({spe}); "
+                                "rest of this sentence's audio was not synthesized."
+                            )
 
                         if pcm_buffer and len(pcm_buffer) >= 2:
                             usable_bytes = (len(pcm_buffer) // 2) * 2

@@ -149,7 +149,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
           }
 
           // Subscribe text deltas from WebSocket
-          textUnsub = bridge.onTextDelta((text: string) => {
+          textUnsub = bridge.onTextDelta((text: string, isFinal: boolean) => {
             // Emit token delta to Airi UI stream options to render typing bubble
             try {
               options?.onStreamEvent?.({ type: 'text-delta', text } as any)
@@ -157,12 +157,28 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
               console.warn('[BetterAgent] Error emitting stream event:', e)
             }
 
-            // Reset quiet timer: resolve turn after 1.5s of quiet after receiving text
+            if (isFinal) {
+              // Backend explicitly signals turn completion -- resolve immediately
+              // instead of racing the idle timer below.
+              cleanup()
+              resolve()
+              return
+            }
+
+            // Safety net only, not the primary completion signal: is_final should
+            // always arrive, but if the backend errors mid-turn or an older
+            // backend never sends is_final at all, this still recovers instead of
+            // hanging until the 30s fallback below. Widened from the old 1.5s --
+            // that assumed one LLM call per turn, but a presenter tool-call round
+            // trip (activate a session, run an MCP tool, narrate the result) can
+            // leave multi-second gaps between sentences within one still-live
+            // turn, which used to make this fire early and silently drop every
+            // sentence generated after it (no listener left to receive them).
             if (finishTimer) clearTimeout(finishTimer)
             finishTimer = setTimeout(() => {
               cleanup()
               resolve()
-            }, 1500)
+            }, 15000)
           })
 
           // Subscribe emotion events

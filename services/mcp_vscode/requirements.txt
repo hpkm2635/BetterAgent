@@ -1,0 +1,2 @@
+# See services/cognitive/requirements.txt for why mcp is pinned below 2.0.
+mcp>=1.2.0,<2.0.0

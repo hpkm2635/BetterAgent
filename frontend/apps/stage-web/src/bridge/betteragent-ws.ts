@@ -14,7 +14,7 @@ export interface WSMessage<T = any> {
   payload?: T
 }
 
-export type TextDeltaCallback = (text: string) => void
+export type TextDeltaCallback = (text: string, isFinal: boolean) => void
 export type EmotionCallback = (emotion: string, action?: string) => void
 export type AudioChunkCallback = (audioBase64: string, sampleRate: number, visemes?: Viseme[]) => void
 export type StateChangeCallback = (state: string) => void
@@ -124,7 +124,7 @@ export class BetterAgentWSBridge {
       switch (msg.type) {
         case 'agent.text_delta':
           if (msg.payload?.text) {
-            this.textDeltaListeners.forEach(cb => cb(msg.payload.text))
+            this.textDeltaListeners.forEach(cb => cb(msg.payload.text, !!msg.payload.is_final))
           }
           break
 

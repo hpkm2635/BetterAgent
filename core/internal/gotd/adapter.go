@@ -96,7 +96,7 @@ func NewGotdAdapter(
 		textBuffer:       make(map[int64][]string),
 	}
 
-	adapter.typingMgr = NewTypingHeartbeatManager(adapter, logger)
+	adapter.typingMgr = NewTypingHeartbeatManager(adapter, adapter.antiSpam, logger)
 
 	csm.SetTimeoutCallback(func(chatID int64, state engine.State) {
 		logger.Warn("State machine watchdog callback triggered: stopping typing heartbeat", zap.Int64("chat_id", chatID), zap.String("stuck_state", string(state)))

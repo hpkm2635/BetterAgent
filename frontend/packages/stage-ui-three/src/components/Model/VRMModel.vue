@@ -186,6 +186,18 @@ type VrmFrameRuntimeHook = (vrm: VRM, delta: number) => void
 const vrmFrameRuntimeHook = shallowRef<VrmFrameRuntimeHook>()
 let disposeBeforeRenderLoop: (() => void | undefined) | undefined
 
+// Caps how often the VRM per-frame update (animation mixer, humanoid,
+// lookAt, blink, expressions, spring bones, ...) actually runs. TresCanvas's
+// render-mode still defaults to 'always' (a draw call every
+// requestAnimationFrame tick regardless), so this throttles the CPU-side
+// update cost feeding each draw -- spring-bone physics and the animation
+// mixer are the expensive part per frame -- not the raw GPU draw-call rate
+// itself; capping that would mean switching render-mode to 'manual' and
+// driving the renderer by hand, a larger change touching the whole scene.
+const VRM_MAX_UPDATE_FPS = 60
+const VRM_MIN_UPDATE_INTERVAL_SECONDS = 1 / VRM_MAX_UPDATE_FPS
+let vrmFrameAccumulatorSeconds = 0
+
 // material type with optional update function for per-frame update, used for three-vrm's MToon material and custom shader materials with IBL injection
 type UpdatableMaterial = Material & {
   update?: (delta: number) => void
@@ -415,12 +427,23 @@ function destroyManagedVrmInstanceWithHooks(instance: ManagedVrmInstance | undef
 
 function bindManagedVrmInstanceRenderLoop() {
   disposeBeforeRenderLoop?.()
+  vrmFrameAccumulatorSeconds = 0
 
-  disposeBeforeRenderLoop = onBeforeRender(({ delta }) => {
+  disposeBeforeRenderLoop = onBeforeRender(({ delta: rawDelta }) => {
     // Manually update VRM components in the render loop because we manage the render loop on our own.
     // See:
     // 1. https://github.com/pixiv/three-vrm/blob/2c4aac612467216e0c8e7dc4500c2fa309208cc7/packages/three-vrm-core/src/VRMCore.ts#L72-L82
     // 2. https://github.com/pixiv/three-vrm/blob/2c4aac612467216e0c8e7dc4500c2fa309208cc7/packages/three-vrm/src/VRM.ts#L49-L67
+    vrmFrameAccumulatorSeconds += rawDelta
+    if (vrmFrameAccumulatorSeconds < VRM_MIN_UPDATE_INTERVAL_SECONDS) {
+      return
+    }
+    // Use the accumulated time, not just this tick's rawDelta -- otherwise
+    // skipped ticks' motion is lost instead of folded into the next update,
+    // which would look like the animation is playing in slow motion.
+    const delta = vrmFrameAccumulatorSeconds
+    vrmFrameAccumulatorSeconds = 0
+
     const traceStart = isStageThreeRuntimeTraceEnabled() ? performance.now() : 0
     const tracingEnabled = traceStart > 0
 
