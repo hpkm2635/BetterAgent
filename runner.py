@@ -685,6 +685,15 @@ def main():
     # 5. Python TTS Service
     mgr.spawn_service("tts_service", [mgr.py_exe, "-u", "-m", "services.tts.main"])
 
+    # 6. Python STT Service (bridges an external FunASR streaming WS server)
+    mgr.spawn_service("stt_service", [mgr.py_exe, "-u", "-m", "services.stt.main"])
+
+    # 7. STS2 Game Watcher (optional -- polls the STS2MCP mod's localhost API
+    # if the game/mod happen to be running, feeds UrgeEngine via Go Core's
+    # /api/game-event endpoint; harmless no-op otherwise, same graceful-
+    # degradation posture as every other optional integration here)
+    mgr.spawn_service("game_watcher_service", [mgr.py_exe, "-u", "-m", "services.game_watcher.sts2_poller"])
+
     mgr.write_pid_file()
 
     def signal_handler(signum, frame):

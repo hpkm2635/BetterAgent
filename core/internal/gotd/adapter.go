@@ -26,30 +26,33 @@ import (
 	"betteragent-core/internal/config"
 	"betteragent-core/internal/emotion"
 	"betteragent-core/internal/engine"
+	"betteragent-core/internal/idspace"
 	"betteragent-core/internal/schema"
 )
 
 type GotdAdapter struct {
-	client           *telegram.Client
-	dispatcher       *tg.UpdateDispatcher
-	sender           *message.Sender
-	bus              *bus.NatsBus
-	stateMachine     *engine.CentralStateMachine
-	emotionalState   *emotion.EmotionalState
-	personality      *emotion.PersonalityProfile
-	circadian        *emotion.CircadianRhythmEvaluator
-	typingMgr        *TypingHeartbeatManager
-	antiSpam         *AntiSpamGuard
-	humanization     *HumanizationEngine
-	mediaMgr         *MediaManager
-	cfg              *config.Config
-	logger           *zap.Logger
-	peerMu           sync.RWMutex
-	peerAccessHashes map[int64]int64
-	peerUsernames    map[int64]string
-	peerLastSeen     map[int64]time.Time
-	peerCachePruned  time.Time
-	textBuffer       map[int64][]string
+	client              *telegram.Client
+	dispatcher          *tg.UpdateDispatcher
+	sender              *message.Sender
+	bus                 *bus.NatsBus
+	stateMachine        *engine.CentralStateMachine
+	emotionalState      *emotion.EmotionalState
+	personality         *emotion.PersonalityProfile
+	circadian           *emotion.CircadianRhythmEvaluator
+	urgeEngine          *engine.UrgeEngine
+	autonomousPlayState *engine.AutonomousPlayState
+	typingMgr           *TypingHeartbeatManager
+	antiSpam            *AntiSpamGuard
+	humanization        *HumanizationEngine
+	mediaMgr            *MediaManager
+	cfg                 *config.Config
+	logger              *zap.Logger
+	peerMu              sync.RWMutex
+	peerAccessHashes    map[int64]int64
+	peerUsernames       map[int64]string
+	peerLastSeen        map[int64]time.Time
+	peerCachePruned     time.Time
+	textBuffer          map[int64][]string
 }
 
 // peerCacheIdleTTL/peerCachePruneEvery bound the growth of the AccessHash/
@@ -69,6 +72,8 @@ func NewGotdAdapter(
 	emoState *emotion.EmotionalState,
 	personality *emotion.PersonalityProfile,
 	circadian *emotion.CircadianRhythmEvaluator,
+	urgeEngine *engine.UrgeEngine,
+	autonomousPlayState *engine.AutonomousPlayState,
 	logger *zap.Logger,
 ) (*GotdAdapter, error) {
 	mediaMgr, err := NewMediaManager("./temp", logger)
@@ -79,21 +84,23 @@ func NewGotdAdapter(
 	dispatcher := tg.NewUpdateDispatcher()
 
 	adapter := &GotdAdapter{
-		dispatcher:       &dispatcher,
-		cfg:              cfg,
-		bus:              natsBus,
-		stateMachine:     csm,
-		emotionalState:   emoState,
-		personality:      personality,
-		circadian:        circadian,
-		antiSpam:         NewAntiSpamGuard(),
-		humanization:     NewHumanizationEngine(),
-		mediaMgr:         mediaMgr,
-		logger:           logger,
-		peerAccessHashes: make(map[int64]int64),
-		peerUsernames:    make(map[int64]string),
-		peerLastSeen:     make(map[int64]time.Time),
-		textBuffer:       make(map[int64][]string),
+		dispatcher:          &dispatcher,
+		cfg:                 cfg,
+		bus:                 natsBus,
+		stateMachine:        csm,
+		emotionalState:      emoState,
+		personality:         personality,
+		circadian:           circadian,
+		urgeEngine:          urgeEngine,
+		autonomousPlayState: autonomousPlayState,
+		antiSpam:            NewAntiSpamGuard(),
+		humanization:        NewHumanizationEngine(),
+		mediaMgr:            mediaMgr,
+		logger:              logger,
+		peerAccessHashes:    make(map[int64]int64),
+		peerUsernames:       make(map[int64]string),
+		peerLastSeen:        make(map[int64]time.Time),
+		textBuffer:          make(map[int64][]string),
 	}
 
 	adapter.typingMgr = NewTypingHeartbeatManager(adapter, adapter.antiSpam, logger)
@@ -152,10 +159,13 @@ func (a *GotdAdapter) Start(ctx context.Context) error {
 	// Register dispatcher event handlers
 	a.dispatcher.OnNewMessage(a.handleIncomingMessage)
 
-	// Subscribe to ActionDecision from NATS
-	_, err := a.bus.Subscribe(bus.SubjectActionDecision, a.handleActionDecision)
+	// Subscribe to ActionDecision from NATS -- only the "telegram" channel's
+	// subjects, so web-bound decisions are never even delivered here (see
+	// bus.ActionDecisionWildcard).
+	telegramActionSubject := bus.ActionDecisionWildcard("telegram")
+	_, err := a.bus.Subscribe(telegramActionSubject, a.handleActionDecision)
 	if err != nil {
-		return fmt.Errorf("failed to subscribe to %s: %w", bus.SubjectActionDecision, err)
+		return fmt.Errorf("failed to subscribe to %s: %w", telegramActionSubject, err)
 	}
 
 	gapi := tg.NewClient(a.client)
@@ -302,6 +312,13 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 
 	// Build InboundMessagePayload
 	rawText := msg.Message
+
+	// /game_start and /game_stop are intercepted here, before anything else
+	// touches NATS/CSM/the LLM -- see handleGameStartStopCommand's doc comment.
+	if a.handleGameStartStopCommand(ctx, chatID, rawText) {
+		return nil
+	}
+
 	senderUser, found := e.Users[userID]
 	senderFirstName := "User"
 	var senderUsername *string
@@ -375,6 +392,7 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 
 	// Central State Machine transition to THINKING for this chatID
 	a.stateMachine.TransitionToChat(chatID, engine.StateThinking, "inbound_message")
+	a.stateMachine.TouchActivity(chatID)
 
 	// Start Typing Heartbeat
 	a.typingMgr.StartHeartbeat(chatID, "typing")
@@ -415,6 +433,78 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 	return a.bus.Publish(bus.SubjectReasoningRequest, "gotd_adapter", reasoningReq)
 }
 
+// handleGameStartStopCommand intercepts "/game_start" and "/game_stop" as
+// raw literal text, before anything else in handleIncomingMessage runs --
+// they never reach NATS/CSM/the LLM at all. Returns true if the text was
+// one of these commands.
+//
+// /game_stop is the actual emergency stop for autonomous play: flipping
+// AutonomousPlayState off only prevents *future* game turns from firing --
+// it does nothing about a turn already in flight. Publishing
+// SubjectStreamCancelReq/SubjectUserInterrupt additionally reaches
+// cognitive_service's existing cancel_chat_stream and tears down any
+// in-progress tool-calling round. This is deliberately deterministic and
+// Go-side: it works even if the LLM is currently misbehaving, because it
+// never depends on the LLM cooperating.
+func (a *GotdAdapter) handleGameStartStopCommand(ctx context.Context, chatID int64, text string) bool {
+	if a.autonomousPlayState == nil {
+		return false
+	}
+
+	cmd := strings.TrimSpace(text)
+	if idx := strings.LastIndex(cmd, "/game_"); idx != -1 {
+		cmd = cmd[idx:]
+	}
+
+	switch cmd {
+	case "/game_start":
+		a.autonomousPlayState.Activate(chatID)
+		a.logger.Info("🎮 Autonomous play activated", zap.Int64("chat_id", chatID))
+		a.replyDirect(ctx, chatID, "游戏自动托管已开启喵～ 发送 /game_stop 可以随时叫停我。")
+		return true
+	case "/game_stop":
+		deactivatedChatID := a.autonomousPlayState.Deactivate()
+		a.logger.Info("🛑 Autonomous play deactivated", zap.Int64("chat_id", chatID))
+		if deactivatedChatID != 0 {
+			cancelPayload := schema.StreamCancelPayload{
+				BasePayload:   schema.NewBasePayload("gotd_adapter"),
+				ChatID:        deactivatedChatID,
+				GenerationID:  a.stateMachine.GetGenerationChat(deactivatedChatID),
+				Reason:        "game_stop_emergency_cancel",
+				SourceChannel: "telegram",
+			}
+			if err := a.bus.Publish(bus.SubjectStreamCancelReq, "gotd_adapter", cancelPayload); err != nil {
+				a.logger.Error("Failed to publish StreamCancelReq on /game_stop", zap.Int64("chat_id", deactivatedChatID), zap.Error(err))
+			}
+			if err := a.bus.Publish(bus.SubjectUserInterrupt, "gotd_adapter", cancelPayload); err != nil {
+				a.logger.Error("Failed to publish UserInterrupt on /game_stop", zap.Int64("chat_id", deactivatedChatID), zap.Error(err))
+			}
+		}
+		a.replyDirect(ctx, chatID, "游戏自动托管已停止，操作权还给主人啦。")
+		return true
+	default:
+		return false
+	}
+}
+
+// replyDirect sends a Telegram text reply straight through the sender,
+// bypassing NATS/LLM entirely -- used for the /game_start /game_stop
+// confirmations, which must work even if the reasoning pipeline is stuck.
+func (a *GotdAdapter) replyDirect(ctx context.Context, chatID int64, text string) {
+	if a.sender == nil {
+		a.logger.Warn("Skipped game start/stop reply: sender not initialized yet", zap.Int64("chat_id", chatID))
+		return
+	}
+	inputPeer, err := a.resolveInputPeer(ctx, chatID)
+	if err != nil {
+		a.logger.Error("Failed to resolve input peer for game start/stop reply", zap.Int64("chat_id", chatID), zap.Error(err))
+		return
+	}
+	if _, err := a.sender.To(inputPeer).Text(ctx, text); err != nil {
+		a.logger.Error("Failed to send game start/stop reply to Telegram", zap.Int64("chat_id", chatID), zap.Error(err))
+	}
+}
+
 func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 	var env struct {
 		ID        string                       `json:"id"`
@@ -437,9 +527,25 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 		zap.String("action_type", action.ActionType),
 	)
 
-	// Explicit Channel Routing: Ignore action decisions intended for web or other non-telegram channels
+	// Channel routing is now handled by NATS itself (subscribed only to
+	// agent.action.telegram.* -- see Start). SourceChannel is a
+	// self-reported payload field; downgrade a mismatch to a log rather than
+	// a drop, since the subject already proved this message belongs here.
+	//
+	// IsWebChat stays a hard `return`, deliberately NOT folded into the
+	// log-only check above: it's the specific defense-in-depth guard that
+	// caught a real PEER_ID_INVALID incident (a web-namespaced chat_id
+	// reaching Telegram's send path), and it's a structurally independent,
+	// cheap, numeric-range invariant -- unlike SourceChannel, trusting it
+	// isn't what this refactor is changing. Keep it even though the
+	// wildcard subscription should make it unreachable in practice.
 	if action.SourceChannel != "" && action.SourceChannel != "telegram" {
-		a.logger.Debug("Ignoring ActionDecision non-telegram channel in GotdAdapter", zap.String("source_channel", action.SourceChannel), zap.Int64("chat_id", action.ChatID))
+		a.logger.Error("received ActionDecision on telegram-channel subject with mismatched source_channel payload field -- processing anyway, subject is authoritative post-refactor",
+			zap.String("source_channel", action.SourceChannel), zap.Int64("chat_id", action.ChatID))
+	}
+	if idspace.IsWebChat(action.ChatID) {
+		a.logger.Error("refusing telegram send for a WebGateway-namespaced chat_id -- should be structurally impossible after subject-graded routing, treating as a hard safety violation",
+			zap.Int64("chat_id", action.ChatID))
 		return
 	}
 
@@ -630,6 +736,9 @@ func (a *GotdAdapter) handleActionDecision(msg *nats.Msg) {
 	} else {
 		// IsFinal == true: Set 5-second smooth audio/send buffer window instead of jumping immediately to IDLE
 		a.stateMachine.TouchWatchdogChat(action.ChatID, 5*time.Second)
+		if a.urgeEngine != nil {
+			a.urgeEngine.OnTurnCompleted()
+		}
 	}
 
 	// Publish ActionCompleted to NATS

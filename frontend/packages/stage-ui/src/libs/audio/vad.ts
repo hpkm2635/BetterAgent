@@ -164,10 +164,31 @@ export function createVADStates(vad: BaseVAD, vadAudioWorkletUrl: string, option
     workletInitialized = false
   }
 
+  /**
+   * Exposes the AudioContext/source node VAD is already running so other
+   * features (e.g. STT audio capture) can attach their own AudioWorkletNode
+   * to the exact same resampled (16kHz) stream instead of opening a second
+   * independent AudioContext -- two contexts each resampling the same
+   * MediaStream aren't guaranteed to produce byte-identical output, which
+   * would let VAD's speech boundaries drift from the audio actually sent
+   * elsewhere. Both are rebuilt on every start() call (see
+   * disconnectInputGraph), so callers must re-fetch/reconnect after each
+   * start(), not cache these across restarts.
+   */
+  function getAudioContext(): AudioContext | null {
+    return audioContext ?? null
+  }
+
+  function getSourceNode(): MediaStreamAudioSourceNode | null {
+    return sourceNode
+  }
+
   return {
     initialize,
     start,
     stop,
     dispose,
+    getAudioContext,
+    getSourceNode,
   }
 }

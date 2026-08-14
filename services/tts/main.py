@@ -8,10 +8,10 @@ import nats
 from dotenv import load_dotenv
 
 from shared.subjects import (
-    SUBJECT_ACTION_DECISION,
     SUBJECT_AUDIO_CHUNK,
     SUBJECT_STREAM_CANCEL_REQ,
     SUBJECT_USER_INTERRUPT,
+    action_decision_wildcard,
 )
 from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayload
 from shared.logger import setup_logger
@@ -212,10 +212,18 @@ async def main():
         try:
             data = json.loads(msg.data.decode())
             payload_dict = data.get("payload", {})
-            src_channel = payload_dict.get("source_channel", "telegram")
 
+            # Channel routing is now handled by NATS itself (subscribed only
+            # to agent.action.web.* -- see the subscribe call below). TTS is
+            # intentionally web-only (Telegram doesn't get synthesized
+            # streaming voice through this pipeline); source_channel is a
+            # self-reported payload field, so a mismatch here is a publisher
+            # bug worth logging loudly, not a reason to drop a message NATS
+            # already routed correctly. The old "telegram" default existed
+            # specifically to fail-closed into the drop this replaces.
+            src_channel = payload_dict.get("source_channel", "unknown")
             if src_channel != "web":
-                return
+                logger.error(f"Received ActionDecision on web-channel subject with mismatched source_channel={src_channel!r} (chat_id={payload_dict.get('chat_id')}) -- processing anyway, subject is authoritative post-refactor")
 
             act = ActionDecisionPayload(**payload_dict)
             text = act.text_content
@@ -243,7 +251,7 @@ async def main():
         except Exception as err:
             logger.error(f"Error in TTS action_decision_handler: {err}", exc_info=True)
 
-    await nc.subscribe(SUBJECT_ACTION_DECISION, queue="tts_workers", cb=action_decision_handler)
+    await nc.subscribe(action_decision_wildcard("web"), queue="tts_workers", cb=action_decision_handler)
     await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
     await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
 

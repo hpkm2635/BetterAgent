@@ -6,11 +6,11 @@ import nats
 from dotenv import load_dotenv
 from shared.subjects import (
     SUBJECT_REASONING_REQUEST,
-    SUBJECT_ACTION_DECISION,
     SUBJECT_REASONING_COMPLETED,
     SUBJECT_VISION_FRAME,
     SUBJECT_STREAM_CANCEL_REQ,
     SUBJECT_USER_INTERRUPT,
+    action_decision_subject,
 )
 from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
 from shared.logger import setup_logger
@@ -71,13 +71,14 @@ async def main():
                     logger.info(f"⚡ Stream loop stopped mid-reasoning for chat_id={req.chat_id}")
                     break
 
+                subject = action_decision_subject(act.source_channel, act.chat_id)
                 envelope = {
                     "id": req.event_id,
-                    "subject": SUBJECT_ACTION_DECISION,
+                    "subject": subject,
                     "source": "cognitive_service",
                     "payload": act.model_dump(),
                 }
-                await nc.publish(SUBJECT_ACTION_DECISION, json.dumps(envelope).encode())
+                await nc.publish(subject, json.dumps(envelope).encode())
                 actions_count += 1
                 logger.info(f"Published Stream Sentence Chunk: '{act.text_content}' to chat_id={act.chat_id}")
 
@@ -98,23 +99,33 @@ async def main():
         except Exception as e:
             logger.error(f"Error in streaming reasoning task: {e}", exc_info=True)
             if req.chat_id:
+                # `req` is a real ReasoningRequestPayload instance, so
+                # getattr always finds the source_channel attribute (never
+                # falls to the "web" default below) -- but the attribute
+                # itself can be None (Optional field, not reachable through
+                # the normal Go->memory_hub pipeline today, but reachable
+                # from any direct/test construction). ActionDecisionPayload's
+                # source_channel is a non-optional str, so passing None
+                # through would raise a pydantic ValidationError right here
+                # in the error handler, silently losing this apology message.
                 fallback_act = ActionDecisionPayload(
                     event_id=req.event_id,
                     source_component="cognitive_service",
                     chat_id=req.chat_id,
                     generation_id=getattr(req, "generation_id", 1),
-                    source_channel=getattr(req, "source_channel", "web"),
+                    source_channel=getattr(req, "source_channel", "web") or "web",
                     action_type="send_message",
                     text_content="呜……人家的大脑突然打了个瞌睡喵，主人能不能过一会儿再理我一次？",
                     chat_action="typing",
                 )
+                subject = action_decision_subject(fallback_act.source_channel, fallback_act.chat_id)
                 err_envelope = {
                     "id": req.event_id,
-                    "subject": SUBJECT_ACTION_DECISION,
+                    "subject": subject,
                     "source": "cognitive_service",
                     "payload": fallback_act.model_dump(),
                 }
-                await nc.publish(SUBJECT_ACTION_DECISION, json.dumps(err_envelope).encode())
+                await nc.publish(subject, json.dumps(err_envelope).encode())
         finally:
             # 🧹 Always clean up task entry from active_tasks dictionary
             active_tasks.pop(req.chat_id, None)

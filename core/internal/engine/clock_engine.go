@@ -12,14 +12,17 @@ import (
 )
 
 type ClockEngine struct {
-	ticker       *time.Ticker
-	bus          *bus.NatsBus
-	stateMachine *CentralStateMachine
+	ticker         *time.Ticker
+	bus            *bus.NatsBus
+	stateMachine   *CentralStateMachine
 	emotionalState *emotion.EmotionalState
-	circadian    *emotion.CircadianRhythmEvaluator
-	logger       *zap.Logger
-	counter      int
-	lastTickTime time.Time
+	personality    *emotion.PersonalityProfile
+	circadian      *emotion.CircadianRhythmEvaluator
+	urgeEngine          *UrgeEngine
+	autonomousPlayState *AutonomousPlayState
+	logger              *zap.Logger
+	counter             int
+	lastTickTime        time.Time
 }
 
 func NewClockEngine(
@@ -27,18 +30,24 @@ func NewClockEngine(
 	natsBus *bus.NatsBus,
 	csm *CentralStateMachine,
 	emoState *emotion.EmotionalState,
+	personality *emotion.PersonalityProfile,
 	circadian *emotion.CircadianRhythmEvaluator,
+	urgeEngine *UrgeEngine,
+	autonomousPlayState *AutonomousPlayState,
 	logger *zap.Logger,
 ) *ClockEngine {
 	return &ClockEngine{
-		ticker:       time.NewTicker(interval),
-		bus:          natsBus,
-		stateMachine: csm,
-		emotionalState: emoState,
-		circadian:    circadian,
-		logger:       logger,
-		counter:      0,
-		lastTickTime: time.Now(),
+		ticker:              time.NewTicker(interval),
+		bus:                 natsBus,
+		stateMachine:        csm,
+		emotionalState:      emoState,
+		personality:         personality,
+		circadian:           circadian,
+		urgeEngine:          urgeEngine,
+		autonomousPlayState: autonomousPlayState,
+		logger:              logger,
+		counter:             0,
+		lastTickTime:        time.Now(),
 	}
 }
 
@@ -78,6 +87,24 @@ func (ce *ClockEngine) onTick(now time.Time) {
 	// for a while (e.g. one-off WebGateway sessions that never return).
 	if pruned := ce.stateMachine.PruneInactive(ChatStateInactivityTTL); pruned > 0 {
 		ce.logger.Debug("Pruned inactive chat state machines", zap.Int("pruned", pruned))
+	}
+
+	// Urge accumulation & proactive-speech decision. Must run after
+	// EvaluateTick above so it observes any sleep/moody-rest transition that
+	// just landed, and after PruneInactive so a just-evicted chat can't be
+	// picked as the target. Suppressed during active autonomous game play.
+	if ce.urgeEngine != nil {
+		if ce.autonomousPlayState != nil && ce.autonomousPlayState.IsActive() {
+			// Autonomous game play is active -- gameplay poller handles
+			// game turns & game commentary. Suppress off-game casual chatter.
+			ce.urgeEngine.OnTurnCompleted()
+		} else if targetChatID, ok := ResolveProactiveTarget(ce.stateMachine, ce.urgeEngine.PrimaryChatID(), ce.urgeEngine.TargetMaxAge()); ok {
+			targetState := ce.stateMachine.GetChatState(targetChatID)
+			unreadPressure := ce.stateMachine.CountRecentlyActiveChatsExcluding(targetChatID, ce.urgeEngine.UnreadPressureWindow())
+			if fire, reason := ce.urgeEngine.EvaluateTick(now, elapsed, ce.emotionalState, ce.personality, isSleepHours, targetState, unreadPressure); fire {
+				PublishProactiveTurn(ce.bus, ce.stateMachine, ce.emotionalState, ce.personality, ce.circadian, targetChatID, reason, ce.logger)
+			}
+		}
 	}
 
 	// Determine time of day string

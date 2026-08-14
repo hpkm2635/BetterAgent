@@ -26,12 +26,18 @@ graph TD
         ClockEngine["ClockEngine (TICK 定时心跳)"]
         EmotionEngine["EmotionEngine (VAD 3D情绪模型 & 生理指标)"]
         CircadianEvaluator["CircadianRhythm (昼夜生物钟评估器)"]
+        UrgeEngine["UrgeEngine (欲望/枯燥度累加器 & 主动开口决策)"]
+        GameEventIngest["GameEventHandler (HTTP:8090 游戏事件摄入)"]
         GoNatsBus["NatsBus Client (Go)"]
 
         GotdAdapter --> AntiSpam
         GotdAdapter --> HumanEngine
         ClockEngine --> CircadianEvaluator
         CircadianEvaluator --> EmotionEngine
+        EmotionEngine --> UrgeEngine
+        UrgeEngine --> CSM
+        GameEventIngest --> UrgeEngine
+        GameEventIngest --> GoNatsBus
         EmotionEngine --> CSM
         CSM --> GoNatsBus
         GotdAdapter --> GoNatsBus
@@ -121,9 +127,9 @@ sequenceDiagram
         Cog->>Cog: 执行工具生成图片/音频文件
     end
 
-    Cog->>NATS: Publish "agent.action_decision" (ActionDecisionPayload)
+    Cog->>NATS: Publish "agent.action.{channel}.{chat_id}" (ActionDecisionPayload)
     
-    NATS-->>Adapter: Notify "agent.action_decision"
+    NATS-->>Adapter: Notify "agent.action.telegram.*" (subject-graded, Adapter only subscribes to its own channel)
     Adapter->>Adapter: 停止 Typing 心跳协程
     Adapter->>Adapter: HumanizationEngine 模拟拟打字延迟 (min 1.5s, max 8.0s)
     Adapter->>User: 发送回复文本 / 音频 / 图片
@@ -193,13 +199,14 @@ stateDiagram-v2
 | :--- | :--- | :--- |
 | **基础中枢** | `agent.tick` / `agent.inbound_message` / `agent.error` | 系统心跳 / 上行消息 / 错误告警 |
 | **记忆与推理** | `agent.enrich_context_req` / `agent.reasoning_request` | 记忆检索请求 / LLM 推理触发 |
-| **决策与执行** | `agent.action_decision` / `agent.action_completed` | 行动决策下发 / 行动完成确认 |
+| **决策与执行** | `agent.action.{channel}.{chat_id}` / `agent.action_completed` | 行动决策下发（按渠道分级路由，如 `agent.action.web.1001` / `agent.action.telegram.56789`，各渠道适配器只订阅自己的通配符，NATS 在总线层面完成路由，不再靠 payload 里的 `source_channel` 字段各自过滤）/ 行动完成确认（不分渠道，供 Memory 服务统一记录对话历史） |
 | **VAD 听觉** | `agent.speech.start` / `agent.speech.end` | 麦克风开始/结束说话 |
 | **打断撤销** | `agent.user.interrupt` / `agent.stream.cancel_req` | 用户打断 (Barge-in) 撤销 |
 | **数字人流** | `agent.audio.chunk` / `agent.viseme.data` / `agent.tts.stream_chunk` | TTS 音频切片 / Viseme 口型 |
 | **流式控制** | `agent.stt.stream_chunk` / `agent.stt.stream_final` / `agent.tts.stream_end` | STT 转写流 / TTS 结束 |
 | **流式状态** | `agent.stream.cancel_ack` / `agent.stream.state_change` | 流式撤销确认 / 状态变更广播 |
 | **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` | 画面快照 / 情绪动作更新 |
+| **游戏感知** | `agent.game_event` | 外部游戏事件广播（稀有圣物、濒死、胜负结算等） |
 
 ### 4.2 Payload 类图 (Class Diagram)
 
@@ -217,6 +224,14 @@ classDiagram
         +String event_id
         +float timestamp
         +String source_component
+    }
+
+    class GameEventPayload {
+        +String game
+        +String event_type
+        +float weight
+        +String detail
+        +Dict metadata
     }
 
     class InboundMessagePayload {
@@ -286,6 +301,7 @@ classDiagram
     }
 
     EventEnvelope --> BasePayload
+    BasePayload <|-- GameEventPayload
     BasePayload <|-- InboundMessagePayload
     BasePayload <|-- ReasoningRequestPayload
     BasePayload <|-- ActionDecisionPayload
@@ -338,8 +354,21 @@ classDiagram
         +ToPromptDescription() String
     }
 
+    class UrgeEngine {
+        -Mutex mu
+        +float Value
+        +float GameEventEnergy
+        +Time CooldownUntil
+        +Time DeadZoneUntil
+        +RecordGameEvent(weight, reason)
+        +OnTurnCompleted()
+        +EvaluateTick(now, elapsed, emoState, personality, isSleepHours, targetState, unreadPressure) (bool, string)
+    }
+
     CircadianRhythmEvaluator --> EmotionalState : 驱动昼夜衰减
     PersonalityProfile --> EmotionalState : 影响情感变化幅度
+    PersonalityProfile --> UrgeEngine : Extraversion 影响枯燥累加速率
+    EmotionalState --> UrgeEngine : Arousal/Energy 动态调节触发阈值
 ```
 
 ---

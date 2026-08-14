@@ -43,6 +43,18 @@ tools:
     provider: "gemini_imagen"
     model: "imagen-3.0-generate-002"
 
+# STT (services/stt/ bridges an external FunASR streaming WebSocket server --
+# FunASR itself is not part of this repo, run it separately, same way GPT-SoVITS
+# is deployed for TTS). endpoint/mode/sample_rate are read by
+# services/stt/funasr_client.py; sample_rate must match what the browser
+# actually captures at (frontend VAD's AudioContext is fixed at 16kHz).
+stt:
+  provider: "funasr"
+  funasr:
+    endpoint: "ws://127.0.0.1:10095"
+    mode: "2pass"
+    sample_rate: 16000
+
 # MCP Presenter Sessions (PPT narration / VSCode code walkthrough)
 # Servers are spawned on-demand (stdio child process) by presenter_mode(activate,...)
 # and torn down on deactivate or after idle_timeout_seconds -- see docs/ARCHITECTURE.md.
@@ -68,3 +80,86 @@ core_engine:
   clock_tick_seconds: 30
   typing_delay_seconds: 2
   anti_spam_max_rate: 5
+  # Local-only listener for POST /api/game-event (see docs/ARCHITECTURE.md and
+  # core/internal/webgateway/game_event_handler.go). Separate from the
+  # browser-facing WebGateway port (8080) on purpose -- narrower trust tier,
+  # loopback-only. Requires GAME_EVENT_TOKEN in .env to actually accept requests.
+  game_event_bind_addr: "127.0.0.1:8090"
+  # UrgeEngine: cognitive impulse to speak proactively, integrated once per
+  # clock tick from boredom + decaying game-event spikes + a proxy for
+  # unread-chat pressure, fired once it crosses a mood-dependent dynamic
+  # threshold. See core/internal/engine/urge_engine.go.
+  urge:
+    alpha_boredom: 0.02
+    beta_game_event: 1.0
+    gamma_unread_pressure: 0.15
+    base_threshold: 1.0
+    arousal_sensitivity: 0.6
+    energy_penalty: 0.5
+    min_threshold: 0.3
+    max_threshold: 3.0
+    urge_cap: 4.0
+    cooldown_seconds: 90
+    dead_zone_seconds: 20
+    game_event_decay_seconds: 120
+    unread_pressure_window_seconds: 300
+    # 0 = auto-resolve to the most recently active chat/session. Pin to a
+    # specific chat_id to always target one conversation (e.g. a Telegram
+    # chat, or WebNamespaceOffset + N for a specific web session).
+    primary_chat_id: 0
+    target_session_max_age_seconds: 86400
+
+# (game, event_type) -> Urge weight table for POST /api/game-event. Unknown
+# event types fall back to default_weight rather than being rejected, so a
+# game mod can send new event types without a core redeploy.
+game_events:
+  default_weight: 0.1
+  games:
+    # Event types here must match what services/game_watcher/sts2_poller.py
+    # actually detects: rare_relic_pickup, near_death, victory, death.
+    slay_the_spire_2:
+      rare_relic_pickup: 0.6
+      near_death: 0.8
+      victory: 1.0
+      death: 0.5
+
+# STS2 Game Watcher (services/game_watcher/sts2_poller.py) -- polls the
+# STS2MCP mod's local REST API (https://github.com/Gennadiyev/STS2MCP,
+# localhost:15526, no auth, read-only for our purposes) and reports detected
+# events to core_engine.game_event_bind_addr above. No-ops gracefully if the
+# game/mod aren't running.
+game_watcher:
+  sts2:
+    api_url: "http://127.0.0.1:15526/api/v1/singleplayer"
+    poll_interval_seconds: 5
+    # HP/max_hp ratio at or below which a "near_death" event fires (once per
+    # dip -- re-arms after HP recovers above 1.5x this ratio).
+    near_death_hp_ratio: 0.15
+    # Relic rarities (case-insensitive, as returned by the mod) that count as
+    # a "rare_relic_pickup".
+    rare_relic_rarities: ["rare", "boss"]
+    # Autonomous play MVP (see services/cognitive/tools/sts2_action_tool.py
+    # and docs -- bare LLM-calls-tools, no local tactical engine yet).
+    # Go's /api/game-turn handler resolves the REAL target chat itself, from
+    # whichever chat most recently sent /game_start -- this value is just a
+    # local on/off switch for the poller: 0 = don't even attempt game-turn
+    # POSTs (relic/near-death/victory/death event reporting above still
+    # works either way). Any nonzero placeholder enables it; the actual
+    # value is ignored by Go once /game_start has been used. Autonomous play
+    # itself still defaults OFF regardless -- a human must send /game_start
+    # to activate it (see docs/ARCHITECTURE.md).
+    target_chat_id: 1
+    # Path to the STS2MCP mod's strategic playbook, resolved relative to repo
+    # root, woven into the system prompt for trigger_type == "game_turn" turns.
+    agents_md_path: "config/sts2_agents.md"
+    # Overrides CognitiveEngine.MAX_GAME_TOOL_ROUNDS -- how many LLM<->tool
+    # round trips one game turn may take before being forced to wrap up in
+    # text. Higher than chat's MAX_TOOL_ROUNDS=4 since a single combat turn
+    # can legitimately need many card plays in a row.
+    max_tool_rounds: 20
+    # Sts2HttpClient.post_action: pacing delay after every STS2 action POST,
+    # before fetching the follow-up state, so Godot's UI/animation node tree
+    # (card play, end-turn) settles before the LLM sees the next state and
+    # decides its next move. end_turn specifically waits at least 1.0s
+    # (boss-intent animations can run longer than a normal card play).
+    action_delay_seconds: 0.6

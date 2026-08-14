@@ -111,6 +111,23 @@ func (e *EmotionalState) updateMoodTagLocked() {
 	}
 }
 
+// GetArousal and GetEnergy are locked accessors for packages outside
+// emotion (e.g. engine.UrgeEngine) that need to read VAD/physiological
+// fields without reaching past the mutex -- every other external read of
+// EmotionalState goes through a locking method (ToPromptDescription,
+// CheckTrigger), never a direct field access.
+func (e *EmotionalState) GetArousal() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.Arousal
+}
+
+func (e *EmotionalState) GetEnergy() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.Energy
+}
+
 func (e *EmotionalState) CheckTrigger() *EventSignal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()

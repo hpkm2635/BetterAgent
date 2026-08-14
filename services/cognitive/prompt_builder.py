@@ -1,6 +1,32 @@
+import logging
+import os
 from typing import List, Dict, Any, Optional
 from shared.schema.payloads import ReasoningRequestPayload
 from shared.persona_loader import PersonaLoader
+from shared.config_loader import get_config_val
+
+logger = logging.getLogger("prompt_builder")
+
+
+def _load_sts2_agents_md() -> str:
+    # AGENTS.md is static playbook content bundled with the vendored STS2MCP
+    # mod, not user-editable persona config -- unlike PersonaLoader's
+    # per-turn re-read, loading it once at import is correct here.
+    rel_path = get_config_val("game_watcher.sts2.agents_md_path", "config/sts2_agents.md")
+    try:
+        # Resolve relative to repo root, same convention shared/config_loader.py
+        # uses to find config/config.yaml (prompt_builder.py lives 3 levels
+        # below repo root: services/cognitive/prompt_builder.py).
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        full_path = os.path.join(repo_root, rel_path)
+        with open(full_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        logger.warning(f"Failed to load STS2 AGENTS.md from {rel_path!r} ({e}); game turns will proceed without it")
+        return ""
+
+
+_STS2_AGENTS_MD_CONTENT = _load_sts2_agents_md()
 
 
 # Prepended to every system prompt, ahead of persona content, as a
@@ -48,6 +74,28 @@ class PromptBuilder:
             payload.current_emotion,  # Contains emotion + personality + circadian description
         ]
 
+        if payload.trigger_type == "proactive" and payload.proactive_reason:
+            prompt_parts.append(
+                f"[主动搭话] 你现在决定主动开口说话，原因: {payload.proactive_reason}。"
+                "不要等待被提问，自然地开启或延续话题，语气要符合你现在的心情。"
+            )
+
+        if payload.trigger_type == "game_turn":
+            if _STS2_AGENTS_MD_CONTENT:
+                prompt_parts.append(_STS2_AGENTS_MD_CONTENT)
+            prompt_parts.append(
+                "[游戏自动托管 - 精简快节奏解说模式]\n"
+                "1. 【发言极简】打牌解说请保持极度短小精悍（每轮不超过 1 句短句，10 字以内，如“看招，吃我重击！”、“能量空了，结束回合喵！”），绝不要长篇大论，确保语气与打牌节奏同步。\n"
+                "2. 【强制动作】你必须通过调用工具（Tool Call）执行游戏动作，禁止仅输出纯聊天文本。\n"
+                "3. 如果手牌有可用卡牌且能量足够，优先按右到左顺序调用 sts2_play_card 打出。\n"
+                "3.5. 【批量出牌，节省时间】如果你已经想好了这整个回合要打哪几张牌（不需要先看某张牌打出后的效果再决定下一步），"
+                "可以在同一次回复里一次性发起这几张牌对应的多个 sts2_play_card 工具调用，不必每打一张就单独请求一轮——"
+                "系统会自动按索引从高到低的正确顺序执行，你不需要自己操心出牌顺序换算，只管在同一轮里把决定好的牌都调用出来即可。"
+                "只有当某张牌的效果会影响你对后续手牌的判断时（例如抽牌、生成新卡），才需要先看结果再决定下一步。\n"
+                "4. 【关键规则】如果当前剩余能量为 0，或手牌中所有卡牌都因能量不足/无法打出时，你必须立即调用 sts2_end_turn 工具结束当前回合，将回合交给敌方！\n"
+                "5. 在非战斗场景（地图/奖励/事件），优先调用 sts2_choose_map_node / sts2_claim_reward / sts2_choose_event_option。"
+            )
+
         if payload.user_profile:
             pref = payload.user_profile.get("preferred_name", "主人")
             prompt_parts.append(f"[称呼习惯] 你称呼对方为：{pref}")
@@ -76,5 +124,21 @@ class PromptBuilder:
                     "role": "user",
                     "content": payload.inbound_message.raw_text,
                 })
+        elif payload.trigger_type == "proactive":
+            # No inbound_message to close the turn on for a proactive
+            # request -- append a synthetic user-role turn so the model has
+            # something to respond to instead of trailing off on stale
+            # short_term_history.
+            messages.append({
+                "role": "user",
+                "content": f"[系统提示: 该你主动说点什么了 —— {payload.proactive_reason or ''}]",
+            })
+        elif payload.trigger_type == "game_turn":
+            # Same reasoning as the proactive branch above -- a game turn
+            # also has no inbound_message to close on.
+            messages.append({
+                "role": "user",
+                "content": "[系统提示: 检测到新的游戏决策点]",
+            })
 
         return messages

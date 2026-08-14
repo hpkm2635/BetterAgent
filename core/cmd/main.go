@@ -57,11 +57,44 @@ func main() {
 	// Initialize CentralStateMachine
 	csm := engine.NewCentralStateMachine(logger)
 
-	// Initialize ClockEngine (30s interval tick)
-	clockEngine := engine.NewClockEngine(30*time.Second, natsBus, csm, emoState, circadian, logger)
+	// Initialize UrgeEngine (cognitive impulse to speak proactively -- see
+	// core/internal/engine/urge_engine.go and docs/ARCHITECTURE.md)
+	urgeYAML := cfg.YAML.CoreEngine.Urge
+	urgeEngine := engine.NewUrgeEngine(engine.UrgeParams{
+		AlphaBoredom:         urgeYAML.AlphaBoredom,
+		BetaGameEvent:        urgeYAML.BetaGameEvent,
+		GammaUnreadPressure:  urgeYAML.GammaUnreadPressure,
+		BaseThreshold:        urgeYAML.BaseThreshold,
+		ArousalSensitivity:   urgeYAML.ArousalSensitivity,
+		EnergyPenalty:        urgeYAML.EnergyPenalty,
+		MinThreshold:         urgeYAML.MinThreshold,
+		MaxThreshold:         urgeYAML.MaxThreshold,
+		UrgeCap:              urgeYAML.UrgeCap,
+		CooldownDuration:     time.Duration(urgeYAML.CooldownSeconds) * time.Second,
+		DeadZoneDuration:     time.Duration(urgeYAML.DeadZoneSeconds) * time.Second,
+		GameEventDecay:       time.Duration(urgeYAML.GameEventDecaySeconds) * time.Second,
+		UnreadPressureWindow: time.Duration(urgeYAML.UnreadPressureWindowSeconds) * time.Second,
+		PrimaryChatID:        urgeYAML.PrimaryChatID,
+		TargetSessionMaxAge:  time.Duration(urgeYAML.TargetSessionMaxAgeSeconds) * time.Second,
+	}, logger)
 
-	// Initialize WebGateway WebSocket Server (Port 8080)
-	webServer := webgateway.NewServer(":8080", cfg.WebGatewayToken, cfg.WebGatewayAllowedOrigins, natsBus, csm, emoState, personality, circadian, logger)
+	// Autonomous game play toggle (see /game_start //game_stop handling in
+	// gotd/adapter.go and webgateway/nats_bridge.go, and POST /api/game-turn
+	// in webgateway/game_turn_handler.go). Default OFF -- nothing fires
+	// until a human explicitly activates it.
+	autonomousPlayState := engine.NewAutonomousPlayState()
+
+	// Initialize ClockEngine (30s interval tick)
+	clockEngine := engine.NewClockEngine(30*time.Second, natsBus, csm, emoState, personality, circadian, urgeEngine, autonomousPlayState, logger)
+
+	gameEventWeights := webgateway.GameEventWeights{
+		DefaultWeight: cfg.YAML.GameEvents.DefaultWeight,
+		Games:         cfg.YAML.GameEvents.Games,
+	}
+
+	// Initialize WebGateway WebSocket Server (Port 8080) + dedicated
+	// loopback-only game-event listener (see game_event_bind_addr in config.yaml)
+	webServer := webgateway.NewServer(":8080", cfg.WebGatewayToken, cfg.WebGatewayAllowedOrigins, natsBus, csm, emoState, personality, circadian, urgeEngine, autonomousPlayState, cfg.GameEventToken, cfg.YAML.CoreEngine.GameEventBindAddr, gameEventWeights, logger)
 	if err := webServer.Start(); err != nil {
 		logger.Error("Failed to start WebGateway server", zap.Error(err))
 	}
@@ -72,7 +105,7 @@ func main() {
 	}()
 
 	// Initialize GotdAdapter
-	adapter, err := gotd.NewGotdAdapter(cfg, natsBus, csm, emoState, personality, circadian, logger)
+	adapter, err := gotd.NewGotdAdapter(cfg, natsBus, csm, emoState, personality, circadian, urgeEngine, autonomousPlayState, logger)
 	if err != nil {
 		logger.Fatal("Failed to create GotdAdapter", zap.Error(err))
 	}

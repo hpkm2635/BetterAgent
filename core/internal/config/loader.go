@@ -41,10 +41,32 @@ type YAMLConfig struct {
 		TopKRAG              int     `yaml:"top_k_rag"`
 	} `yaml:"memory"`
 	CoreEngine struct {
-		ClockTickSeconds    int `yaml:"clock_tick_seconds"`
-		TypingDelaySeconds  int `yaml:"typing_delay_seconds"`
-		AntiSpamMaxRate     int `yaml:"anti_spam_max_rate"`
+		ClockTickSeconds   int    `yaml:"clock_tick_seconds"`
+		TypingDelaySeconds int    `yaml:"typing_delay_seconds"`
+		AntiSpamMaxRate    int    `yaml:"anti_spam_max_rate"`
+		GameEventBindAddr  string `yaml:"game_event_bind_addr"`
+		Urge               struct {
+			AlphaBoredom                float64 `yaml:"alpha_boredom"`
+			BetaGameEvent               float64 `yaml:"beta_game_event"`
+			GammaUnreadPressure         float64 `yaml:"gamma_unread_pressure"`
+			BaseThreshold               float64 `yaml:"base_threshold"`
+			ArousalSensitivity          float64 `yaml:"arousal_sensitivity"`
+			EnergyPenalty               float64 `yaml:"energy_penalty"`
+			MinThreshold                float64 `yaml:"min_threshold"`
+			MaxThreshold                float64 `yaml:"max_threshold"`
+			UrgeCap                     float64 `yaml:"urge_cap"`
+			CooldownSeconds             int     `yaml:"cooldown_seconds"`
+			DeadZoneSeconds             int     `yaml:"dead_zone_seconds"`
+			GameEventDecaySeconds       int     `yaml:"game_event_decay_seconds"`
+			UnreadPressureWindowSeconds int     `yaml:"unread_pressure_window_seconds"`
+			PrimaryChatID               int64   `yaml:"primary_chat_id"`
+			TargetSessionMaxAgeSeconds  int     `yaml:"target_session_max_age_seconds"`
+		} `yaml:"urge"`
 	} `yaml:"core_engine"`
+	GameEvents struct {
+		DefaultWeight float64                       `yaml:"default_weight"`
+		Games         map[string]map[string]float64 `yaml:"games"`
+	} `yaml:"game_events"`
 }
 
 type Config struct {
@@ -62,7 +84,11 @@ type Config struct {
 	// open the /ws WebSocket (glob patterns, e.g. "example.com", "*.example.com").
 	// If empty, Origin is not checked (WEBGATEWAY_TOKEN is still required either way).
 	WebGatewayAllowedOrigins []string
-	YAML                     YAMLConfig
+	// GameEventToken gates POST /api/game-event (see webgateway/game_event_handler.go).
+	// Empty disables the endpoint rather than failing startup -- it's an
+	// optional integration, unlike WEBGATEWAY_TOKEN.
+	GameEventToken string
+	YAML           YAMLConfig
 }
 
 func LoadConfig() *Config {
@@ -131,6 +157,7 @@ func LoadConfig() *Config {
 		QdrantURL:                qdrantURL,
 		WebGatewayToken:          getEnv("WEBGATEWAY_TOKEN", ""),
 		WebGatewayAllowedOrigins: allowedOrigins,
+		GameEventToken:           getEnv("GAME_EVENT_TOKEN", ""),
 		YAML:                     yc,
 	}
 }

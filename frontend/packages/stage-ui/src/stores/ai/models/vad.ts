@@ -149,6 +149,19 @@ export function useVAD(workerUrl: string, options?: UseVADOptions) {
       await manager.value.start(stream)
   }
 
+  /**
+   * For features that need to tap the same already-16kHz-resampled audio VAD
+   * is capturing (e.g. STT) instead of opening a second AudioContext. Call
+   * again after every start() -- the underlying nodes are rebuilt each time.
+   */
+  function getAudioNodes(): { audioContext: AudioContext, sourceNode: MediaStreamAudioSourceNode } | undefined {
+    const audioContext = manager.value?.getAudioContext()
+    const sourceNode = manager.value?.getSourceNode()
+    if (!audioContext || !sourceNode)
+      return undefined
+    return { audioContext, sourceNode }
+  }
+
   function dispose() {
     manager.value?.stop()
     manager.value?.dispose()
@@ -201,5 +214,6 @@ export function useVAD(workerUrl: string, options?: UseVADOptions) {
     init,
     start,
     dispose,
+    getAudioNodes,
   }
 }

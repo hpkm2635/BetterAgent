@@ -195,6 +195,29 @@ class CognitiveEngine:
     # stream_reasoning_loop so a tool-happy model can't spin forever.
     MAX_TOOL_ROUNDS = 4
 
+    # Higher budget for trigger_type == "game_turn" -- a single combat turn
+    # can legitimately need many sts2_play_card/sts2_end_turn round trips in
+    # a row. Raising this does NOT increase watchdog-trip risk: every round
+    # already emits a heartbeat chunk unconditionally (see the comment
+    # further down where it's yielded), which keeps re-arming Go's sliding
+    # 30s StreamingTTS watchdog regardless of total round count -- it only
+    # affects worst-case total wall-clock time for one turn, which is fine
+    # since no synchronous human is blocking on a game turn the way they are
+    # on a chat reply.
+    MAX_GAME_TOOL_ROUNDS = int(get_config_val("game_watcher.sts2.max_tool_rounds", 20))
+
+    # STS2 tools whose index argument shifts as earlier same-type actions in
+    # the same batch execute (AGENTS.md's "play/claim right-to-left, highest
+    # index first" rule). Letting the model batch several of these into one
+    # response (see prompt_builder.py's game_turn guidance) only saves real
+    # round trips if batching is actually SAFE regardless of what order the
+    # model happened to list them in -- see _reorder_index_shifting_calls.
+    STS2_INDEX_SHIFT_FIELDS = {
+        "sts2_play_card": "card_index",
+        "sts2_claim_reward": "index",
+        "sts2_select_card_reward": "card_index",
+    }
+
     def __init__(self, default_provider_name: str = "gemini"):
         self.presenter_manager = PresenterSessionManager(
             server_commands=self._load_presenter_server_commands(),
@@ -296,6 +319,49 @@ class CognitiveEngine:
             )
         return None
 
+    @classmethod
+    def _reorder_index_shifting_calls(cls, pending_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        A batched round of tool calls (e.g. several sts2_play_card calls
+        requested in one LLM response, see prompt_builder.py's game_turn
+        guidance encouraging exactly this) is only safe to execute as-given
+        if the model's card_index/index values were all computed against the
+        SAME pre-batch snapshot -- but playing/claiming index N shifts every
+        higher index left for whatever comes after it (AGENTS.md's own
+        warning). Re-sorting each STS2_INDEX_SHIFT_FIELDS tool's calls into
+        descending-index order removes the model's need to reason about that
+        ordering itself, which is what actually makes batching worthwhile:
+        without this, a naive batch would need to fall back to one call at a
+        time anyway to stay correct, defeating the round-trip savings.
+
+        Preserves the original list's interleaving: each STS2_INDEX_SHIFT_FIELDS
+        tool's calls are reordered only among themselves and reinserted at the
+        same slots they originally occupied, so a non-index-shifting call
+        (e.g. sts2_use_potion) sitting between two play_card calls keeps its
+        original relative position. Calls to other tools are untouched.
+        """
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for call in pending_calls:
+            name = call.get("name")
+            if name in cls.STS2_INDEX_SHIFT_FIELDS:
+                buckets.setdefault(name, []).append(call)
+
+        for name, field in cls.STS2_INDEX_SHIFT_FIELDS.items():
+            bucket = buckets.get(name)
+            if bucket and len(bucket) > 1:
+                bucket.sort(key=lambda c: (c.get("args") or {}).get(field) or 0, reverse=True)
+
+        cursor = {name: 0 for name in buckets}
+        reordered = []
+        for call in pending_calls:
+            name = call.get("name")
+            if name in buckets:
+                reordered.append(buckets[name][cursor[name]])
+                cursor[name] += 1
+            else:
+                reordered.append(call)
+        return reordered
+
     @staticmethod
     def _append_tool_round_trip(
         messages: List[Dict[str, Any]],
@@ -368,7 +434,19 @@ class CognitiveEngine:
         inbound_text = (payload.inbound_message.raw_text.strip()
                         if payload.inbound_message and payload.inbound_message.raw_text
                         else "")
-        
+
+        # Resolve source_channel up front (same precedence as the main path
+        # below) -- these fast-path replies bypass the main construction
+        # block entirely, so without this they'd fall back to
+        # ActionDecisionPayload's pydantic default ("telegram"), which is
+        # wrong for a web user typing e.g. "/health" and gets the reply
+        # silently dropped by every channel adapter's filter.
+        fast_path_src_channel = payload.source_channel or (
+            payload.inbound_message.source_channel
+            if payload.inbound_message and getattr(payload.inbound_message, "source_channel", None)
+            else "telegram"
+        )
+
         cmd = inbound_text.lower()
         if cmd == "/ping":
             return [
@@ -376,6 +454,7 @@ class CognitiveEngine:
                     event_id=payload.event_id,
                     source_component="cognitive_engine",
                     chat_id=payload.chat_id,
+                    source_channel=fast_path_src_channel,
                     action_type="send_message",
                     text_content="pong 喵~ 🏓 (BetterAgent 系统运行正常！)",
                     chat_action="typing",
@@ -397,6 +476,7 @@ class CognitiveEngine:
                     event_id=payload.event_id,
                     source_component="cognitive_engine",
                     chat_id=payload.chat_id,
+                    source_channel=fast_path_src_channel,
                     action_type="send_message",
                     text_content=status_text,
                     chat_action="typing",
@@ -415,19 +495,21 @@ class CognitiveEngine:
                     event_id=payload.event_id,
                     source_component="cognitive_engine",
                     chat_id=payload.chat_id,
+                    source_channel=fast_path_src_channel,
                     action_type="send_message",
                     text_content=help_text,
                     chat_action="typing",
                 )
             ]
 
-        # Determine source_channel from inbound_message
-        src_channel = "telegram"
-        if payload.inbound_message and getattr(payload.inbound_message, "source_channel", None):
-            src_channel = payload.inbound_message.source_channel
+        # Already resolved above (fast_path_src_channel) using the same
+        # precedence -- reuse it instead of recomputing.
+        src_channel = fast_path_src_channel
 
         # Channel-Aware Tools: Filter schemas depending on channel (Exclude telegram_action on Web)
         all_schemas = self.tool_registry.get_all_schemas()
+        if payload.trigger_type == "game_turn":
+            all_schemas = all_schemas + self.tool_registry.get_game_schemas()
         if src_channel == "web":
             tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"]
         else:
@@ -460,29 +542,40 @@ class CognitiveEngine:
         tool_calls = result.get("tool_calls", [])
         raw_text = result.get("text", "")
 
-        # Fallback: Parse embedded ReAct JSON tool calls from text if native tool_calls is empty
-        if not tool_calls and '"action":' in raw_text and '"action_input":' in raw_text:
+        # Fallback: Parse embedded ReAct / JSON image/tool calls from text if native tool_calls is empty
+        if not tool_calls:
             import json
-            try:
-                json_match = re.search(r"\{\s*\"action\"\s*:\s*\"([^\"]+)\".*?\"action_input\"\s*:\s*(.*?)\s*\}", raw_text, re.DOTALL)
-                if json_match:
-                    act_name = json_match.group(1)
-                    act_input_str = json_match.group(2).strip()
-                    if act_input_str.startswith('"') and act_input_str.endswith('"'):
-                        try:
-                            act_input_str = json.loads(act_input_str)
-                        except Exception:
-                            pass
-                    act_args = json.loads(act_input_str) if isinstance(act_input_str, str) and act_input_str.startswith('{') else {"prompt": act_input_str}
-                    tool_calls = [{"name": act_name, "args": act_args}]
-            except Exception as pe:
-                logger.warning(f"Failed to parse ReAct JSON tool call: {pe}")
+            if '"action":' in raw_text and '"action_input":' in raw_text:
+                try:
+                    json_match = re.search(r"\{\s*\"action\"\s*:\s*\"([^\"]+)\".*?\"action_input\"\s*:\s*(.*?)\s*\}", raw_text, re.DOTALL)
+                    if json_match:
+                        act_name = json_match.group(1)
+                        act_input_str = json_match.group(2).strip()
+                        if act_input_str.startswith('"') and act_input_str.endswith('"'):
+                            try:
+                                act_input_str = json.loads(act_input_str)
+                            except Exception:
+                                pass
+                        act_args = json.loads(act_input_str) if isinstance(act_input_str, str) and act_input_str.startswith('{') else {"prompt": act_input_str}
+                        tool_calls = [{"name": act_name, "args": act_args}]
+                except Exception as pe:
+                    logger.warning(f"Failed to parse ReAct JSON tool call: {pe}")
+            elif '"prompt":' in raw_text and ('"category":' in raw_text or '"style":' in raw_text):
+                try:
+                    img_match = re.search(r"\{\s*\"prompt\"\s*:[\s\S]*?\}", raw_text)
+                    if img_match:
+                        img_args = json.loads(img_match.group(0))
+                        tool_calls = [{"name": "generate_image", "args": img_args}]
+                except Exception as pe:
+                    logger.warning(f"Failed to parse embedded image JSON: {pe}")
 
-        # Determine source_channel & generation_id from payload
-        src_channel = "telegram"
+        # Determine source_channel & generation_id from payload. Prefer the
+        # top-level source_channel (set for every turn, including proactive
+        # ones with no inbound_message) over the inbound_message-derived value.
+        src_channel = payload.source_channel or "telegram"
         gen_id = getattr(payload, "generation_id", 1)
         if payload.inbound_message:
-            if getattr(payload.inbound_message, "source_channel", None):
+            if not payload.source_channel and getattr(payload.inbound_message, "source_channel", None):
                 src_channel = payload.inbound_message.source_channel
             if getattr(payload.inbound_message, "generation_id", None):
                 gen_id = payload.inbound_message.generation_id
@@ -573,10 +666,14 @@ class CognitiveEngine:
         if payload.trigger_type == "tick" and not getattr(payload, "is_proactive_opportunity", False):
             return
 
-        src_channel = "telegram"
+        # See execute_reasoning_loop's equivalent block above for why
+        # source_channel must be preferred over inbound_message -- a
+        # proactive turn (trigger_type == "proactive") always has
+        # inbound_message = None.
+        src_channel = payload.source_channel or "telegram"
         gen_id = getattr(payload, "generation_id", 1)
         if payload.inbound_message:
-            if getattr(payload.inbound_message, "source_channel", None):
+            if not payload.source_channel and getattr(payload.inbound_message, "source_channel", None):
                 src_channel = payload.inbound_message.source_channel
             if getattr(payload.inbound_message, "generation_id", None):
                 gen_id = payload.inbound_message.generation_id
@@ -596,13 +693,22 @@ class CognitiveEngine:
 
         segmenter = SentenceSegmenter()
 
+        max_rounds = self.MAX_GAME_TOOL_ROUNDS if payload.trigger_type == "game_turn" else self.MAX_TOOL_ROUNDS
+
         try:
-            for round_idx in range(self.MAX_TOOL_ROUNDS):
+            for round_idx in range(max_rounds):
                 # Recomputed every round, not just once up front: a
                 # presenter_mode(activate) call in round N must make its
                 # ppt_*/vscode_* tools visible to round N+1 in this same
-                # turn, not just to some future reasoning call.
+                # turn, not just to some future reasoning call. sts2_* game
+                # tools follow the same pattern, gated on trigger_type
+                # instead of live session state -- Go decides a game turn is
+                # happening before any LLM call occurs, so there's no
+                # LLM-initiated toggle to track here (see
+                # ToolRegistry.get_game_schemas).
                 all_schemas = self.tool_registry.get_all_schemas() + self.presenter_manager.get_active_tool_schemas(payload.chat_id)
+                if payload.trigger_type == "game_turn":
+                    all_schemas = all_schemas + self.tool_registry.get_game_schemas()
                 tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"] if src_channel == "web" else all_schemas
 
                 stream_gen = self.default_provider.generate_stream(
@@ -673,6 +779,8 @@ class CognitiveEngine:
                 )
 
                 needs_another_round = False
+                if payload.trigger_type == "game_turn":
+                    pending_calls = self._reorder_index_shifting_calls(pending_calls)
                 for call in pending_calls:
                     tool_name = call.get("name")
                     tool_args = call.get("args", {}) or {}
@@ -710,7 +818,7 @@ class CognitiveEngine:
                 # another tool, so it must wrap up in plain text using
                 # whatever it already learned from the tool results appended
                 # to `messages` across the rounds above.
-                logger.warning(f"stream_reasoning_loop hit MAX_TOOL_ROUNDS for chat_id={payload.chat_id}, forcing text-only wrap-up round")
+                logger.warning(f"stream_reasoning_loop hit its round budget ({max_rounds}, trigger_type={payload.trigger_type!r}) for chat_id={payload.chat_id}, forcing text-only wrap-up round")
                 wrapup_stream = self.default_provider.generate_stream(
                     messages=messages,
                     tools_schema=[],

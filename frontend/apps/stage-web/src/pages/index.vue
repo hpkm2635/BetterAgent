@@ -6,6 +6,7 @@ import InteractiveArea from '@proj-airi/stage-layouts/components/Layouts/Interac
 import MobileHeader from '@proj-airi/stage-layouts/components/Layouts/MobileHeader.vue'
 import MobileInteractiveArea from '@proj-airi/stage-layouts/components/Layouts/MobileInteractiveArea.vue'
 import workletUrl from '@proj-airi/stage-ui/workers/vad/process.worklet?worker&url'
+import sttCaptureWorkletUrl from '@proj-airi/stage-ui/workers/stt-capture/process.worklet?worker&url'
 
 import { BackgroundProvider } from '@proj-airi/stage-layouts/components/Backgrounds'
 import { useBackgroundThemeColor } from '@proj-airi/stage-layouts/composables/theme-color'
@@ -59,6 +60,7 @@ const {
   dispose: disposeVAD,
   start: startVAD,
   loaded: vadLoaded,
+  getAudioNodes: getVADAudioNodes,
 } = useVAD(workletUrl, {
   threshold: ref(0.6),
   onSpeechStart: () => handleSpeechStart(),
@@ -68,12 +70,41 @@ const {
 let stopOnStopRecord: (() => void) | undefined
 
 import { betterAgentWSBridge } from '../bridge/betteragent-ws'
+import { useSTTAudioCapture } from '../composables/stt-audio-capture'
+
+// True when the BetterAgent Go WebGateway bridge owns this session (see
+// stores/chat.ts's streamWithStageAdapters doing the same window.__betterAgentWSBridge
+// check for text) -- when it does, voice goes through the FunASR streaming
+// pipeline below instead of Airi's own local record-then-transcribe-once flow
+// or its provider-native streaming input, both of which would otherwise also
+// try to submit the same utterance.
+function isBetterAgentBridgeActive(): boolean {
+  return typeof window !== 'undefined' && !!(window as any).__betterAgentWSBridge
+}
+
+const sttAudioCapture = useSTTAudioCapture(sttCaptureWorkletUrl, {
+  onChunk: pcm => betterAgentWSBridge.sendAudioChunk(pcm),
+})
+
+async function connectSTTCapture() {
+  const nodes = getVADAudioNodes()
+  if (!nodes)
+    return
+  try {
+    await sttAudioCapture.connect(nodes.audioContext, nodes.sourceNode)
+  }
+  catch (e) {
+    console.error('Failed to connect STT audio capture:', e)
+  }
+}
 
 async function startAudioInteraction() {
   try {
     await initVAD()
-    if (stream.value)
+    if (stream.value) {
       await startVAD(stream.value)
+      await connectSTTCapture()
+    }
 
     // Hook once
     stopOnStopRecord = onStopRecord(async (recording) => {
@@ -102,6 +133,11 @@ async function handleSpeechStart() {
   // Trigger Barge-in cancel on BetterAgent WebSocket Gateway
   betterAgentWSBridge.sendSpeechStart()
 
+  if (isBetterAgentBridgeActive()) {
+    sttAudioCapture.startCapturing()
+    return
+  }
+
   if (shouldUseStreamInput.value) {
     return
   }
@@ -111,6 +147,11 @@ async function handleSpeechStart() {
 
 async function handleSpeechEnd() {
   betterAgentWSBridge.sendSpeechEnd()
+
+  if (isBetterAgentBridgeActive()) {
+    sttAudioCapture.stopCapturing()
+    return
+  }
 
   if (shouldUseStreamInput.value) {
     return
@@ -123,6 +164,7 @@ function stopAudioInteraction() {
   try {
     stopOnStopRecord?.()
     stopOnStopRecord = undefined
+    sttAudioCapture.disconnect()
     disposeVAD()
   }
   catch {}
@@ -145,6 +187,7 @@ watch([stream, () => vadLoaded.value], async ([s, loaded]) => {
   if (enabled.value && loaded && s) {
     try {
       await startVAD(s)
+      await connectSTTCapture()
     }
     catch (e) {
       console.error('Failed to start VAD with stream:', e)

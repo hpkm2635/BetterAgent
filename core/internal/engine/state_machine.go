@@ -33,7 +33,7 @@ const (
 	ThinkingTimeoutDuration        = 45 * time.Second
 	TalkingTimeoutDuration         = 60 * time.Second
 	StreamingTTSTimeoutDuration    = 30 * time.Second
-	CancellingTimeoutDuration       = 10 * time.Second
+	CancellingTimeoutDuration      = 10 * time.Second
 	ExecutingActionTimeoutDuration = 45 * time.Second
 
 	// ChatStateInactivityTTL bounds how long an IDLE per-chat state machine is
@@ -64,7 +64,12 @@ func IsValidTransition(from, to State) bool {
 	case StateInterrupted:
 		return to == StateCancelling || to == StateThinking || to == StateIdle
 	case StateCancelling:
-		return to == StateIdle || to == StateThinking || to == StateErrorRecovery
+		// StateListening: barge-in case -- agent was talking, user's speech_start
+		// fires the shared cancel-and-listen path (see nats_bridge.go), landing
+		// here from StateCancelling moments before the VAD-driven Listening
+		// transition is attempted. Without this, that Listening attempt would
+		// be rejected as invalid whenever it races the cancel.
+		return to == StateIdle || to == StateThinking || to == StateErrorRecovery || to == StateListening
 	case StateExecutingAction:
 		return to == StateIdle || to == StateErrorRecovery || to == StateTalking || to == StateStreamingTTS
 	case StateSleeping:
@@ -79,15 +84,15 @@ func IsValidTransition(from, to State) bool {
 }
 
 type ChatStateMachine struct {
-	mu               sync.Mutex
-	chatID           int64
-	currentState     State
-	generationID     uint64
-	lastTransition   time.Time
-	lastTouchTime    time.Time
-	watchdogTimer    *time.Timer
-	logger           *zap.Logger
-	onTimeout        func(chatID int64, state State)
+	mu             sync.Mutex
+	chatID         int64
+	currentState   State
+	generationID   uint64
+	lastTransition time.Time
+	lastTouchTime  time.Time
+	watchdogTimer  *time.Timer
+	logger         *zap.Logger
+	onTimeout      func(chatID int64, state State)
 }
 
 func newChatStateMachine(chatID int64, logger *zap.Logger, onTimeout func(chatID int64, state State)) *ChatStateMachine {
@@ -259,10 +264,12 @@ func (csm *ChatStateMachine) TransitionTo(newState State, reason string) bool {
 }
 
 type CentralStateMachine struct {
-	mu            sync.RWMutex
-	chatStates    map[int64]*ChatStateMachine
-	logger        *zap.Logger
-	timeoutCb     func(chatID int64, state State)
+	mu               sync.RWMutex
+	chatStates       map[int64]*ChatStateMachine
+	logger           *zap.Logger
+	timeoutCb        func(chatID int64, state State)
+	lastActiveChatID int64
+	lastActiveAt     time.Time
 }
 
 func NewCentralStateMachine(logger *zap.Logger) *CentralStateMachine {
@@ -322,6 +329,57 @@ func (sm *CentralStateMachine) PruneInactive(maxIdle time.Duration) int {
 		}
 	}
 	return pruned
+}
+
+// TouchActivity records chatID as the most recently active chat, used by
+// UrgeEngine (via ResolveProactiveTarget) to pick which session a proactive
+// turn should be aimed at when no PrimaryChatID is configured.
+func (sm *CentralStateMachine) TouchActivity(chatID int64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.lastActiveChatID = chatID
+	sm.lastActiveAt = time.Now()
+}
+
+// GetMostRecentlyActiveChatID returns the last chat touched via
+// TouchActivity, provided that touch happened within maxAge. Returns
+// (0, false) if no chat has been touched yet or the most recent touch is
+// stale.
+func (sm *CentralStateMachine) GetMostRecentlyActiveChatID(maxAge time.Duration) (int64, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if sm.lastActiveChatID == 0 {
+		return 0, false
+	}
+	if maxAge > 0 && time.Since(sm.lastActiveAt) > maxAge {
+		return 0, false
+	}
+	return sm.lastActiveChatID, true
+}
+
+// CountRecentlyActiveChatsExcluding counts chats other than chatID whose
+// last state transition happened within window. Used as the UnreadChatPressure
+// proxy in UrgeEngine -- an honest placeholder for "how many other
+// conversations are currently active," not a true unread-message backlog
+// (this codebase has no such concept today).
+func (sm *CentralStateMachine) CountRecentlyActiveChatsExcluding(chatID int64, window time.Duration) int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	now := time.Now()
+	count := 0
+	for id, csm := range sm.chatStates {
+		if id == chatID {
+			continue
+		}
+		csm.mu.Lock()
+		recent := now.Sub(csm.lastTransition) <= window
+		csm.mu.Unlock()
+		if recent {
+			count++
+		}
+	}
+	return count
 }
 
 func (sm *CentralStateMachine) GetCurrentState() State {

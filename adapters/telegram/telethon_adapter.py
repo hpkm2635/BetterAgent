@@ -8,8 +8,8 @@ from shared.subjects import (
     SUBJECT_INBOUND_MESSAGE,
     SUBJECT_ENRICH_CONTEXT_REQ,
     SUBJECT_REASONING_REQUEST,
-    SUBJECT_ACTION_DECISION,
     SUBJECT_ACTION_COMPLETED,
+    action_decision_wildcard,
 )
 from shared.schema.payloads import (
     InboundMessagePayload,
@@ -98,7 +98,7 @@ async def main():
         except Exception as e:
             logger.error(f"Error handling ActionDecision: {e}")
 
-    await nc.subscribe(SUBJECT_ACTION_DECISION, cb=action_decision_handler) if nc else None
+    await nc.subscribe(action_decision_wildcard("telegram"), cb=action_decision_handler) if nc else None
 
     # Listen to inbound private messages from Telegram
     @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))

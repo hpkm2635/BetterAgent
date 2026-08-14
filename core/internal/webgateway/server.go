@@ -14,22 +14,31 @@ import (
 	"betteragent-core/internal/bus"
 	"betteragent-core/internal/emotion"
 	"betteragent-core/internal/engine"
+	"betteragent-core/internal/idspace"
 )
 
 // WebNamespaceOffset partitions all WebGateway-originated chat IDs into a
 // range that Telegram's numeric user/channel IDs can never reach, so a web
 // client can never address (and thus never read the memory of) a real
-// Telegram chat, even with a valid WEBGATEWAY_TOKEN.
-const WebNamespaceOffset int64 = 9_000_000_000_000_000
+// Telegram chat, even with a valid WEBGATEWAY_TOKEN. Kept as an alias here
+// (canonical definition lives in idspace, see that package's doc comment)
+// since other packages in this codebase already reference webgateway.WebNamespaceOffset.
+const WebNamespaceOffset int64 = idspace.WebNamespaceOffset
 
 type Server struct {
-	addr           string
-	token          string
-	allowedOrigins []string
-	sessions       *SessionManager
-	bridge         *NatsBridge
-	logger         *zap.Logger
-	httpServer     *http.Server
+	addr                string
+	token               string
+	allowedOrigins      []string
+	sessions            *SessionManager
+	bridge              *NatsBridge
+	urgeEngine          *engine.UrgeEngine
+	autonomousPlayState *engine.AutonomousPlayState
+	gameEventToken      string
+	gameEventBindAddr   string
+	gameEventWeights    GameEventWeights
+	logger              *zap.Logger
+	httpServer          *http.Server
+	gameEventHTTPServer *http.Server
 }
 
 func NewServer(
@@ -41,18 +50,28 @@ func NewServer(
 	emoState *emotion.EmotionalState,
 	personality *emotion.PersonalityProfile,
 	circadian *emotion.CircadianRhythmEvaluator,
+	urgeEngine *engine.UrgeEngine,
+	autonomousPlayState *engine.AutonomousPlayState,
+	gameEventToken string,
+	gameEventBindAddr string,
+	gameEventWeights GameEventWeights,
 	logger *zap.Logger,
 ) *Server {
 	sessions := newSessionManager(logger)
-	bridge := newNatsBridge(bus, sessions, csm, emoState, personality, circadian, logger)
+	bridge := newNatsBridge(bus, sessions, csm, emoState, personality, circadian, urgeEngine, autonomousPlayState, logger)
 
 	return &Server{
-		addr:           addr,
-		token:          token,
-		allowedOrigins: allowedOrigins,
-		sessions:       sessions,
-		bridge:         bridge,
-		logger:         logger,
+		addr:                addr,
+		token:               token,
+		allowedOrigins:      allowedOrigins,
+		sessions:            sessions,
+		bridge:              bridge,
+		urgeEngine:          urgeEngine,
+		autonomousPlayState: autonomousPlayState,
+		gameEventToken:      gameEventToken,
+		gameEventBindAddr:   gameEventBindAddr,
+		gameEventWeights:    gameEventWeights,
+		logger:              logger,
 	}
 }
 
@@ -78,10 +97,37 @@ func (s *Server) Start() error {
 		}
 	}()
 
+	// Game event ingestion runs on a dedicated, loopback-only listener,
+	// separate from the browser-facing :8080 -- see game_event_handler.go's
+	// doc comment for why the trust tiers shouldn't share a port.
+	if s.gameEventBindAddr != "" {
+		gameEventMux := http.NewServeMux()
+		gameEventMux.HandleFunc("/api/game-event", s.handleGameEvent)
+		gameEventMux.HandleFunc("/api/game-turn", s.handleGameTurn)
+
+		s.gameEventHTTPServer = &http.Server{
+			Addr:    s.gameEventBindAddr,
+			Handler: gameEventMux,
+		}
+
+		s.logger.Info("🎮 Game Event ingestion listener starting", zap.String("addr", s.gameEventBindAddr))
+
+		go func() {
+			if err := s.gameEventHTTPServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.logger.Error("Game Event HTTP Server error", zap.Error(err))
+			}
+		}()
+	}
+
 	return nil
 }
 
 func (s *Server) Stop(ctx context.Context) error {
+	if s.gameEventHTTPServer != nil {
+		if err := s.gameEventHTTPServer.Shutdown(ctx); err != nil {
+			s.logger.Warn("Game Event HTTP Server shutdown error", zap.Error(err))
+		}
+	}
 	if s.httpServer != nil {
 		return s.httpServer.Shutdown(ctx)
 	}

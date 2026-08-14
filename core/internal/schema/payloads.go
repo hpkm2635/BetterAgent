@@ -39,12 +39,12 @@ type InboundMessagePayload struct {
 
 type TickPayload struct {
 	BasePayload
-	ISOTime              string  `json:"iso_time"`
-	TimeOfDay            string  `json:"time_of_day"`
-	IdleDurationSeconds  float64 `json:"idle_duration_seconds"`
-	IsSleepHours         bool    `json:"is_sleep_hours"`
-	TickCounter          int     `json:"tick_counter"`
-	EmotionDescription   string  `json:"emotion_description"`
+	ISOTime             string  `json:"iso_time"`
+	TimeOfDay           string  `json:"time_of_day"`
+	IdleDurationSeconds float64 `json:"idle_duration_seconds"`
+	IsSleepHours        bool    `json:"is_sleep_hours"`
+	TickCounter         int     `json:"tick_counter"`
+	EmotionDescription  string  `json:"emotion_description"`
 }
 
 type EnrichContextReqPayload struct {
@@ -54,27 +54,42 @@ type EnrichContextReqPayload struct {
 	GenerationID           uint64                 `json:"generation_id,omitempty"`
 	InboundMessage         *InboundMessagePayload `json:"inbound_message,omitempty"`
 	CurrentState           string                 `json:"current_state"`
-	TriggerType            string                 `json:"trigger_type"`
+	TriggerType            string                 `json:"trigger_type"` // "user_message" | "proactive" | "tick" | "game_turn"
 	EmotionDescription     string                 `json:"emotion_description"`
 	PersonalityDescription string                 `json:"personality_description"`
 	CircadianDescription   string                 `json:"circadian_description"`
+	// SourceChannel, ProactiveReason and IsProactiveOpportunity carry a
+	// proactive turn's routing/context through memory_hub.py into
+	// ReasoningRequestPayload -- without SourceChannel a proactive turn (no
+	// InboundMessage to derive it from) would fall back to "telegram" and
+	// get silently dropped if the target was actually a web session.
+	SourceChannel          string  `json:"source_channel,omitempty"` // "telegram" | "web"
+	ProactiveReason        *string `json:"proactive_reason,omitempty"`
+	IsProactiveOpportunity bool    `json:"is_proactive_opportunity,omitempty"`
 }
 
 type ReasoningRequestPayload struct {
 	BasePayload
-	ChatID               int64                  `json:"chat_id"`
-	UserID               int64                  `json:"user_id"`
-	GenerationID         uint64                 `json:"generation_id,omitempty"`
-	SystemPromptOverride *string                `json:"system_prompt_override,omitempty"`
-	ShortTermHistory     []map[string]interface{}`json:"short_term_history"`
-	UserProfile          map[string]interface{} `json:"user_profile"`
-	RAGFacts             []string               `json:"rag_facts"`
-	ProactiveReason      *string                `json:"proactive_reason,omitempty"`
-	CurrentEmotion       string                 `json:"current_emotion"`
-	MoodScore            float64                `json:"mood_score"`
-	FormattedTimeStr     string                 `json:"formatted_time_str"`
-	InboundMessage       *InboundMessagePayload `json:"inbound_message,omitempty"`
-	TriggerType          *string                `json:"trigger_type,omitempty"`
+	ChatID               int64                    `json:"chat_id"`
+	UserID               int64                    `json:"user_id"`
+	GenerationID         uint64                   `json:"generation_id,omitempty"`
+	SystemPromptOverride *string                  `json:"system_prompt_override,omitempty"`
+	ShortTermHistory     []map[string]interface{} `json:"short_term_history"`
+	UserProfile          map[string]interface{}   `json:"user_profile"`
+	RAGFacts             []string                 `json:"rag_facts"`
+	ProactiveReason      *string                  `json:"proactive_reason,omitempty"`
+	CurrentEmotion       string                   `json:"current_emotion"`
+	MoodScore            float64                  `json:"mood_score"`
+	FormattedTimeStr     string                   `json:"formatted_time_str"`
+	InboundMessage       *InboundMessagePayload   `json:"inbound_message,omitempty"`
+	TriggerType          *string                  `json:"trigger_type,omitempty"` // "user_message" | "proactive" | "tick" | "game_turn"
+	// SourceChannel/IsProactiveOpportunity must stay on this struct (not
+	// just EnrichContextReqPayload) -- NatsBus.Request unmarshals the
+	// memory_hub.py reply into this exact Go type and re-marshals it when
+	// forwarding to SubjectReasoningRequest, so any field missing here gets
+	// silently dropped on that round trip even though Python set it.
+	SourceChannel          string `json:"source_channel,omitempty"`
+	IsProactiveOpportunity bool   `json:"is_proactive_opportunity,omitempty"`
 }
 
 func (r *ReasoningRequestPayload) EnsureDefaults() {
@@ -109,20 +124,20 @@ type ActionDecisionPayload struct {
 
 type ActionCompletedPayload struct {
 	BasePayload
-	ChatID          int64                 `json:"chat_id"`
-	SentMessageID   *int                  `json:"sent_message_id,omitempty"`
-	ActionDecision  ActionDecisionPayload `json:"action_decision"`
-	Status          string                `json:"status"`
-	SentTime        float64               `json:"sent_time"`
-	ErrorDetail     *string               `json:"error_detail,omitempty"`
+	ChatID         int64                 `json:"chat_id"`
+	SentMessageID  *int                  `json:"sent_message_id,omitempty"`
+	ActionDecision ActionDecisionPayload `json:"action_decision"`
+	Status         string                `json:"status"`
+	SentTime       float64               `json:"sent_time"`
+	ErrorDetail    *string               `json:"error_detail,omitempty"`
 }
 
 type ErrorPayload struct {
 	BasePayload
-	ErrorCode        string  `json:"error_code"`
-	ErrorMessage     string  `json:"error_message"`
-	StackTrace       *string `json:"stack_trace,omitempty"`
-	CausedByEventID  *string `json:"caused_by_event_id,omitempty"`
+	ErrorCode       string  `json:"error_code"`
+	ErrorMessage    string  `json:"error_message"`
+	StackTrace      *string `json:"stack_trace,omitempty"`
+	CausedByEventID *string `json:"caused_by_event_id,omitempty"`
 }
 
 type StreamAudioChunkPayload struct {
@@ -152,6 +167,26 @@ type UserInterruptPayload struct {
 	BasePayload
 	ChatID int64 `json:"chat_id"`
 	UserID int64 `json:"user_id"`
+}
+
+// SpeechBoundaryPayload marks a speech_start/speech_end VAD boundary for a
+// chat -- carries nothing beyond identity because services/stt keys its
+// per-chat FunASR sessions purely off ChatID, matching how every other
+// per-chat NATS payload in this system is keyed.
+type SpeechBoundaryPayload struct {
+	BasePayload
+	ChatID       int64  `json:"chat_id"`
+	GenerationID uint64 `json:"generation_id,omitempty"`
+}
+
+// STTFinalTranscriptPayload is published by services/stt once FunASR returns
+// a punctuation-restored final result for an utterance.
+type STTFinalTranscriptPayload struct {
+	BasePayload
+	ChatID        int64  `json:"chat_id"`
+	GenerationID  uint64 `json:"generation_id,omitempty"`
+	Text          string `json:"text"`
+	SourceChannel string `json:"source_channel,omitempty"`
 }
 
 type VisionFramePayload struct {
@@ -190,6 +225,20 @@ type StreamStateChangePayload struct {
 	GenerationID  uint64 `json:"generation_id"`
 	State         string `json:"state"`
 	SourceChannel string `json:"source_channel,omitempty"`
+}
+
+// GameEventPayload carries an external game event (e.g. from the Slay the
+// Spike 2 C# mod hook, POSTed to WebGateway's /api/game-event) onward for
+// observability/future consumers. Weight is always server-resolved from the
+// game_events config table, never trusted from the client -- see
+// webgateway/game_event_handler.go.
+type GameEventPayload struct {
+	BasePayload
+	Game      string                 `json:"game"`
+	EventType string                 `json:"event_type"`
+	Weight    float64                `json:"weight"`
+	Detail    *string                `json:"detail,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func NewBasePayload(source string) BasePayload {

@@ -15,11 +15,10 @@ import (
 
 const (
 	SubjectTick                 = "agent.tick"
-	SubjectInboundMessage        = "agent.inbound_message"
+	SubjectInboundMessage       = "agent.inbound_message"
 	SubjectEnrichContextReq     = "agent.enrich_context_req"
-	SubjectReasoningRequest      = "agent.reasoning_request"
+	SubjectReasoningRequest     = "agent.reasoning_request"
 	SubjectReasoningCompleted   = "agent.reasoning_completed"
-	SubjectActionDecision       = "agent.action_decision"
 	SubjectActionCompleted      = "agent.action_completed"
 	SubjectConsolidateMemoryReq = "agent.consolidate_memory_req"
 	SubjectError                = "agent.error"
@@ -35,14 +34,37 @@ const (
 	SubjectVisionFrame      = "agent.vision.frame"
 
 	// 7 Realtime Cancelable Streaming Subjects
-	SubjectSTTStreamChunk   = "agent.stt.stream_chunk"
-	SubjectSTTStreamFinal   = "agent.stt.stream_final"
-	SubjectTTSStreamChunk   = "agent.tts.stream_chunk"
-	SubjectTTSStreamEnd     = "agent.tts.stream_end"
-	SubjectStreamCancelReq  = "agent.stream.cancel_req"
-	SubjectStreamCancelAck  = "agent.stream.cancel_ack"
+	SubjectSTTStreamChunk    = "agent.stt.stream_chunk"
+	SubjectSTTStreamPartial  = "agent.stt.stream_partial"
+	SubjectSTTStreamFinal    = "agent.stt.stream_final"
+	SubjectTTSStreamChunk    = "agent.tts.stream_chunk"
+	SubjectTTSStreamEnd      = "agent.tts.stream_end"
+	SubjectStreamCancelReq   = "agent.stream.cancel_req"
+	SubjectStreamCancelAck   = "agent.stream.cancel_ack"
 	SubjectStreamStateChange = "agent.stream.state_change"
+
+	// SubjectGameEvent carries external game events (e.g. Slay the Spike 2
+	// C# mod hook) into the bus for observability/future consumers. The
+	// UrgeEngine side effect happens in-process in the HTTP handler, not via
+	// this subscription -- see webgateway/game_event_handler.go.
+	SubjectGameEvent = "agent.game_event"
 )
+
+// ActionDecisionSubject and ActionDecisionWildcard replace the old flat
+// SubjectActionDecision constant with a per-channel-per-chat NATS subject
+// hierarchy (agent.action.{channel}.{chat_id}), so WebGateway/GotdAdapter/TTS
+// can each subscribe only to their own channel and NATS routes at the broker
+// level -- no more broadcast-then-filter-by-payload-field. channel is never
+// hardcoded here; it's whatever string the caller already has in
+// source_channel, so adding a future platform (Discord/Twitch) needs no
+// changes to this function.
+func ActionDecisionSubject(channel string, chatID int64) string {
+	return fmt.Sprintf("agent.action.%s.%d", channel, chatID)
+}
+
+func ActionDecisionWildcard(channel string) string {
+	return fmt.Sprintf("agent.action.%s.*", channel)
+}
 
 type NatsBus struct {
 	nc     *nats.Conn
@@ -79,7 +101,7 @@ func NewNatsBus(url string, user string, password string, logger *zap.Logger) (*
 		// Provision JetStream Stream for guaranteed event persistence (excluding RPC request-reply subjects)
 		_, _ = js.AddStream(&nats.StreamConfig{
 			Name:     "BETTERAGENT_EVENTS",
-			Subjects: []string{"agent.events.>", "agent.action_decision", "agent.reasoning_completed", "agent.inbound_message", "agent.tick"},
+			Subjects: []string{"agent.events.>", "agent.action.>", "agent.reasoning_completed", "agent.inbound_message", "agent.tick"},
 			Storage:  nats.MemoryStorage, // Or FileStorage
 		})
 		logger.Info("NATS JetStream Stream 'BETTERAGENT_EVENTS' initialized")
@@ -169,10 +191,10 @@ func (b *NatsBus) Request(subject string, source string, payload interface{}, ti
 		}
 
 		var respEnvelope struct {
-			ID        string                        `json:"id"`
-			Subject   string                        `json:"subject"`
-			Timestamp float64                       `json:"timestamp"`
-			Source    string                        `json:"source"`
+			ID        string                         `json:"id"`
+			Subject   string                         `json:"subject"`
+			Timestamp float64                        `json:"timestamp"`
+			Source    string                         `json:"source"`
 			Payload   schema.ReasoningRequestPayload `json:"payload"`
 		}
 		if err := json.Unmarshal(msg.Data, &respEnvelope); err == nil && respEnvelope.Payload.ChatID != 0 {

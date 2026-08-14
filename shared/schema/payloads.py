@@ -43,10 +43,19 @@ class EnrichContextReqPayload(BasePayload):
     generation_id: int = 1
     inbound_message: Optional[InboundMessagePayload] = None
     current_state: str
-    trigger_type: str  # "user_message" | "proactive" | "tick"
+    trigger_type: str  # "user_message" | "proactive" | "tick" | "game_turn"
     emotion_description: str = ""
     personality_description: str = ""
     circadian_description: str = ""
+    # source_channel/proactive_reason/is_proactive_opportunity carry a
+    # proactive turn's routing/context through memory_hub.py into
+    # ReasoningRequestPayload -- without source_channel a proactive turn (no
+    # inbound_message to derive it from) falls back to "telegram" in
+    # cognitive_engine.py and gets silently dropped if the target was
+    # actually a web session.
+    source_channel: str = "telegram"  # "telegram" | "web"
+    proactive_reason: Optional[str] = None
+    is_proactive_opportunity: bool = False
 
 
 class ReasoningRequestPayload(BasePayload):
@@ -62,7 +71,9 @@ class ReasoningRequestPayload(BasePayload):
     mood_score: float = 1.0
     formatted_time_str: str = ""
     inbound_message: Optional[InboundMessagePayload] = None
-    trigger_type: Optional[str] = None
+    trigger_type: Optional[str] = None  # "user_message" | "proactive" | "tick" | "game_turn"
+    source_channel: Optional[str] = None
+    is_proactive_opportunity: bool = False
 
     @field_validator("short_term_history", mode="before")
     @classmethod
@@ -136,6 +147,18 @@ class StreamChunkPayload(BasePayload):
 StreamAudioChunkPayload = StreamChunkPayload
 
 
+class STTTranscriptPayload(BasePayload):
+    """Published by services/stt on both SUBJECT_STT_STREAM_PARTIAL (mid-utterance,
+    no punctuation) and SUBJECT_STT_STREAM_FINAL (punctuation-restored) --
+    same shape either way, the subject is what distinguishes them. Mirrors
+    Go's schema.STTFinalTranscriptPayload (core/internal/schema/payloads.go)
+    field-for-field so WebGateway's handleSTTFinalMsg can unmarshal it."""
+    chat_id: int
+    generation_id: int = 1
+    text: str
+    source_channel: str = "web"
+
+
 class StreamCancelPayload(BasePayload):
     chat_id: int
     generation_id: int = 1
@@ -148,4 +171,16 @@ class StreamStateChangePayload(BasePayload):
     generation_id: int = 1
     state: str = "IDLE"
     source_channel: str = "web"
+
+
+class GameEventPayload(BasePayload):
+    """Mirrors Go's schema.GameEventPayload (core/internal/schema/payloads.go).
+    Published to SUBJECT_GAME_EVENT by webgateway/game_event_handler.go for
+    observability/future consumers -- the UrgeEngine side effect itself
+    happens in-process in that Go handler, not via a subscription to this."""
+    game: str
+    event_type: str
+    weight: float = 0.0
+    detail: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 

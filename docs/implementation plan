@@ -1,0 +1,203 @@
+Cognitive Impulse Subsystem: Urge Engine + Game Event Hook
+Context
+BetterAgent wraps a stateless LLM (Python services/cognitive) with a stateful "body" in Go Core — state machine, emotion/circadian model, timers. Today the Go ClockEngine ticks every 30s and decays emotion / drives sleep transitions, but there is no mechanism for the catgirl to speak without being spoken to — every agent.reasoning_request today is caused by a user message. The goal (mirroring Neuro-Sama) is to give her an internal "urge to talk" that accumulates from boredom, spikes from external stimuli (starting with a Slay the Spike 2 C# game-event hook: rare relic pickups, near-death draws, victory/death), and fires a proactive turn once a dynamic, mood-dependent threshold is crossed — with a cooldown/dead-zone afterward so she doesn't become a repeat-chatterbox.
+
+Investigation turned up two important facts that shape this plan:
+
+The wire contract is already half-built but disconnected. ReasoningRequestPayload already has proactive_reason/trigger_type fields, and services/cognitive/cognitive_engine.py already has an if payload.trigger_type == "tick" and not is_proactive_opportunity: skip guard — but no Go code has ever populated these, and the Python ReasoningRequestPayload doesn't even define is_proactive_opportunity, so the guard's getattr(..., False) always resolves False. This is dead scaffolding from an earlier pass, not something to redesign — just wire it up.
+A real routing bug lurks in that dead code, and firing proactive turns will hit it immediately: cognitive_engine.py derives source_channel (which decides whether webgateway or gotd picks up the resulting agent.action_decision) only from payload.inbound_message.source_channel, defaulting to "telegram" when there's no inbound message. A proactive turn has no inbound message by definition, so a proactive reply aimed at a Web session would get tagged "telegram", get dropped by nats_bridge.go's channel filter, and silently vanish. This must be fixed as part of wiring proactive turns in, not treated as a follow-up.
+Confirmed architecture decisions (from user clarification, do not re-litigate):
+
+Global Urge, matching the existing global EmotionalState singleton — one accumulator, firing into a single resolved target session (not broadcast to every chat).
+Game events arrive via a new local HTTP endpoint on the existing WebGateway (:8080, alongside /health and /ws), which the future C# mod will POST to. The C# mod itself is out of scope — only the ingestion contract.
+Full stack this round: Urge accumulation + dynamic threshold + cooldown, the generic external-event contract (game-agnostic, config-driven weights), the Python wiring fix, and config plumbing.
+1. UrgeEngine — new file core/internal/engine/urge_engine.go
+Same package as ClockEngine/CentralStateMachine (no new Go package, no import-cycle risk).
+
+type UrgeParams struct {
+    AlphaBoredom, BetaGameEvent, GammaUnreadPressure float64
+    BaseThreshold, ArousalSensitivity, EnergyPenalty  float64
+    MinThreshold, MaxThreshold, UrgeCap               float64
+    CooldownDuration, DeadZoneDuration                time.Duration
+    GameEventDecay, UnreadPressureWindow              time.Duration
+    PrimaryChatID                                     int64
+    TargetSessionMaxAge                               time.Duration
+}
+
+type UrgeEngine struct {
+    mu              sync.Mutex
+    params          UrgeParams
+    value           float64
+    gameEventEnergy float64   // decaying "hot" contribution from recent game events
+    cooldownUntil   time.Time
+    deadZoneUntil   time.Time
+    lastReason      string
+    logger          *zap.Logger
+}
+Tick-time update, called from ClockEngine.onTick after emotionalState.ApplyTimeDecay and stateMachine.EvaluateTick:
+
+func (u *UrgeEngine) EvaluateTick(now time.Time, elapsed time.Duration,
+    emoState *emotion.EmotionalState, personality *emotion.PersonalityProfile,
+    isSleepHours bool, targetState State, unreadPressure int) (shouldFire bool, reason string)
+Decay gameEventEnergy *= exp(-elapsed.Seconds()/GameEventDecay.Seconds()).
+boredomRate := 0.6 + 0.4*personality.Extraversion (finally gives the existing-but-unused Extraversion field a job — comment on it already says "high = proactive").
+Integrate: value = clamp(value + (AlphaBoredom*boredomRate + BetaGameEvent*gameEventEnergy + GammaUnreadPressure*float64(unreadPressure))*elapsed.Seconds(), 0, UrgeCap).
+Hard gates (return false before any threshold math): still in dead-zone, isSleepHours, or targetState != StateIdle.
+Dynamic threshold from mood: threshold := clamp(BaseThreshold*(1-ArousalSensitivity*(arousal-0.5))*(1+EnergyPenalty*(1-energy)), MinThreshold, MaxThreshold) — high arousal lowers it, low energy raises it, exactly per spec.
+value >= threshold → reset value=0, return true, reason (reason defaults to a boredom phrase, or the stored lastReason from a recent game event if that's what pushed it over).
+Other methods:
+
+RecordGameEvent(weight float64, reason string) — adds to gameEventEnergy, called in-process by the HTTP handler (§4).
+OnTurnCompleted() — resets value=0, sets cooldownUntil/deadZoneUntil. Called on every completed turn (not just proactive ones) from both webgateway/nats_bridge.go#handleActionDecisionMsg and gotd/adapter.go#handleActionDecision, at the existing IsFinal-true branch each already has (nats_bridge.go ~line 396-399, adapter.go ~line 630-632) — one line each.
+Companion change to core/internal/emotion/emotional_state.go: add locked accessors GetArousal()/GetEnergy() float64 — every existing external read of EmotionalState goes through a locking method; UrgeEngine must not be the first to break that.
+
+2. Target-session resolution — extend CentralStateMachine, no new map
+Add two plain fields to the existing (already-mutex-guarded) CentralStateMachine struct in state_machine.go: lastActiveChatID int64, lastActiveAt time.Time. New methods:
+
+TouchActivity(chatID int64) — called once each from webgateway/nats_bridge.go#publishInboundMessage and gotd/adapter.go#handleIncomingMessage, right next to their existing TransitionToChat(..., StateThinking, "inbound_message") calls.
+GetMostRecentlyActiveChatID(maxAge time.Duration) (int64, bool).
+CountRecentlyActiveChatsExcluding(chatID int64, window time.Duration) int — scans existing chatStates by lastTransition; this is the proxy for UnreadChatPressure in the formula. There's no real "unread message backlog" concept anywhere in the codebase today, so this is an intentional, honest placeholder ("how many other conversations are currently active") rather than a true unread counter — swap it for a real backlog counter later if/when a chat platform with visible unread state (e.g. Twitch/danmaku) gets integrated.
+Resolution order (ResolveProactiveTarget helper in urge_engine.go): params.PrimaryChatID if configured and nonzero → else GetMostRecentlyActiveChatID(TargetSessionMaxAge) → else skip firing this tick (nobody to talk to).
+
+Deliberately out of scope: checking whether a resolved Web chat_id still has a live browser tab connected. Worst case with the MVP: one wasted LLM call whose reply is silently dropped by SessionManager. Pin primary_chat_id to a Telegram chat to sidestep this entirely if it matters for the first test.
+
+3. Wiring — ClockEngine.onTick, cmd/main.go, no callback/interface needed
+Contrary to the initial assumption that firing a proactive turn requires a callback into webgateway (avoiding an import cycle), it doesn't: publishing EnrichContextReqPayload/ReasoningRequestPayload only needs bus, schema, emotion, CentralStateMachine — all already reachable from engine without a cycle (webgateway/gotd import engine, never the reverse).
+
+New file core/internal/engine/proactive_trigger.go:
+
+func PublishProactiveTurn(b *bus.NatsBus, csm *CentralStateMachine,
+    emoState *emotion.EmotionalState, personality *emotion.PersonalityProfile,
+    circadian *emotion.CircadianRhythmEvaluator,
+    targetChatID int64, reason string, logger *zap.Logger)
+Mirrors nats_bridge.go#publishInboundMessage (§5 below covers the payload fields this needs that don't exist yet): csm.TransitionToChat(targetChatID, StateThinking, "proactive_urge") → build EnrichContextReqPayload{TriggerType: "proactive", InboundMessage: nil, SourceChannel: ..., ProactiveReason: &reason, IsProactiveOpportunity: true, ...} → bus.Request(SubjectEnrichContextReq, ..., 5s) with the same fallback-to-async-publish pattern as the existing code → bus.Publish(SubjectReasoningRequest, ...). Every publish/request error logged with chat_id, matching the project's established convention (no silent _ = bus.Publish(...)).
+
+ClockEngine gains urgeEngine *UrgeEngine and personality *emotion.PersonalityProfile fields (constructor signature grows to match); cmd/main.go constructs urgeEngine := engine.NewUrgeEngine(...) before clockEngine and threads it through. onTick gains, after the existing EvaluateTick/PruneInactive calls:
+
+if targetChatID, ok := ResolveProactiveTarget(ce.stateMachine, ce.urgeEngine.PrimaryChatID(), ce.urgeEngine.TargetMaxAge()); ok {
+    targetState := ce.stateMachine.GetChatState(targetChatID)
+    unreadPressure := ce.stateMachine.CountRecentlyActiveChatsExcluding(targetChatID, ce.urgeEngine.UnreadPressureWindow())
+    if fire, reason := ce.urgeEngine.EvaluateTick(now, elapsed, ce.emotionalState, ce.personality, isSleepHours, targetState, unreadPressure); fire {
+        PublishProactiveTurn(ce.bus, ce.stateMachine, ce.emotionalState, ce.personality, ce.circadian, targetChatID, reason, ce.logger)
+    }
+}
+webgateway.NatsBridge and gotd.GotdAdapter each gain a urgeEngine *engine.UrgeEngine field (threaded through newNatsBridge/NewServer/NewGotdAdapter, same pattern as their existing csm/emoState/personality/circadian params) purely to call OnTurnCompleted() at the IsFinal hook points from §1.
+
+4. Game event ingestion — HTTP endpoint + NATS subject
+Design choice: the HTTP handler calls urgeEngine.RecordGameEvent(...) directly, in-process (correct even if NATS is offline, since bus.go documents graceful offline degradation and Urge accumulation must not silently break because of it), and separately fire-and-forget publishes to NATS for observability/future consumers (e.g. a later services/memory subscriber noting "捡到了稀有圣物" into short-term memory — no Python subscriber is added this round, intentional scope cut).
+
+New subject: SubjectGameEvent = "agent.game_event" (bus/nats_bus.go) / SUBJECT_GAME_EVENT (shared/subjects.py).
+
+New payload — core/internal/schema/payloads.go:
+
+type GameEventPayload struct {
+    BasePayload
+    Game      string                 `json:"game"`
+    EventType string                 `json:"event_type"`
+    Weight    float64                `json:"weight"`
+    Detail    *string                `json:"detail,omitempty"`
+    Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+Mirrored in shared/schema/payloads.py as GameEventPayload(BasePayload).
+
+HTTP endpoint — new file core/internal/webgateway/game_event_handler.go, route registered in server.go next to /health//ws: POST /api/game-event.
+
+Bind on a dedicated loopback listener, not the shared :8080. The existing :8080 listener is intentionally all-interfaces because the browser frontend may connect cross-host; a locally-run game mod is a narrower trust tier (SECURITY.md's own stated principle is 127.0.0.1-only for anything not meant to be internet-facing, applied elsewhere to NATS/Redis/Qdrant). Add a second small http.Server inside webgateway.Server, bound to a new configurable GameEventBindAddr (default 127.0.0.1:8090), serving only this one route. This means a leaked GAME_EVENT_TOKEN alone isn't enough to fire fake events from off-box — the attacker also needs local access, consistent with how the rest of this codebase's trust boundaries are drawn.
+Auth: new header X-Game-Event-Token, crypto/subtle.ConstantTimeCompare against a new GAME_EVENT_TOKEN env var, checked before any body read (mirrors handleWebSocket's pre-upgrade check). If unset, handler always returns 503 — this integration is optional, so (unlike WEBGATEWAY_TOKEN) its absence must not Fatal the whole core.
+Body cap: http.MaxBytesReader(w, r.Body, 8*1024).
+Request: {"game": "slay_the_spike_2", "event_type": "rare_relic_pickup", "detail": "...", "metadata": {...}}. game/event_type validated ^[a-z0-9_]+$, ≤64 chars; detail truncated to 500 chars server-side (it's free text destined for the LLM prompt, not a path — length cap against prompt-stuffing is the relevant control here, not a path-traversal check).
+Weight resolved server-side from the config table (§7) by (game, event_type) — never trusts a client-supplied weight, falling back to game_events.default_weight for unknown event types (not rejected — lets the mod send new event types without a core redeploy).
+Response: 200 {"status":"ok","urge_added":<w>,"current_urge":<v>} / 401 / 400 (bad JSON/charset) / 413 / 503 (token unset).
+On success: urgeEngine.RecordGameEvent(weight, detail), then best-effort bus.Publish(bus.SubjectGameEvent, ...) (log error, don't fail the HTTP response over it — the Urge side effect already happened).
+5. Payload changes that make proactive routing actually work (fixes the source_channel bug)
+Verified directly in services/cognitive/cognitive_engine.py: both execute_reasoning_loop (line 424-427) and stream_reasoning_loop (line 576-580) do
+
+src_channel = "telegram"
+if payload.inbound_message and getattr(payload.inbound_message, "source_channel", None):
+    src_channel = payload.inbound_message.source_channel
+which resolves "telegram" for any proactive turn (inbound_message is None), causing nats_bridge.go's decision.SourceChannel != "web" filter (line 351) to silently drop the reply if the target was actually a Web session. Also verified services/memory/memory_hub.py#handle_enrich_context_req (line 90-101) builds ReasoningRequestPayload without forwarding proactive_reason at all today — that field exists on ReasoningRequestPayload but nothing has ever populated it, on either side.
+
+Fix, both Go (core/internal/schema/payloads.go) and Python (shared/schema/payloads.py):
+
+Add SourceChannel string and ProactiveReason *string (Go) / Optional[str] (Python) and IsProactiveOpportunity bool to EnrichContextReqPayload (currently missing all three — ReasoningRequestPayload already has the latter two but nothing upstream feeds them).
+PublishProactiveTurn (§3) sets SourceChannel directly: "web" if targetChatID >= idspace.WebNamespaceOffset else "telegram" (see new shared package below), plus ProactiveReason/IsProactiveOpportunity.
+services/memory/memory_hub.py#handle_enrich_context_req: add source_channel=payload.source_channel, proactive_reason=payload.proactive_reason, is_proactive_opportunity=payload.is_proactive_opportunity to the ReasoningRequestPayload(...) construction.
+cognitive_engine.py: change both src_channel derivations to prefer the new top-level field: src_channel = payload.source_channel or (payload.inbound_message.source_channel if payload.inbound_message else "telegram").
+New shared package core/internal/idspace/idspace.go: const WebNamespaceOffset int64 = 9_000_000_000_000_000 + func IsWebChat(chatID int64) bool. Move webgateway.WebNamespaceOffset's definition here and have webgateway reference idspace.WebNamespaceOffset (keep a = idspace.WebNamespaceOffset alias in webgateway if anything external depends on the old name) so engine can check web-vs-telegram without importing webgateway (which would cycle) and without duplicating a security-relevant magic constant — SECURITY.md's own incident history (§2.2's frontend-token-forgotten postmortem) is exactly the kind of drift this avoids.
+
+6. services/cognitive/prompt_builder.py — weave in the proactive reason
+In build_system_prompt, right after the existing unconditional payload.current_emotion line:
+
+if payload.trigger_type == "proactive" and payload.proactive_reason:
+    prompt_parts.append(f"[主动搭话] 你现在决定主动开口说话，原因: {payload.proactive_reason}。不要等待被提问，自然地开启或延续话题，语气要符合你现在的心情。")
+In build_messages, there's no inbound_message to close the turn on for a proactive request, so append a synthetic user-role turn (same precedent as the Gemini provider's function-call/response synthetic turns):
+
+elif payload.trigger_type == "proactive":
+    messages.append({"role": "user", "content": f"[系统提示: 该你主动说点什么了 — {payload.proactive_reason or ''}]"})
+Worth eyeballing actual model output once wired up (see §8 step 3) to check whether both nudges together over- or under-steer it.
+
+7. Config
+config/config.yaml.example — extend core_engine: and add game_events::
+
+core_engine:
+  clock_tick_seconds: 30
+  typing_delay_seconds: 2
+  anti_spam_max_rate: 5
+  urge:
+    alpha_boredom: 0.02
+    beta_game_event: 1.0
+    gamma_unread_pressure: 0.15
+    base_threshold: 1.0
+    arousal_sensitivity: 0.6
+    energy_penalty: 0.5
+    min_threshold: 0.3
+    max_threshold: 3.0
+    urge_cap: 4.0
+    cooldown_seconds: 90
+    dead_zone_seconds: 20
+    game_event_decay_seconds: 120
+    unread_pressure_window_seconds: 300
+    primary_chat_id: 0
+    target_session_max_age_seconds: 86400
+  game_event_bind_addr: "127.0.0.1:8090"
+
+game_events:
+  default_weight: 0.1
+  games:
+    slay_the_spike_2:
+      rare_relic_pickup: 0.6
+      near_death_draw: 0.8
+      victory: 1.0
+      death: 0.5
+.env.example: add GAME_EVENT_TOKEN= (same commentary style as WEBGATEWAY_TOKEN).
+
+core/internal/config/loader.go: extend YAMLConfig.CoreEngine with a nested Urge struct (all fields above) and GameEventBindAddr string; add top-level GameEvents struct{ DefaultWeight float64; Games map[string]map[string]float64 } to YAMLConfig; add GameEventToken string to Config (via getEnv("GAME_EVENT_TOKEN", "")). cmd/main.go maps YAML seconds → time.Duration when building UrgeParams.
+
+Verification
+Go unit tests (table-driven, following state_machine_test.go/anti_spam_test.go conventions):
+
+core/internal/engine/urge_engine_test.go: Urge accumulates monotonically over repeated ticks; dynamic threshold shifts correctly across an {arousal, energy} table; cooldown/dead-zone suppresses re-firing immediately after OnTurnCompleted() and re-enables after the window; game-event energy decays exponentially across ticks.
+state_machine_test.go additions: GetMostRecentlyActiveChatID respects maxAge and picks the latest-touched chat; CountRecentlyActiveChatsExcluding over a table of chat activity ages.
+core/internal/webgateway/game_event_handler_test.go (httptest-based, mirrors webgateway_test.go): missing/bad token → 401 before body is read; oversized body → 413; valid request → 200 and RecordGameEvent called with the config-resolved (not client-supplied) weight; unknown event_type falls back to default_weight rather than erroring.
+Python tests: trigger_type="proactive" with inbound_message=None doesn't hit the tick lazy-skip; source_channel on the top-level payload is honored over the (absent) inbound_message-derived value; PromptBuilder includes the proactive-reason text when expected.
+
+Manual end-to-end (via python runner.py):
+
+Set primary_chat_id to a live Telegram chat and drastically lower base_threshold/cooldown_seconds for a fast local loop.
+Watch logs/betteragent_core.log: confirm a proactive agent.reasoning_request (trigger_type: "proactive") appears after a few ticks, followed by an unprompted message actually delivered to Telegram.
+curl -s -X POST http://127.0.0.1:8090/api/game-event -H "X-Game-Event-Token: $GAME_EVENT_TOKEN" -H 'Content-Type: application/json' -d '{"game":"slay_the_spike_2","event_type":"victory","detail":"通关了！"}' — confirm 200 with urge_added, confirm the proactive turn fires sooner than boredom alone would predict, and confirm the reply actually references the victory.
+Confirm cooldown: no second proactive message fires within cooldown_seconds of the last one.
+Repeat step 3 targeting a Web session (chat_id = idspace.WebNamespaceOffset + N, browser tab connected via /ws?token=...&chat_id=N) specifically to confirm the source_channel fix — the message must arrive in the browser, not vanish.
+Critical files
+core/internal/engine/urge_engine.go (new), proactive_trigger.go (new)
+core/internal/engine/clock_engine.go, state_machine.go
+core/internal/idspace/idspace.go (new)
+core/internal/webgateway/game_event_handler.go (new), server.go, nats_bridge.go
+core/internal/gotd/adapter.go
+core/internal/emotion/emotional_state.go
+core/internal/schema/payloads.go, core/internal/bus/nats_bus.go
+core/internal/config/loader.go, core/cmd/main.go
+shared/schema/payloads.py, shared/subjects.py
+services/cognitive/cognitive_engine.py, prompt_builder.py
+services/memory/memory_hub.py
+config/config.yaml.example, .env.example

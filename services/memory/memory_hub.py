@@ -98,4 +98,7 @@ class MemoryHub:
             current_emotion=payload.emotion_description,
             inbound_message=payload.inbound_message,
             trigger_type=payload.trigger_type,
+            source_channel=payload.source_channel,
+            proactive_reason=payload.proactive_reason,
+            is_proactive_opportunity=payload.is_proactive_opportunity,
         )

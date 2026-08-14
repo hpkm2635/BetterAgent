@@ -19,6 +19,29 @@ export type EmotionCallback = (emotion: string, action?: string) => void
 export type AudioChunkCallback = (audioBase64: string, sampleRate: number, visemes?: Viseme[]) => void
 export type StateChangeCallback = (state: string) => void
 
+// Binary Audio Frame Protocol (mirrors Go's EncodeBinaryAudioFrame /
+// DecodeBinaryAudioFrame in core/internal/webgateway/protocol.go -- same
+// wire format both directions, so the browser->WebGateway mic path reuses it
+// instead of inventing a second header format):
+// [0..3]: Magic "AUDI"
+// [4..11]: ChatID (int64 BigEndian) -- 0 lets WebGateway fill in the
+//          authenticated session's chat_id itself (see DecodeBinaryAudioFrame)
+// [12..19]: GenerationID (uint64 BigEndian) -- 0 is fine, services/stt keys
+//           purely off chat_id
+// [20..]: Raw 16-bit PCM
+function encodeBinaryAudioFrame(pcm: Int16Array): ArrayBuffer {
+  const buf = new ArrayBuffer(20 + pcm.byteLength)
+  const view = new DataView(buf)
+  view.setUint8(0, 0x41) // 'A'
+  view.setUint8(1, 0x55) // 'U'
+  view.setUint8(2, 0x44) // 'D'
+  view.setUint8(3, 0x49) // 'I'
+  view.setBigInt64(4, 0n, false)
+  view.setBigUint64(12, 0n, false)
+  new Uint8Array(buf, 20).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength))
+  return buf
+}
+
 /**
  * Safely converts Uint8Array to base64 string without triggering V8 call stack size limit
  */
@@ -213,6 +236,20 @@ export class BetterAgentWSBridge {
         },
       }
       this.ws.send(JSON.stringify(msg))
+    }
+  }
+
+  /**
+   * Streams one mic PCM chunk for STT. Binary, not JSON+base64 -- this path
+   * is called continuously while the user speaks, unlike the other
+   * (infrequent) user.* messages. Only meaningful between sendSpeechStart()
+   * and sendSpeechEnd() -- callers should gate this themselves (see
+   * composables/stt-audio-capture.ts), sending chunks outside that window
+   * just gets them silently dropped (no active FunASR session server-side).
+   */
+  public sendAudioChunk(pcm: Int16Array): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(encodeBinaryAudioFrame(pcm))
     }
   }
 

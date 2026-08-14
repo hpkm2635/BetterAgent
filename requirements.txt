@@ -25,6 +25,11 @@ sqlalchemy>=2.0.0
 numpy>=1.26.0,<2.2.0
 aiohttp>=3.9.0
 
+# STT (services/stt/funasr_client.py bridges an external FunASR streaming
+# WebSocket server -- FunASR/torch itself deliberately not listed, see
+# services/stt/requirements.txt)
+websockets>=12.0
+
 # Telegram Adapter Utilities
 telethon>=1.34.0
 

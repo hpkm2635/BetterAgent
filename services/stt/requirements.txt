@@ -1,0 +1,5 @@
+# FunASR itself (torch, modelscope, ...) deliberately isn't listed here --
+# it runs as its own external process (funasr_wss_server.py), the same way
+# GPT-SoVITS's torch dependency stays out of services/tts. This service is
+# just a thin NATS<->WebSocket bridge.
+websockets>=12.0
