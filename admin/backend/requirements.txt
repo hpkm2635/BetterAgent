@@ -1,0 +1,17 @@
+# BetterAgent Admin Backend dependencies (Python >= 3.12)
+# Self-contained: does not depend on the main BetterAgent requirements.txt.
+
+fastapi>=0.110,<1.0.0
+uvicorn[standard]>=0.29,<1.0.0
+
+# Persona PATCH in-place editing (preserves comments & field order).
+ruamel.yaml>=0.18
+
+# Read-only user profiles & session history from Redis.
+redis>=5.0.0
+
+# Reverse proxy to the campus_kb service (:8093).
+httpx>=0.27,<1.0.0
+
+# Optional: loads REDIS_URL / REDIS_PASSWORD from a local .env if present.
+python-dotenv>=1.0.0

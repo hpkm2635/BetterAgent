@@ -1,0 +1,127 @@
+# BetterAgent 后台管理系统（Admin Panel）
+
+B 端后台管理控制台，对应 `docs/API-CONTRACT.md` 的 **接口契约二**。用于管理数字人角色（Persona）、
+用户（User）、会话记录（Session）与知识库（Knowledge Base，代理至 campus_kb）。
+
+- **Admin API 端口**: `8094`（FastAPI）
+- **Admin UI Dev 端口**: `8095`（Vite dev server）
+
+```
+admin/
+  backend/
+    main.py           # uvicorn 入口（自包含，不 import core/ / shared/）
+    requirements.txt
+  frontend/           # 独立 Vue3 项目，不依赖 BetterAgent frontend/
+  README.md
+```
+
+## 启动 backend
+
+> 要求 Python >= 3.12。依赖独立声明在 `admin/backend/requirements.txt`，不依赖主仓库依赖。
+
+```bash
+cd admin/backend
+python -m venv .venv
+
+# Windows (Git Bash / PowerShell)
+.venv/Scripts/python -m pip install -r requirements.txt
+.venv/Scripts/python main.py
+
+# macOS / Linux
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+或直接用 uvicorn 启动：
+
+```bash
+cd admin/backend
+uvicorn main:app --host 0.0.0.0 --port 8094
+```
+
+启动后访问 `http://localhost:8094/health` 应返回：
+
+```json
+{ "status": "ok", "service": "admin_backend" }
+```
+
+### 可选环境变量
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `ADMIN_PORT` | `8094` | Admin API 监听端口 |
+| `PERSONA_DIR` | `config/persona`（相对仓库根） | 人设 YAML 目录 |
+| `ADMIN_DB_PATH` | `admin/backend/admin.db` | 软删除标记 SQLite 路径 |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | 用户画像 / 会话历史 Redis |
+| `REDIS_PASSWORD` | 空 | Redis 密码（可从 `.env` 读取） |
+| `CAMPUS_KB_URL` | `http://127.0.0.1:8093` | campus_kb 服务地址 |
+
+> 敏感值（如 `REDIS_PASSWORD`）从 `admin/backend/.env` 读取，不硬编码进代码。
+
+## 启动 frontend
+
+> 要求 Node.js >= 18。
+
+```bash
+cd admin/frontend
+npm install
+npm run dev
+```
+
+启动后访问 `http://localhost:8095` 查看管理控制台首页。Vite 已将 `/api` 与 `/health` 代理到
+`http://127.0.0.1:8094`，因此需先启动 backend。
+
+生产构建：
+
+```bash
+cd admin/frontend
+npm run build    # 产物输出到 dist/
+```
+
+## API 一览
+
+### 2.1 人设管理
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/admin/personas` | 列出所有人设（id/name/tts_provider/voice_id） |
+| GET | `/api/admin/personas/{persona_id}` | 获取单个人设完整 YAML（JSON） |
+| PATCH | `/api/admin/personas/{persona_id}` | 部分更新（白名单 6 字段，ruamel 原地更新保留注释与顺序） |
+
+PATCH 白名单字段：`name`、`appearance`、`base_prompt`、`sleepy_prompt`、`knowledge_scope`、`forbidden_topics`。
+修改白名单外字段返回 `400 {"error": "Forbidden field: <field>"}`。
+
+### 2.2 用户管理（只读 + 软删除）
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/admin/users` | 列出用户 |
+| GET | `/api/admin/users/{user_id}` | 获取单个用户 |
+| DELETE | `/api/admin/users/{user_id}` | 软删除用户 |
+
+画像数据来自 Redis `user_profile:{user_id}`；软删除标记落在独立 SQLite 表（`admin.db`）。
+**绝不修改** Redis 中的对话历史 key（`short_term:{chat_id}`）。
+
+### 2.3 会话记录查看（只读）
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/admin/sessions?chat_id={chat_id}&limit=50&offset=0` | 查看会话历史 |
+
+Redis 不可用时返回 `{"sessions": [], "total": 0}`，不崩溃。
+
+### 2.4 知识库管理（代理）
+
+| 方法 | 路径 | 代理到 |
+| :--- | :--- | :--- |
+| POST | `/api/admin/kb/ingest` | `POST http://127.0.0.1:8093/api/kb/ingest` |
+| GET | `/api/admin/kb/search` | `POST http://127.0.0.1:8093/api/kb/search` |
+
+campus_kb 不可用时返回 `503 {"error": "campus_kb service unavailable"}`。
+
+### 2.5 健康检查
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/health` | `{"status": "ok", "service": "admin_backend"}` |
