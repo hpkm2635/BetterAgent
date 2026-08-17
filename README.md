@@ -1,111 +1,134 @@
-# BetterAgent (猫娘 Agent)
+# BetterAgent (虚拟数字人陪伴系统)
 
-拥有“猫娘”人格的 Telegram Agent，采用 **Go + NATS + Python 混合架构**。
-
-## 架构组成
-
-- **Go Core (`betteragent-core`)**: `core/`
-  - MTProto 通信 (`gotd/td`)
-  - 时钟心跳与作息计算 (`ClockEngine`, `CircadianRhythm`)
-  - 6 状态状态机 (`CentralStateMachine`)
-  - 情绪与性格模型 (`EmotionalState`, `PersonalityProfile`)
-  - NATS 消息总线接口 (`NatsBus`)
-  - 人性化延迟与防封控制 (`HumanizationEngine`, `AntiSpamGuard`)
-
-- **Python Services**: `services/`
-  - `memory-service`: 记忆与检索服务 (`MemoryHub`, `VectorMemoryStore` 艾宾浩斯遗忘曲线, `ShortTermBuffer`, `TokenBudgetManager`)
-  - `cognitive-service`: 认知推理与工具调度 (`CognitiveEngine`, `PromptBuilder`, `GeminiProvider`, `ClaudeProvider`, `TTSTool`, `ImageGenTool`, `TelegramActionTool`)
-  - `tts-service`: 语音合成服务 (`GPTSoVITSClient`, `CosyVoiceClient`, `AudioNormalizer`)
-
-- **Infrastructure**: `deploy/`
-  - NATS Server (Pub/Sub + JetStream)
-  - Redis (状态锁与缓冲)
-  - Qdrant (向量记忆存储)
-
-## 文档
-
-- [系统架构与 SRS 规范](docs/ARCHITECTURE.md)
-- [安全加固记录与部署基线](docs/SECURITY.md) —— 部署前必读，列出了必须设置的鉴权环境变量与检查清单
+> **全双工多模态数字人陪伴系统 (Full-Duplex Digital Human Companion System)**  
+> 采用 **Go Core (高性能控制核) + NATS (中枢消息总线) + Python Services (认知/记忆微服务) + Vue 3 / AIRI (Live2D/VRM 数字人前端)** 的异构微服务架构。
 
 ---
 
-## 快速启动指南
+## 🌟 核心特性 (Key Features)
 
-### 1. 环境准备 (Python 3.12+)
+- **🎭 多模态数字人交互**：支持基于 WebSockets (`:8080`) 的全双工音视频流传输、实时 PCM 音频切片播放与 Live2D 口型（Viseme Lip-sync）高精度驱动。
+- **⚡ 毫秒级打断 (Barge-in)**：支持用户中途打断与语音重推，基于原子 `generation_id` 代际防护机制自动清空在途过期的音频切片与口型帧。
+- **🧠 异步并发状态机**：Go 实现的 `CentralStateMachine`，拥有 45 秒 Deadman Switch Watchdog 超时自愈、2小时空闲自动 Evict 回收与多维度会话隔离。
+- **🧬 心理与生理计算引擎**：内建 3D VAD 情感模型（Valence/Arousal/Dominance）、生理指标（Energy/SocialBattery/Affection）、`CircadianRhythm` 昼夜生物钟与 `UrgeEngine` 枯燥度主动开口触发器。
+- **🎮 游戏自主感知与打牌解说**：集成杀戮尖塔 2 (Slay the Spire 2) C# Mod，实现游戏事件摄入 (`:8090`)、自动出牌决策与实时解说 HUD 叠加。
+- **📚 团队多微服务隔离与契约**：基于 [API-CONTRACT.md](docs/API-CONTRACT.md) 协议隔离，外包/组员独立承接校园 FAQ 知识库 (RAG `:8093`)、B 端后台管理控制台 (`:8094`/`:8095`) 与 SQLite 陪伴工具 (`:8096`)。
 
-创建标准的虚拟环境并安装统一依赖：
+---
+
+## 🏗️ 系统架构拓扑 (Architecture Topology)
+
+```
+                       ┌─────────────────────────────────────────┐
+                       │  Web Client (stage-web / Live2D / VRM)  │
+                       └───────────────────┬─────────────────────┘
+                                           │ WebSocket (端口 8080)
+┌──────────────────────────────────────────▼─────────────────────────────────────────┐
+│ Go Core (betteragent-core)                                                        │
+│ ├── WebGateway (全双工 WebSocket 网关)      ├── CentralStateMachine (状态机看门狗)    │
+│ ├── GotdAdapter (Telegram MTProto)        ├── EmotionEngine & UrgeEngine (心理模型) │
+│ └── GameEventHandler / GameStateHandler   └── Go NatsBus (消息发布订阅)            │
+└──────────────────────────────────────────┬─────────────────────────────────────────┘
+                                           │ NATS Server (Pub/Sub 端口 4222)
+┌──────────────────────────────────────────▼─────────────────────────────────────────┐
+│ Python Services Layer                                                             │
+│ ├── Cognitive Service (:8091 TTS / :8092 STT / Gemini / Claude / Tools / MCP)     │
+│ ├── Memory Service (Redis 短时缓存 + Qdrant 向量检索 + UserProfile 用户画像)          │
+│ └── Game Watcher Service (STS2 轮询与自动出牌触发)                                │
+└──────────────────────────────────────────┬─────────────────────────────────────────┘
+                                           │ HTTP REST / API Contract
+┌──────────────────────────────────────────▼─────────────────────────────────────────┐
+│ Team Isolated Subservices                                                         │
+│ ├── Campus KB RAG Service (冯文哲 / 端口 8093)                                     │
+│ ├── Admin Panel Backend & Web UI (谢自立 / REST 端口 8094, Web 端口 8095)           │
+│ └── Companion Tool Service (张劭哲 / 端口 8096, SQLite companion.db)                │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📚 项目文档 (Documentation)
+
+- 📐 [系统架构与 SRS 规范](docs/ARCHITECTURE.md) —— 系统总体拓扑、WebGateway 双工时序图、UML 类图与状态机迁移矩阵。
+- 🤝 [团队多微服务接口契约](docs/API-CONTRACT.md) —— 各 Feature 分支的端口隔离规范、HTTP REST 契约与 PR 门控检查。
+- 🛡️ [安全加固记录与部署基线](docs/SECURITY.md) —— 鉴权环境变量与生产环境信任边界清单。
+- 📜 [变更日志 (CHANGELOG.md)](CHANGELOG.md) —— 按语义化版本与 Commit 规范记录的项目迭代日志。
+
+---
+
+## 🔌 端口分配汇总 (Port Assignments)
+
+| 端口 | 服务名称 | 协议 | 负责人 | 状态 |
+| :--- | :--- | :--- | :--- | :--- |
+| `4222` | NATS Server | TCP Pub/Sub | 核心 (褚裕禄) | ✅ 已就绪 |
+| `8080` | Go Core WebGateway | WebSocket | 核心 (褚裕禄) | ✅ 已就绪 |
+| `8090` | Go Core 游戏事件摄入 | HTTP / WS | 核心 (褚裕禄) | ✅ 已就绪 |
+| `8091` | TTS Service | HTTP | 核心 (褚裕禄) | ✅ 已就绪 |
+| `8092` | STT Service | HTTP | 核心 (褚裕禄) | ✅ 已就绪 |
+| `8093` | **Campus KB RAG Service** | HTTP REST | 冯文哲 | 🔲 待实现 |
+| `8094` | **Admin Panel REST API** | HTTP REST | 谢自立 | 🔲 待实现 |
+| `8095` | **Admin Web UI (Vite)** | HTTP Dev | 谢自立 | 🔲 待实现 |
+| `8096` | **Companion Tool Service** | HTTP REST | 张劭哲 | 🔲 待实现 |
+
+---
+
+## 🚀 快速启动指南 (Quick Start)
+
+### 1. 环境准备 (Python 3.10+)
 
 ```bash
-# 创建虚拟环境 (.venv)
+# 创建并激活 Python 虚拟环境
 python -m venv .venv
+.\.venv\Scripts\activate      # Windows
+source .venv/bin/activate    # Linux/macOS
 
-# 激活环境 (Windows)
-.\.venv\Scripts\activate
-# 激活环境 (Linux/macOS)
-source .venv/bin/activate
-
-# 安装项目统一依赖
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-### 2. 拷贝环境配置
+### 2. 环境变量配置
 
 ```bash
+# 复制配置模板
 cp .env.example .env
-# 编辑 .env 填入 TELEGRAM_API_ID, TELEGRAM_API_HASH 等配置
-# 必须设置 NATS_USER / NATS_PASSWORD —— NATS 总线承载所有服务间的私密对话数据与
-# 控制指令，Go core / Python 微服务 / NATS 服务端三方都要求鉴权，缺一不可，
-# 否则任何能连到 4222 端口的人都能伪造消息、读取任意用户的对话记忆。
-# 建议用 `openssl rand -hex 24` 生成 NATS_PASSWORD。
-#
-# 必须设置 WEBGATEWAY_TOKEN —— 保护 8080 端口的数字人 WebSocket 网关（/ws），
-# 前端连接时需带上 ?token=<WEBGATEWAY_TOKEN>，否则拒绝握手。
-# 可选设置 WEBGATEWAY_ALLOWED_ORIGINS —— 限制哪些浏览器 Origin 能跨域连接
-# /ws（逗号分隔的 glob，如 "example.com,*.example.com"）；不设置则不做 Origin
-# 校验（本地开发、或前端部署在别的域名时留空即可，token 才是真正的门禁）。
-#
-# 必须设置 REDIS_PASSWORD —— Redis 里存的是每个用户的短时对话缓冲区，
-# 未鉴权会导致任何能连到 6379 端口的人读到所有用户的最近聊天记录。
-#
-# 必须设置 QDRANT_API_KEY —— 目前 VectorMemoryStore 还是内存 stub，尚未真正
-# 连接 Qdrant，但仍建议现在就锁死容器本身，避免以后接入时忘记加鉴权。
+
+# 编辑 .env 填充秘钥（必须包含 NATS_USER/NATS_PASSWORD/WEBGATEWAY_TOKEN/REDIS_PASSWORD）
 ```
 
-### 3. 一键编排启动（支持 Windows / Linux / macOS）
+### 3. 一键拉起后端微服务矩阵
 
-使用内置的跨平台守护进程 `runner.py`（支持自动拉起微服务、进程健康检查与自动重启）：
+使用内置的进程守护编排脚本 `runner.py`（支持自动拉起 Go Core、NATS、Cognitive、Memory 与 TTS 微服务）：
 
 ```bash
-# 直接使用 runner 启动（跨平台通用）
 python runner.py
-
-# 或在 Windows 下使用脚本：
-.\scripts\win_start.ps1
-
-# 或在 Linux 下使用脚本：
-./scripts/linux_start.sh
 ```
 
----
-
-## 本地开发常用指令
+### 4. 启动前端数字人 Web UI
 
 ```bash
-# 停止所有微服务
-.\scripts\win_stop.ps1
-
-# 启动 Web UI 调试端
-# 首次运行需要 cp frontend/apps/stage-web/.env.example frontend/apps/stage-web/.env
-# 并把 VITE_BETTERAGENT_WS_TOKEN 设成跟根目录 .env 里的 WEBGATEWAY_TOKEN 一样的值，
-# 否则 WebGateway 会拒绝握手，前端会无限重连。
+# 进入前端目录
 cd frontend
-pnpm --filter @proj-airi/stage-web dev
 
+# 安装 pnpm 依赖
+pnpm install
+
+# 启动 stage-web 调试端 (端口 5173)
+pnpm --filter @proj-airi/stage-web dev
+```
+
+在浏览器打开 `http://localhost:5173` 即可与数字人猫娘进行音视频全双工交互！
+
+### 5. 运行团队接口契约集成测试
+
+在组员提交 PR 或集成联调前，运行 API 门控测试：
+
+```bash
+pytest tests/test_api_contract.py -v
 ```
 
 ---
 
-## 鸣谢 / Acknowledgments
+## 📄 许可与鸣谢 (Acknowledgments)
 
-* **Airi 项目**：[moeru-ai/airi](https://github.com/moeru-ai/airi)
-```
+- 基于 **Airi 项目** 的前端数字人与通信框架：[moeru-ai/airi](https://github.com/moeru-ai/airi)
+- 采用 **gotd/td** 高性能 Go Telegram MTProto 库：[gotd/td](https://github.com/gotd/td)
