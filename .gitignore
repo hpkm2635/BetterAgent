@@ -110,6 +110,11 @@ config/config.yaml
 # 3. 本地虚拟环境目录
 venv_win/
 
-# 4. 大体积 3D 二进制模型与 Godot 自动生成元数据隔离
+# 4. 大体积 3D 二进制模型与 Godot 引擎缓存/元数据隔离
 *.vrm
+*.vrma
 *.uid
+*.import
+.godot/
+*.tar.zst
+*.zst
