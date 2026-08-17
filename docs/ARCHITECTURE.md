@@ -8,13 +8,14 @@
 
 ## 1. 系统总体拓扑架构 (System Topology & Microservices)
 
-针对生产环境的高并发网络 IO 与复杂 LLM 推理需求，系统采用 **Go Core (高性能控制核) + NATS (中枢消息总线) + Python Services (认知与记忆微服务)** 的异构架构。
+针对生产环境的高并发网络 IO 与复杂 LLM 推理需求，系统采用 **Go Core (高性能控制核) + NATS (中枢消息总线) + Python Services (认知与记忆微服务) + Team Microservices (团队隔离外包/拓展微服务)** 的异构架构。
 
 ```mermaid
 graph TD
-    subgraph External_Adapters["External IO Networks / Clients"]
+    subgraph External_Adapters["External IO Networks / Clients / Games"]
         TG["Telegram Cloud API"]
-        WebClient["Browser Client (stage-web / Live2D / VRM)"]
+        WebClient["Browser Client (stage-web / Live2D / VRM / 端口 5173)"]
+        STS2Game["Slay the Spire 2 Game (C# Mod)"]
     end
 
     subgraph Go_Core["Go Core (betteragent-core)"]
@@ -27,7 +28,7 @@ graph TD
         EmotionEngine["EmotionEngine (VAD 3D情绪模型 & 生理指标)"]
         CircadianEvaluator["CircadianRhythm (昼夜生物钟评估器)"]
         UrgeEngine["UrgeEngine (欲望/枯燥度累加器 & 主动开口决策)"]
-        GameEventIngest["GameEventHandler (HTTP:8090 游戏事件摄入)"]
+        GameEventIngest["GameEventHandler / GameStateHandler (HTTP:8090 / WS)"]
         GoNatsBus["NatsBus Client (Go)"]
 
         GotdAdapter --> AntiSpam
@@ -45,16 +46,16 @@ graph TD
     end
 
     subgraph Message_Broker["Message Infrastructure"]
-        NATS["NATS Server (Pub/Sub + JetStream)"]
+        NATS["NATS Server (Pub/Sub + JetStream / 端口 4222)"]
     end
 
-    subgraph Python_Services["Python Services Layer"]
+    subgraph Core_Python_Services["Core Python Services Layer"]
         PyNatsBus["NatsBus Client (Python)"]
         
-        subgraph Cognitive_Service["Cognitive Service"]
+        subgraph Cognitive_Service["Cognitive Service (端口 8091 TTS / 8092 STT)"]
             CognitiveEngine["CognitiveEngine (推理逻辑)"]
             PromptBuilder["PromptBuilder (System Prompt组装)"]
-            ToolRegistry["ToolRegistry (Tools/MCP决策)"]
+            ToolRegistry["ToolRegistry (Tools / MCP / RAG / Game Action)"]
             LLMProvider["BaseLLMProvider (Gemini / Claude / OpenAI)"]
 
             CognitiveEngine --> PromptBuilder
@@ -77,19 +78,40 @@ graph TD
             MemoryHub --> TokenBudget
         end
 
+        subgraph Game_Watcher_Service["Game Watcher Service"]
+            STS2Poller["STS2 Poller (轮询 C# Mod 状态并触发 Game Turn)"]
+        end
+
         PyNatsBus --> CognitiveEngine
         PyNatsBus --> MemoryHub
+        STS2Poller --> GoNatsBus
+    end
+
+    subgraph Team_Microservices["Team Isolated Microservices (API Contract Managed)"]
+        CampusKB["Campus KB RAG Service (冯文哲 / HTTP:8093)"]
+        AdminPanel["Admin Panel Service (谢自立 / REST:8094 & Web:8095)"]
+        CompanionService["Companion Tool Service (张劭哲 / HTTP:8096 & SQLite)"]
     end
 
     TG <--> GotdAdapter
     WebClient <-->|"WebSocket (全双工)"| WebGateway
+    STS2Game <-->|"HTTP:8090 / C# Mod"| GameEventIngest
+    STS2Game <-->|"HTTP / Game Tool Calls"| ToolRegistry
+    
     GoNatsBus <--> NATS
     PyNatsBus <--> NATS
+
+    ToolRegistry --"HTTP POST /api/kb/search"--> CampusKB
+    AdminPanel --"HTTP Proxy /api/kb/*"--> CampusKB
+    AdminPanel --"PATCH Persona YAML"--> Core_Python_Services
+    CompanionService --"POST Stat & Reminder Trigger"--> Go_Core
 ```
 
 ---
 
-## 2. 消息处理与推理时序 (Sequence Diagram)
+## 2. 消息处理与推理时序 (Sequence Diagrams)
+
+### 2.1 Telegram 消息处理时序 (Gotd Adapter)
 
 用户在 Telegram 发送消息后，Go Core、NATS、Memory Service 与 Cognitive Service 之间的完整异步 Pub/Sub 交互时序：
 
@@ -127,9 +149,9 @@ sequenceDiagram
         Cog->>Cog: 执行工具生成图片/音频文件
     end
 
-    Cog->>NATS: Publish "agent.action.{channel}.{chat_id}" (ActionDecisionPayload)
+    Cog->>NATS: Publish "agent.action.telegram.{chat_id}" (ActionDecisionPayload)
     
-    NATS-->>Adapter: Notify "agent.action.telegram.*" (subject-graded, Adapter only subscribes to its own channel)
+    NATS-->>Adapter: Notify "agent.action.telegram.*" (Adapter 专属通道)
     Adapter->>Adapter: 停止 Typing 心跳协程
     Adapter->>Adapter: HumanizationEngine 模拟拟打字延迟 (min 1.5s, max 8.0s)
     Adapter->>User: 发送回复文本 / 音频 / 图片
@@ -137,6 +159,78 @@ sequenceDiagram
 
     NATS-->>Memory: Notify "agent.action_completed" (追加短时对话历史)
     NATS-->>CSM: Notify "agent.action_completed" (状态切换 TransitionTo IDLE)
+```
+
+### 2.2 Web 前端全双工数字人流式交互时序 (WebGateway & Digital Human Audio/Viseme)
+
+网页前端（`stage-web`）通过 WebSocket (`:8080`) 连接 `WebGateway`，实现**音视频切片流、Live2D Viseme 口型同步与实时多模态交互**：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor WebUser as Web Browser User (stage-web)
+    participant GW as WebGateway (Go WebSocket 网关 :8080)
+    participant NATS as NATS Message Bus
+    participant CSM as CentralStateMachine (Go)
+    participant Memory as MemoryHub (Python)
+    participant Cog as CognitiveEngine (Python)
+    participant TTS as TTS Service (Python :8091)
+
+    WebUser->>GW: WebSocket 文本消息 / VAD 语音切片
+    GW->>NATS: Publish "agent.inbound_message" (source_channel="web")
+    
+    NATS-->>CSM: Notify "agent.inbound_message"
+    CSM->>CSM: 状态切换 TransitionTo(THINKING)
+    CSM->>NATS: Publish "agent.enrich_context_req"
+    
+    NATS-->>Memory: Notify "agent.enrich_context_req"
+    Memory->>NATS: Publish "agent.reasoning_request"
+
+    NATS-->>Cog: Notify "agent.reasoning_request"
+    Cog->>Cog: 流式生成 Text Delta
+    Cog->>NATS: Publish "agent.tts.stream_chunk" (流式文本)
+
+    NATS-->>TTS: Notify "agent.tts.stream_chunk"
+    TTS->>TTS: 实时合成 PCM 音频切片 + 生成 Viseme 口型帧
+    TTS->>NATS: Publish "agent.audio.chunk" & "agent.viseme.data"
+
+    NATS-->>GW: Notify "agent.audio.chunk" & "agent.viseme.data" & "agent.action.web.*"
+    GW-->>WebUser: WebSocket 双工下发 { audio_base64, visemes, text_delta, emotion_tag }
+    
+    Note over WebUser: 浏览器底层 AudioContext 播放音频 + Live2D 唇形模型实时渲染
+
+    TTS->>NATS: Publish "agent.tts.stream_end"
+    GW->>NATS: Publish "agent.action_completed"
+    NATS-->>CSM: Notify "agent.action_completed" (状态恢复 IDLE)
+```
+
+### 2.3 Barge-in 用户打断撤销时序 (Realtime Stream Cancel)
+
+当数字人正在说话/播放音频时，用户说话或在界面点击“打断”，系统毫秒级撤销在途推理与音频切片：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor WebUser as Web Browser User
+    participant GW as WebGateway (Go)
+    participant NATS as NATS Message Bus
+    participant CSM as CentralStateMachine (Go)
+    participant TTS as TTS Service (Python)
+
+    WebUser->>GW: VAD 检测用户开口 / 点击打断 (Barge-in)
+    GW->>NATS: Publish "agent.user.interrupt" & "agent.stream.cancel_req"
+    
+    NATS-->>CSM: Notify "agent.user.interrupt"
+    CSM->>CSM: 立即状态切换 TransitionTo(CANCELLING)
+    
+    NATS-->>TTS: Notify "agent.stream.cancel_req"
+    TTS->>TTS: 终止当前在途音频合成线程 / 清空 Chunk 队列
+    TTS->>NATS: Publish "agent.stream.cancel_ack"
+
+    GW-->>WebUser: WebSocket 发送 { type: "STREAM_CANCELLED" }
+    Note over WebUser: 前端立刻停止 AudioContext 播放并清空 Viseme 队列
+
+    CSM->>CSM: 状态清空并重新 TransitionTo(THINKING)
 ```
 
 ---
@@ -208,7 +302,62 @@ stateDiagram-v2
 | **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` | 画面快照 / 情绪动作更新 |
 | **游戏感知** | `agent.game_event` | 外部游戏事件广播（稀有圣物、濒死、胜负结算等） |
 
-### 4.2 Payload 类图 (Class Diagram)
+### 4.2 系统核心组件 UML 类图 (Core Components Class Diagram)
+
+架构基于统一事件驱动基类 `BaseAgentComponent`，组件包括 **WebSocket 全双工网关 (`WebGateway`)**、Telegram 适配器 (`TelegramAdapter`)、中央状态机 (`CentralStateMachine`)、认知引擎 (`CognitiveEngine`)、记忆中心 (`MemoryHub`) 与心跳发生器 (`ClockEngine`)：
+
+```mermaid
+classDiagram
+    class BaseAgentComponent {
+        <<Abstract Class>>
+        #String component_name
+        #EventBus bus
+        +start()
+        +stop()
+        #publish_event(EventType, Dict payload)
+        #subscribe_to(EventType)
+        +handle_event(Event)*
+    }
+
+    class EventBus {
+        <<Singleton / Message Router>>
+        -Map~EventType, List~Callable~~ subscribers
+        -AsyncQueue event_queue
+        +subscribe(EventType, Callable handler)
+        +publish(Event event)
+        +start_routing()
+    }
+
+    class Event {
+        <<Data Structure>>
+        +UUID id
+        +EventType event_type
+        +float timestamp
+        +String source_component
+        +BasePayload payload
+    }
+
+    class EventType {
+        <<Enumeration>>
+        TICK
+        INBOUND_MESSAGE
+        REASONING_REQUEST
+        ACTION_DECISION
+        ACTION_COMPLETED
+        ERROR
+    }
+
+    EventBus ..> Event : routes
+    BaseAgentComponent --> EventBus : holds reference
+    BaseAgentComponent <|-- WebGateway : Web 网页端全双工网关 (端口 8080)
+    BaseAgentComponent <|-- TelegramAdapter : Telegram Cloud API 适配器
+    BaseAgentComponent <|-- CognitiveEngine : 认知推理与 Tool 调度引擎
+    BaseAgentComponent <|-- MemoryHub : 记忆编排与 Token Budget 剪裁
+    BaseAgentComponent <|-- CentralStateMachine : 中央状态机与看门狗
+    BaseAgentComponent <|-- ClockEngine : TICK 定时心跳与昼夜触发器
+```
+
+### 4.3 Payload 数据结构类图 (Payload Schemas)
 
 ```mermaid
 classDiagram
@@ -371,12 +520,112 @@ classDiagram
     EmotionalState --> UrgeEngine : Arousal/Energy 动态调节触发阈值
 ```
 
+```
+
 ---
 
-## 6. 防腐化策略 (Documentation Maintenance Rules)
+## 6. 多渠道适配器扩展规范与 AIRI 前端架构
+
+### 6.1 多渠道适配器扩展规范 (Multi-Channel Adapter Pattern)
+
+基于 `BaseAgentComponent` 抽象基类与 NATS 按渠道分级的 Subject 路由机制 (`agent.action.{channel}.{chat_id}`)，新增任意第三方网络 IO 渠道（如 Discord / WhatsApp / QQ Bot）只需实现一个继承类：
+
+```mermaid
+classDiagram
+    class BaseAgentComponent {
+        <<Abstract>>
+        +subscribe_to_channel(channel)
+        +publish_inbound_message(chat_id, user_id, text, channel)
+        +handle_action_decision(payload)*
+    }
+
+    class WebGateway {
+        +WebSocketConnections map
+        +HandleFullDuplexAudioViseme()
+    }
+
+    class GotdAdapter {
+        +MTProtoTelegramClient
+        +HandleTypingHeartbeat()
+    }
+
+    class DiscordAdapter {
+        <<Future Extension>>
+        +DiscordGoClient
+        +HandleDiscordEmbeds()
+    }
+
+    class WhatsAppAdapter {
+        <<Future Extension>>
+        +WhatsAppWebBridge
+        +HandleMediaAttachments()
+    }
+
+    BaseAgentComponent <|-- WebGateway : channel="web"
+    BaseAgentComponent <|-- GotdAdapter : channel="telegram"
+    BaseAgentComponent <|-- DiscordAdapter : channel="discord"
+    BaseAgentComponent <|-- WhatsAppAdapter : channel="whatsapp"
+```
+
+* **统一路由控制**：所有适配器仅需向 NATS 发布 `agent.inbound_message` 并附带自身的 `source_channel`（如 `"web"` / `"telegram"` / `"discord"`）。
+* **隔离监听**：适配器仅订阅 `agent.action.{channel}.*` 主题，保证各渠道消息下发相互隔离，无需在 Payload 内部手写条件过滤。
+
+---
+
+### 6.2 AIRI 前端数字人渲染与状态控制架构 (AIRI Frontend Pipeline)
+
+前端采用 Vue 3 + Vite + Pinia + UnoCSS 构筑（`frontend/apps/stage-web` 与 `@proj-airi/stage-ui`），实现了渲染层与网络状态解耦的响应式管道：
+
+```mermaid
+graph LR
+    subgraph Frontend_App["frontend/apps/stage-web"]
+        WSBridge["betteragent-ws.ts (WebSocket 桥接器)"]
+        
+        subgraph Pinia_Stores["Pinia State Management"]
+            StreamStore["stream-store.ts (文本/音频/Viseme 缓冲帧)"]
+            STS2Store["sts2-game-state.ts (杀戮尖塔 2 实时 HUD)"]
+            EmotionStore["emotion-store.ts (情绪/姿态响应)"]
+        end
+
+        subgraph Render_Engines["Stage UI Engine Canvas"]
+            Live2DCanvas["pixi-live2d-display (Live2D 模型渲染器)"]
+            VisemeLipsync["VisemeLipsyncDecoder (口型同步器)"]
+            AudioPlayback["Web AudioContext (PCM 流式播放器)"]
+        end
+    end
+
+    WSBridge --"JSON Frame"--> StreamStore
+    WSBridge --"Game State Update"--> STS2Store
+    StreamStore --"Text Delta"--> ChatUI["聊天窗口 UI"]
+    StreamStore --"Viseme Data"--> VisemeLipsync
+    StreamStore --"Base64 PCM Chunk"--> AudioPlayback
+    VisemeLipsync --"ParamMouthOpenY"--> Live2DCanvas
+    EmotionStore --"Expression & Motion"--> Live2DCanvas
+```
+
+---
+
+## 7. 团队 Python 微服务扩展矩阵 (Python Microservice Subsystem)
+
+为了在大型项目中保证跨组员协作互不干扰，Python 服务层拆分为**核心认知与记忆引擎**与**团队独立微服务**：
+
+| 微服务名称 | 目录路径 | 监听端口 | 负责人 | 核心职责与解耦方式 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Cognitive Service** | `services/cognitive/` | `:8091` / `:8092` | 核心 / 褚裕禄 | LLM 推理、Tool 调度、TTS 语音与 STT 转写生成 |
+| **Memory Service** | `services/memory/` | — (Redis/Qdrant) | 核心 / 褚裕禄 | Redis 短时缓存、Qdrant 向量检索、UserProfile 画像 |
+| **Game Watcher Service**| `services/game_watcher/`| — (Polling) | 核心 / 褚裕禄 | Slay the Spire 2 游戏轮询与自动回合触发 |
+| **Campus KB Service** | `services/campus_kb/` | `:8093` (HTTP) | 冯文哲 | 校园 FAQ 文本切片、向量入库与 `/api/kb/search` 检索 |
+| **Admin Backend** | `admin/backend/` | `:8094` (REST) | 谢自立 | B 端控制台，提供人设 YAML PATCH 与用户画像查看 |
+| **Admin Frontend** | `admin/frontend/` | `:8095` (Web Dev)| 谢自立 | Vue 3 + Element Plus 独立后台管理界面 |
+| **Companion Service** | `services/companion/` | `:8096` (HTTP) | 张劭哲 | SQLite 陪伴统计、APScheduler 日程提醒与 NL2SQL 查询 |
+
+---
+
+## 8. 防腐化策略 (Documentation Maintenance Rules)
 
 为了保持设计资产永不过期，开发过程中须遵循以下原则：
 
 1. **单一点真相 (Single Source of Truth)**：任何对 `core/internal/schema/payloads.go` 或状态机 `state_machine.go` 的修改，必须同步更新本文件中的 Mermaid 图纸。
 2. **Git Hook 校验**：合并 PR 时检测 `docs/ARCHITECTURE.md` 是否同步变更。
 3. **AI Prompt 提示**：在向抗重力 Agent 发出架构重构指令时，附带本文件（`docs/ARCHITECTURE.md`）作为上下文基准。
+
