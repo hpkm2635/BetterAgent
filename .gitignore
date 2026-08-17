@@ -30,6 +30,8 @@ node_modules/
 dist/
 out/
 .output/
+.cache/
+**/.cache/
 .eslintcache/
 .vite-inspect/
 .turbo/
@@ -96,13 +98,6 @@ Thumbs.db
 .gemini/
 **/.gemini/
 
-# ==========================================
-# 版权资产隔离 (Booth 购买的付费 3D/VRM 模型)
-# ==========================================
-VRM/*
-**/VRM/*
-*.vrm
-*.vrm.meta
 
 # 1. 配置文件隔离
 config/config.yaml
