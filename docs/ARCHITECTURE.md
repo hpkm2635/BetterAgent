@@ -375,60 +375,76 @@ classDiagram
         +String source_component
     }
 
-    class GameEventPayload {
-        +String game
-        +String event_type
-        +float weight
-        +String detail
-        +Dict metadata
-    }
-
     class InboundMessagePayload {
         +int64 chat_id
         +int64 user_id
+        +int generation_id
         +int message_id
         +String source_channel
         +String raw_text
         +String file_path
-        +int reply_to_message_id
         +String media_type
         +String voice_transcript
-        +String chat_type
-        +String sender_username
-        +String sender_display_name
     }
 
-    class VisionFramePayload {
+    class EnrichContextReqPayload {
         +int64 chat_id
-        +String image_base64
-        +String format
-        +String source_type
+        +int64 user_id
+        +int generation_id
+        +InboundMessagePayload inbound_message
+        +String current_state
+        +String trigger_type
+        +String emotion_description
+        +String source_channel
     }
 
     class ReasoningRequestPayload {
         +int64 chat_id
         +int64 user_id
-        +String system_prompt_override
+        +int generation_id
         +List~Dict~ short_term_history
         +Dict user_profile
         +List~String~ rag_facts
+        +String current_emotion
         +float mood_score
-        +String formatted_time_str
         +InboundMessagePayload inbound_message
+    }
+
+    class StreamChunkPayload {
+        +int64 chat_id
+        +int generation_id
+        +int chunk_index
+        +bool is_final
+        +String source_channel
+        +String text_delta
+        +String audio_base64
+        +List~Dict~ visemes
+    }
+
+    class STTTranscriptPayload {
+        +int64 chat_id
+        +int generation_id
+        +String text
+        +String source_channel
+    }
+
+    class StreamCancelPayload {
+        +int64 chat_id
+        +int generation_id
+        +String reason
+        +String source_channel
     }
 
     class ActionDecisionPayload {
         +int64 chat_id
+        +int generation_id
         +String source_channel
         +String action_type
         +String text_content
         +float typing_delay
-        +String media_type
-        +int reply_to_message_id
         +String voice_path
         +String photo_path
-        +String sticker_id
-        +String reaction_emoji
+        +bool is_final
     }
 
     class ActionCompletedPayload {
@@ -437,7 +453,14 @@ classDiagram
         +ActionDecisionPayload action_decision
         +String status
         +float sent_time
-        +String error_detail
+    }
+
+    class GameEventPayload {
+        +String game
+        +String event_type
+        +float weight
+        +String detail
+        +Dict metadata
     }
 
     class TickPayload {
@@ -446,15 +469,18 @@ classDiagram
         +float idle_duration_seconds
         +bool is_sleep_hours
         +int tick_counter
-        +String emotion_description
     }
 
     EventEnvelope --> BasePayload
-    BasePayload <|-- GameEventPayload
     BasePayload <|-- InboundMessagePayload
+    BasePayload <|-- EnrichContextReqPayload
     BasePayload <|-- ReasoningRequestPayload
+    BasePayload <|-- StreamChunkPayload
+    BasePayload <|-- STTTranscriptPayload
+    BasePayload <|-- StreamCancelPayload
     BasePayload <|-- ActionDecisionPayload
     BasePayload <|-- ActionCompletedPayload
+    BasePayload <|-- GameEventPayload
     BasePayload <|-- TickPayload
 ```
 
