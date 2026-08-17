@@ -26,6 +26,7 @@ class FakeSession:
         self.i = 0
         self.game_turn_posts = []
         self.game_event_posts = []
+        self.game_state_posts = []
 
     def get(self, url, params=None, timeout=None):
         state = self.states[self.i]
@@ -35,6 +36,8 @@ class FakeSession:
     def post(self, url, json=None, headers=None, timeout=None):
         if url.endswith("/api/game-turn"):
             self.game_turn_posts.append(json)
+        elif url.endswith("/api/game-state"):
+            self.game_state_posts.append(json)
         else:
             self.game_event_posts.append(json)
         return FakeResponse(200, {"status": "ok"})
@@ -54,6 +57,7 @@ async def _run_poll(states, target_chat_id=1001, token="test-token"):
             {"rare", "boss"},
             target_chat_id,
             tracker,
+            game_state_url="http://fake/api/game-state",
         )
     return session, tracker
 
@@ -135,3 +139,18 @@ def test_none_target_chat_id_disables_triggering_entirely():
     ]
     session, _ = asyncio.run(_run_poll(states, target_chat_id=None))
     assert session.game_turn_posts == []
+
+
+def test_game_state_posting_on_stat_change():
+    states = [
+        {"state_type": "monster", "run": {"floor": 1, "act": 1}, "player": {"hp": 70, "max_hp": 70, "gold": 99, "relics": []}},
+        # HP changed -> should post updated state
+        {"state_type": "monster", "run": {"floor": 1, "act": 1}, "player": {"hp": 65, "max_hp": 70, "gold": 99, "relics": []}},
+        # Nothing changed -> should debounce and not post again
+        {"state_type": "monster", "run": {"floor": 1, "act": 1}, "player": {"hp": 65, "max_hp": 70, "gold": 99, "relics": []}},
+    ]
+    session, _ = asyncio.run(_run_poll(states))
+    assert len(session.game_state_posts) == 2
+    assert session.game_state_posts[0] == {"chat_id": 1001, "floor": 1, "hp": 70, "max_hp": 70, "gold": 99, "act": 1}
+    assert session.game_state_posts[1] == {"chat_id": 1001, "floor": 1, "hp": 65, "max_hp": 70, "gold": 99, "act": 1}
+

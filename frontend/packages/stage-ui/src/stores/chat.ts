@@ -457,23 +457,6 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       runtime.setSending(next)
   })
 
-  // Subscribe BetterAgent WS Bridge events to Airi Chat Orchestrator Hooks
-  if (typeof window !== 'undefined') {
-    const bridgeInitTimer = setInterval(() => {
-      const bridge = (window as any).__betterAgentWSBridge
-      if (bridge) {
-        clearInterval(bridgeInitTimer)
-        bridge.onTextDelta((text: string) => {
-          runtime.onTokenLiteral?.({ text, metadata: {} })
-        })
-        bridge.onEmotion((emotion: string, action?: string) => {
-          runtime.onTokenSpecial?.({ text: `[emotion:${emotion}]`, name: 'emotion', args: { emotion, action } })
-        })
-        console.log('[BetterAgent] Hooked BetterAgent WS Bridge text & emotion tokens to Airi Stage UI!')
-      }
-    }, 300)
-  }
-
   async function ingest(
     sendingMessage: string,
     options: ChatOrchestratorSendOptions,

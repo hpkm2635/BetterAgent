@@ -19,16 +19,16 @@ def parse_thought_and_clean_text(raw_text: str) -> Tuple[str, str]:
         return "", ""
 
     thought = ""
-    match = re.search(r"<thought>(.*?)</thought>", raw_text, re.DOTALL)
+    match = re.search(r"<(?:thought|think)>(.*?)</(?:thought|think)>", raw_text, re.DOTALL)
     if match:
         thought = match.group(1).strip()
-        clean_text = re.sub(r"<thought>(.*?)</thought>", "", raw_text, flags=re.DOTALL).strip()
+        clean_text = re.sub(r"<(?:thought|think)>.*?</(?:thought|think)>", "", raw_text, flags=re.DOTALL).strip()
     else:
         clean_text = raw_text.strip()
 
-    # 1. Strip ReAct / JSON action blocks
+    # 1. Strip ReAct / JSON action and tool blocks
     clean_text = re.sub(r"\{\s*\"action\"\s*:\s*\"[^\"]+\".*?\}", "", clean_text, flags=re.DOTALL)
-    clean_text = re.sub(r"\{\s*\"(action_type|action|sticker_id)\"[\s\S]*?\}", "", clean_text)
+    clean_text = re.sub(r"\{\s*\"(action_type|action|sticker_id|prompt)\"[\s\S]*?\}", "", clean_text)
     
     # 2. Strip Python pseudocode calls like print(telegram_action(...)) or print(...)
     clean_text = re.sub(r"print\s*\(\s*(?:telegram_action|generate_image|generate_tts_speech)[\s\S]*?\)", "", clean_text)
@@ -38,6 +38,9 @@ def parse_thought_and_clean_text(raw_text: str) -> Tuple[str, str]:
     clean_text = re.sub(r"</?function_call[^>]*>", "", clean_text)
     clean_text = re.sub(r"</?function_c[^>]*>", "", clean_text)
     clean_text = re.sub(r"</?[a-zA-Z0-9_]+_action[^>]*>", "", clean_text)
+
+    # 4. Strip stray protocol tags
+    clean_text = re.sub(r"\[(?:emotion|action):[^\]]+\]", "", clean_text)
 
     return thought, clean_text.strip()
 
@@ -83,8 +86,8 @@ def clean_action_descriptions(text: str) -> str:
 
 class SentenceSegmenter:
     """
-    Sentence-level punctuation segmenter with <thought> & JSON state machine barrier protection.
-    Prevents mental thoughts (<thought>...</thought>), JSON blocks, and action descriptions from leaking to TTS/NATS!
+    Sentence-level punctuation segmenter with <think>/<thought> & JSON streaming barrier FSM.
+    Prevents mental thoughts (<think>...</think>, <thought>...</thought>), JSON tool calls, and action descriptions from leaking to TTS/NATS!
     """
 
     PUNCTUATIONS = set(["。", "！", "？", "~", "\n", "；", "，", ".", "!", "?", ";", ","])
@@ -99,17 +102,19 @@ class SentenceSegmenter:
 
         self.buffer += delta
 
-        # 1. Thought Tag State Machine Barrier Check
-        if "<thought>" in self.buffer:
+        # 1. Thought / Think Tag Streaming Barrier FSM
+        if "<think>" in self.buffer or "<thought>" in self.buffer:
             self.in_thought = True
 
         if self.in_thought:
-            if "</thought>" in self.buffer:
-                # Exit thought block and strip thought content from buffer
+            if "</think>" in self.buffer:
+                self.buffer = re.sub(r"[\s\S]*?</think>", "", self.buffer).lstrip()
+                self.in_thought = False
+            elif "</thought>" in self.buffer:
                 self.buffer = re.sub(r"[\s\S]*?</thought>", "", self.buffer).lstrip()
                 self.in_thought = False
             else:
-                # Still inside thought block, suppress sentence slicing
+                # Still inside thinking block, suppress streaming output
                 return []
 
         # 2. JSON Code Block Barrier Check
@@ -122,10 +127,6 @@ class SentenceSegmenter:
         self.buffer = clean_action_descriptions(self.buffer)
 
         # 4. Unclosed Action Parenthesis Barrier Check
-        # If inside unclosed action description (e.g. '（耳朵抖了抖喵'), wait for closing parenthesis before slicing.
-        # Backticks count too: an inline code span like '`services/foo.py`' is exactly
-        # where the naive dot-splitting below would otherwise slice a filename/identifier
-        # in half (see the bug this barrier and the dot-guard below were added to fix).
         has_unclosed_paren = (
             ("（" in self.buffer and "）" not in self.buffer) or
             ("(" in self.buffer and ")" not in self.buffer) or
@@ -137,7 +138,6 @@ class SentenceSegmenter:
             return []
 
         # 4.5 Sanitize multi-dot ellipses in buffer before slicing (e.g. '......', '...', '…')
-        # Prevents '......' from being chopped into 6 individual single-period ('.') fragments that break TTS!
         self.buffer = re.sub(r"\.{2,}", "，", self.buffer)
         self.buffer = re.sub(r"…+", "，", self.buffer)
 
@@ -146,13 +146,6 @@ class SentenceSegmenter:
         idx = 0
         for i, char in enumerate(self.buffer):
             if char in self.PUNCTUATIONS:
-                # A bare '.' between two word characters is very likely a filename/
-                # module extension ('cognitive_engine.py') or a decimal/abbreviation,
-                # not an English sentence end -- slicing there is what produced
-                # "我已经帮你读取了 `services/c" + "py` 的前 50 行代码了。" as two
-                # separate malformed TTS requests. If the char after the dot hasn't
-                # streamed in yet either, hold off rather than guess: waiting a few
-                # more characters is cheap, slicing wrong here is not.
                 if char == "." and i > 0 and self.buffer[i - 1].isalnum() and (
                     i + 1 >= len(self.buffer) or self.buffer[i + 1].isalnum()
                 ):
@@ -163,7 +156,7 @@ class SentenceSegmenter:
                     continue
                 raw_sentence = chunk
                 if raw_sentence:
-                    sentence = re.sub(r"</?thought>", "", raw_sentence).strip()
+                    sentence = re.sub(r"</?(?:thought|think)>", "", raw_sentence).strip()
                     sentence = clean_action_descriptions(sentence)
                     if sentence:
                         sentences.append(sentence)
@@ -179,10 +172,14 @@ class SentenceSegmenter:
         if self.in_thought:
             return []
 
-        cleaned = re.sub(r"[\s\S]*?</thought>", "", self.buffer) if "</thought>" in self.buffer else self.buffer
+        cleaned = self.buffer
+        if "</think>" in cleaned:
+            cleaned = re.sub(r"[\s\S]*?</think>", "", cleaned)
+        if "</thought>" in cleaned:
+            cleaned = re.sub(r"[\s\S]*?</thought>", "", cleaned)
         cleaned = re.sub(r"```(?:json)?[\s\S]*?```", "", cleaned)
         cleaned = re.sub(r"\{\s*\"[^\"]+\"[\s\S]*?\}", "", cleaned).strip()
-        cleaned = re.sub(r"</?thought>", "", cleaned).strip()
+        cleaned = re.sub(r"</?(?:thought|think)>", "", cleaned).strip()
         cleaned = clean_action_descriptions(cleaned)
 
         self.buffer = ""

@@ -1,5 +1,7 @@
 import type { StreamingAssistantMessage } from '../../types/chat'
 
+import { cloneDeep } from 'es-toolkit'
+import { nanoid } from 'nanoid'
 import { defineStore } from 'pinia'
 import { ref, toRaw } from 'vue'
 
@@ -7,10 +9,10 @@ import { useChatSessionStore } from './session-store'
 
 export const useChatStreamStore = defineStore('chat-stream', () => {
   const chatSession = useChatSessionStore()
-  const streamingMessage = ref<StreamingAssistantMessage>({ role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() })
+  const streamingMessage = ref<StreamingAssistantMessage>({ id: nanoid(), role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() })
 
   function beginStream() {
-    streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() }
+    streamingMessage.value = { id: nanoid(), role: 'assistant', content: '', slices: [], tool_results: [], createdAt: Date.now() }
   }
 
   function appendStreamLiteral(literal: string) {
@@ -30,9 +32,13 @@ export const useChatStreamStore = defineStore('chat-stream', () => {
 
   function finalizeStream(fullText?: string) {
     const sessionId = chatSession.activeSessionId
-    if (streamingMessage.value.slices.length > 0)
-      chatSession.appendSessionMessage(sessionId, toRaw(streamingMessage.value))
-    streamingMessage.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
+    if (streamingMessage.value.slices.length > 0 || streamingMessage.value.content) {
+      const msg = cloneDeep(toRaw(streamingMessage.value))
+      if (!msg.id)
+        msg.id = nanoid()
+      chatSession.appendSessionMessage(sessionId, msg)
+    }
+    streamingMessage.value = { id: nanoid(), role: 'assistant', content: '', slices: [], tool_results: [] }
     if (fullText)
       streamingMessage.value.content = fullText
   }

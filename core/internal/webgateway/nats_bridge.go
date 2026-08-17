@@ -79,6 +79,14 @@ func (b *NatsBridge) StartSubscriptions() error {
 		b.handleSTTFinalMsg(msg)
 	})
 
+	// 5. Subscribe to TTS Stream End & Stream Cancel Ack to broadcast CSM IDLE state to browser
+	_, _ = b.bus.Subscribe(bus.SubjectTTSStreamEnd, func(msg *nats.Msg) {
+		b.handleTTSStreamEndMsg(msg)
+	})
+	_, _ = b.bus.Subscribe(bus.SubjectStreamCancelAck, func(msg *nats.Msg) {
+		b.handleStreamCancelAckMsg(msg)
+	})
+
 	b.logger.Info("NATS Bridge subscriptions initialized for WebGateway")
 	return nil
 }
@@ -333,9 +341,22 @@ func (b *NatsBridge) publishInboundMessage(chatID int64, text string, mediaType 
 	go func(cID int64, req schema.EnrichContextReqPayload) {
 		reasoningReq, err := b.bus.Request(bus.SubjectEnrichContextReq, "web_gateway", req, 5*time.Second)
 		if err != nil {
-			b.logger.Warn("WebGateway EnrichContext timeout/fallback to async publish", zap.Error(err))
-			if pubErr := b.bus.Publish(bus.SubjectEnrichContextReq, "web_gateway", req); pubErr != nil {
-				b.logger.Error("Failed to publish EnrichContextReq fallback to NATS", zap.Int64("chat_id", cID), zap.Error(pubErr))
+			b.logger.Warn("WebGateway EnrichContext timeout/fallback to direct ReasoningRequest publish", zap.Error(err))
+			fallbackReasoning := schema.ReasoningRequestPayload{
+				BasePayload:    schema.NewBasePayload("web_gateway"),
+				ChatID:         cID,
+				UserID:         cID,
+				GenerationID:   req.GenerationID,
+				InboundMessage: req.InboundMessage,
+				CurrentEmotion: req.EmotionDescription,
+				TriggerType:    &req.TriggerType,
+				SourceChannel:  "web",
+			}
+			if pubErr := b.bus.Publish(bus.SubjectReasoningRequest, "web_gateway", fallbackReasoning); pubErr != nil {
+				b.logger.Error("Failed to publish fallback ReasoningRequest to NATS", zap.Int64("chat_id", cID), zap.Error(pubErr))
+				if b.csm != nil {
+					b.csm.TransitionToChat(cID, engine.StateIdle, "enrich_context_failed")
+				}
 			}
 			return
 		}
@@ -375,14 +396,15 @@ func (b *NatsBridge) handleGameStartStopCommand(chatID int64, text string) bool 
 	if idx := strings.LastIndex(cmd, "/game_"); idx != -1 {
 		cmd = cmd[idx:]
 	}
+	cmd = strings.TrimSpace(cmd)
 
-	switch cmd {
-	case "/game_start":
+	if strings.HasPrefix(cmd, "/game_start") {
 		b.autonomousPlayState.Activate(chatID)
 		b.logger.Info("🎮 Autonomous play activated", zap.Int64("chat_id", chatID))
 		b.replyDirect(chatID, "游戏自动托管已开启喵～ 发送 /game_stop 可以随时叫停我。")
 		return true
-	case "/game_stop":
+	}
+	if strings.HasPrefix(cmd, "/game_stop") {
 		deactivatedChatID := b.autonomousPlayState.Deactivate()
 		b.logger.Info("🛑 Autonomous play deactivated", zap.Int64("chat_id", chatID))
 		if deactivatedChatID != 0 {
@@ -402,9 +424,8 @@ func (b *NatsBridge) handleGameStartStopCommand(chatID int64, text string) bool 
 		}
 		b.replyDirect(chatID, "游戏自动托管已停止，操作权还给主人啦。")
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 // replyDirect sends a WS text reply straight to the browser, bypassing
@@ -465,6 +486,40 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 			}),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)
+
+		stateBytes, _ := json.Marshal(WSMessage{
+			Type: "agent.state_change",
+			Payload: marshalRaw(map[string]interface{}{
+				"state":     "talking",
+				"csm_state": "TALKING",
+				"chat_id":   decision.ChatID,
+			}),
+		})
+		b.sessions.SendTextToChat(decision.ChatID, stateBytes)
+
+		if decision.IsFinal {
+			chatID := decision.ChatID
+			genID := decision.GenerationID
+			go func() {
+				time.Sleep(3 * time.Second)
+				if b.csm != nil {
+					currState := b.csm.GetChatState(chatID)
+					currGen := b.csm.GetGenerationChat(chatID)
+					if (currState == engine.StateTalking || currState == engine.StateStreamingTTS) && (genID == 0 || currGen == genID) {
+						b.csm.TransitionToChat(chatID, engine.StateIdle, "text_fallback_idle")
+						out, _ := json.Marshal(WSMessage{
+							Type: "agent.state_change",
+							Payload: marshalRaw(map[string]interface{}{
+								"state":     "idle",
+								"csm_state": "IDLE",
+								"chat_id":   chatID,
+							}),
+						})
+						b.sessions.SendTextToChat(chatID, out)
+					}
+				}
+			}()
+		}
 	}
 
 	if decision.StickerID != nil || decision.ReactionEmoji != nil {
@@ -588,6 +643,58 @@ func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
 
 	transcript := p.Text
 	b.publishInboundMessage(p.ChatID, p.Text, "voice", &transcript)
+}
+
+func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
+	var env struct {
+		Payload schema.StreamChunkPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		return
+	}
+
+	p := env.Payload
+	if p.ChatID == 0 {
+		return
+	}
+
+	if b.csm != nil {
+		b.csm.TransitionToChat(p.ChatID, engine.StateIdle, "tts_stream_end")
+	}
+
+	outBytes, _ := json.Marshal(WSMessage{
+		Type: "agent.state_change",
+		Payload: marshalRaw(map[string]interface{}{
+			"state":     "idle",
+			"csm_state": "IDLE",
+			"chat_id":   p.ChatID,
+		}),
+	})
+	b.sessions.SendTextToChat(p.ChatID, outBytes)
+}
+
+func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
+	var env struct {
+		Payload schema.StreamCancelPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		return
+	}
+
+	p := env.Payload
+	if p.ChatID == 0 {
+		return
+	}
+
+	outBytes, _ := json.Marshal(WSMessage{
+		Type: "agent.state_change",
+		Payload: marshalRaw(map[string]interface{}{
+			"state":     "idle",
+			"csm_state": "IDLE",
+			"chat_id":   p.ChatID,
+		}),
+	})
+	b.sessions.SendTextToChat(p.ChatID, outBytes)
 }
 
 func (b *NatsBridge) getEmotionDesc() string {

@@ -117,6 +117,7 @@ async def main():
                     action_type="send_message",
                     text_content="呜……人家的大脑突然打了个瞌睡喵，主人能不能过一会儿再理我一次？",
                     chat_action="typing",
+                    is_final=True,
                 )
                 subject = action_decision_subject(fallback_act.source_channel, fallback_act.chat_id)
                 err_envelope = {

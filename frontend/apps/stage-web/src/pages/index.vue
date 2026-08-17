@@ -12,12 +12,15 @@ import { BackgroundProvider } from '@proj-airi/stage-layouts/components/Backgrou
 import { useBackgroundThemeColor } from '@proj-airi/stage-layouts/composables/theme-color'
 import { useBackgroundStore } from '@proj-airi/stage-layouts/stores/background'
 import { HoloCoupon } from '@proj-airi/stage-ui/components'
+import { LiveCaptionOverlay, STS2Dashboard } from '@proj-airi/stage-ui/components/gadgets'
 import { ViewControlSlider, WidgetStage } from '@proj-airi/stage-ui/components/scenes'
 import { useAudioRecorder } from '@proj-airi/stage-ui/composables/audio/audio-recorder'
 import { useVAD } from '@proj-airi/stage-ui/stores/ai/models/vad'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
+import { useBetterAgentGatewayStore } from '@proj-airi/stage-ui/stores/modules/betteragent-gateway'
 import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
 import { useHearingSpeechInputPipeline } from '@proj-airi/stage-ui/stores/modules/hearing'
+import { useSTS2GameStateStore } from '@proj-airi/stage-ui/stores/modules/sts2-game-state'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
 import { breakpointsTailwind, useBreakpoints, useMouse } from '@vueuse/core'
@@ -71,6 +74,16 @@ let stopOnStopRecord: (() => void) | undefined
 
 import { betterAgentWSBridge } from '../bridge/betteragent-ws'
 import { useSTTAudioCapture } from '../composables/stt-audio-capture'
+
+// Expose the bridge as window.__betterAgentWSBridge so that Stage.vue's
+// setInterval audio-chunk poller and chat.ts's streamWithStageAdapters
+// cutover guard can both find the same singleton. Without this assignment
+// Stage.vue never hooks audio and chat.ts always falls through to the xsai
+// provider, bypassing the entire Go WebGateway + NATS pipeline.
+if (typeof window !== 'undefined') {
+  ;(window as any).__betterAgentWSBridge = betterAgentWSBridge
+}
+betterAgentWSBridge.connect()
 
 // True when the BetterAgent Go WebGateway bridge owns this session (see
 // stores/chat.ts's streamWithStageAdapters doing the same window.__betterAgentWSBridge
@@ -181,6 +194,10 @@ watch(enabled, async (val) => {
 
 onUnmounted(() => {
   stopAudioInteraction()
+  betterAgentWSBridge.disconnect()
+  if (typeof window !== 'undefined') {
+    delete (window as any).__betterAgentWSBridge
+  }
 })
 
 watch([stream, () => vadLoaded.value], async ([s, loaded]) => {
@@ -195,11 +212,26 @@ watch([stream, () => vadLoaded.value], async ([s, loaded]) => {
   }
 })
 
+const sts2GameStateStore = useSTS2GameStateStore()
+const { isLikelyActive: isGameActive } = storeToRefs(sts2GameStateStore)
+const gatewayStore = useBetterAgentGatewayStore()
+const activeChatId = typeof window !== 'undefined' ? Number(new URLSearchParams(window.location.search).get('chat_id') || 0) || undefined : undefined
+gatewayStore.initialize(activeChatId)
+
 const { x: mouseX, y: mouseY } = useMouse()
-const cursorPosition = computed(() => ({
-  x: mouseX.value,
-  y: mouseY.value,
-}))
+const cursorPosition = computed(() => {
+  if (isGameActive.value && !isMobile.value && typeof window !== 'undefined') {
+    // Game streamer mode on desktop: tilt head/gaze toward game window on the right
+    return {
+      x: window.innerWidth * 0.88,
+      y: window.innerHeight * 0.5,
+    }
+  }
+  return {
+    x: mouseX.value,
+    y: mouseY.value,
+  }
+})
 </script>
 
 <template>
@@ -232,6 +264,9 @@ const cursorPosition = computed(() => ({
             :enable-orbit-controls="!isMobile"
             :paused="paused"
           />
+          <!-- AI Game Streamer Gadgets -->
+          <LiveCaptionOverlay />
+          <STS2Dashboard />
         </div>
         <InteractiveArea v-if="!isMobile" h="85dvh" absolute right-4 flex flex-1 flex-col max-w="500px" min-w="30%" />
         <MobileInteractiveArea v-if="isMobile" @settings-open="handleSettingsOpen" />

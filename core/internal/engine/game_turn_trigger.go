@@ -63,9 +63,20 @@ func PublishGameTurn(
 
 	reasoningReq, err := b.Request(bus.SubjectEnrichContextReq, "game_turn_trigger", req, 5*time.Second)
 	if err != nil {
-		logger.Warn("Game turn EnrichContext timeout/fallback to async publish", zap.Int64("chat_id", targetChatID), zap.Error(err))
-		if pubErr := b.Publish(bus.SubjectEnrichContextReq, "game_turn_trigger", req); pubErr != nil {
-			logger.Error("Failed to publish game turn EnrichContextReq fallback to NATS", zap.Int64("chat_id", targetChatID), zap.Error(pubErr))
+		logger.Warn("Game turn EnrichContext timeout/fallback to direct ReasoningRequest publish", zap.Int64("chat_id", targetChatID), zap.Error(err))
+		fallbackReasoning := schema.ReasoningRequestPayload{
+			BasePayload:    schema.NewBasePayload("game_turn_trigger"),
+			ChatID:         targetChatID,
+			UserID:         targetChatID,
+			GenerationID:   req.GenerationID,
+			InboundMessage: req.InboundMessage,
+			CurrentEmotion: req.EmotionDescription,
+			TriggerType:    &req.TriggerType,
+			SourceChannel:  sourceChannel,
+		}
+		if pubErr := b.Publish(bus.SubjectReasoningRequest, "game_turn_trigger", fallbackReasoning); pubErr != nil {
+			logger.Error("Failed to publish fallback ReasoningRequest to NATS", zap.Int64("chat_id", targetChatID), zap.Error(pubErr))
+			csm.TransitionToChat(targetChatID, StateIdle, "enrich_context_failed")
 		}
 		return
 	}

@@ -66,9 +66,23 @@ func PublishProactiveTurn(
 
 	reasoningReq, err := b.Request(bus.SubjectEnrichContextReq, "clock_engine", req, 5*time.Second)
 	if err != nil {
-		logger.Warn("Proactive EnrichContext timeout/fallback to async publish", zap.Int64("chat_id", targetChatID), zap.Error(err))
-		if pubErr := b.Publish(bus.SubjectEnrichContextReq, "clock_engine", req); pubErr != nil {
-			logger.Error("Failed to publish proactive EnrichContextReq fallback to NATS", zap.Int64("chat_id", targetChatID), zap.Error(pubErr))
+		logger.Warn("Proactive EnrichContext timeout/fallback to direct ReasoningRequest publish", zap.Int64("chat_id", targetChatID), zap.Error(err))
+		triggerType := "proactive_idle"
+		fallbackReasoning := schema.ReasoningRequestPayload{
+			BasePayload:            schema.NewBasePayload("clock_engine"),
+			ChatID:                 targetChatID,
+			UserID:                 targetChatID,
+			GenerationID:           req.GenerationID,
+			InboundMessage:         nil,
+			CurrentEmotion:         req.EmotionDescription,
+			TriggerType:            &triggerType,
+			SourceChannel:          sourceChannel,
+			ProactiveReason:        req.ProactiveReason,
+			IsProactiveOpportunity: true,
+		}
+		if pubErr := b.Publish(bus.SubjectReasoningRequest, "clock_engine", fallbackReasoning); pubErr != nil {
+			logger.Error("Failed to publish fallback ReasoningRequest to NATS", zap.Int64("chat_id", targetChatID), zap.Error(pubErr))
+			csm.TransitionToChat(targetChatID, StateIdle, "enrich_context_failed")
 		}
 		return
 	}

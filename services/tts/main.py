@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from shared.subjects import (
     SUBJECT_AUDIO_CHUNK,
+    SUBJECT_TTS_STREAM_END,
     SUBJECT_STREAM_CANCEL_REQ,
     SUBJECT_USER_INTERRUPT,
     action_decision_wildcard,
@@ -190,6 +191,24 @@ async def main():
                         active_tts_tasks[chat_id] = (active_task, cancel_event)
 
                     await synthesize_and_publish_tts(act, cancel_event)
+
+                    # Publish TTS Stream End strictly when the final sentence of the turn completes
+                    if getattr(act, "is_final", False):
+                        end_payload = {
+                            "event_id": act.event_id,
+                            "source_component": "tts_service",
+                            "chat_id": chat_id,
+                            "generation_id": gen_id,
+                            "is_final": True,
+                        }
+                        envelope = {
+                            "id": act.event_id,
+                            "subject": SUBJECT_TTS_STREAM_END,
+                            "source": "tts_service",
+                            "payload": end_payload,
+                        }
+                        await nc.publish(SUBJECT_TTS_STREAM_END, json.dumps(envelope).encode())
+                        logger.info(f"🏁 Published TTS Stream End for chat_id={chat_id}, gen_id={gen_id}")
 
                 q.task_done()
             except asyncio.CancelledError:

@@ -410,13 +410,25 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 		CircadianDescription:   a.circadian.ToPromptDescription(),
 	}
 
-	// Request Enrich Context synchronously via NATS (5s timeout)
 	reasoningReq, err := a.bus.Request(bus.SubjectEnrichContextReq, "gotd_adapter", enrichReq, 5*time.Second)
 	if err != nil {
-		a.logger.Warn("EnrichContext request timeout/failed, continuing via async pub", zap.Error(err))
-		// Publish async fallback request
-		if pubErr := a.bus.Publish(bus.SubjectEnrichContextReq, "gotd_adapter", enrichReq); pubErr != nil {
-			a.logger.Error("Failed to publish EnrichContextReq fallback to NATS", zap.Int64("chat_id", chatID), zap.Error(pubErr))
+		a.logger.Warn("GotdAdapter EnrichContext timeout/fallback to direct ReasoningRequest publish", zap.Error(err))
+		triggerType := "user_message"
+		fallbackReasoning := schema.ReasoningRequestPayload{
+			BasePayload:    schema.NewBasePayload("gotd_adapter"),
+			ChatID:         chatID,
+			UserID:         userID,
+			GenerationID:   a.stateMachine.GetGenerationChat(chatID),
+			InboundMessage: &inboundPayload,
+			CurrentEmotion: a.emotionalState.ToPromptDescription(),
+			TriggerType:    &triggerType,
+			SourceChannel:  "telegram",
+		}
+		if pubErr := a.bus.Publish(bus.SubjectReasoningRequest, "gotd_adapter", fallbackReasoning); pubErr != nil {
+			a.logger.Error("Failed to publish fallback ReasoningRequest to NATS", zap.Int64("chat_id", chatID), zap.Error(pubErr))
+			if a.stateMachine != nil {
+				a.stateMachine.TransitionToChat(chatID, engine.StateIdle, "enrich_context_failed")
+			}
 		}
 		return nil
 	}
@@ -455,14 +467,15 @@ func (a *GotdAdapter) handleGameStartStopCommand(ctx context.Context, chatID int
 	if idx := strings.LastIndex(cmd, "/game_"); idx != -1 {
 		cmd = cmd[idx:]
 	}
+	cmd = strings.TrimSpace(cmd)
 
-	switch cmd {
-	case "/game_start":
+	if strings.HasPrefix(cmd, "/game_start") {
 		a.autonomousPlayState.Activate(chatID)
 		a.logger.Info("🎮 Autonomous play activated", zap.Int64("chat_id", chatID))
 		a.replyDirect(ctx, chatID, "游戏自动托管已开启喵～ 发送 /game_stop 可以随时叫停我。")
 		return true
-	case "/game_stop":
+	}
+	if strings.HasPrefix(cmd, "/game_stop") {
 		deactivatedChatID := a.autonomousPlayState.Deactivate()
 		a.logger.Info("🛑 Autonomous play deactivated", zap.Int64("chat_id", chatID))
 		if deactivatedChatID != 0 {
@@ -482,9 +495,8 @@ func (a *GotdAdapter) handleGameStartStopCommand(ctx context.Context, chatID int
 		}
 		a.replyDirect(ctx, chatID, "游戏自动托管已停止，操作权还给主人啦。")
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 // replyDirect sends a Telegram text reply straight through the sender,

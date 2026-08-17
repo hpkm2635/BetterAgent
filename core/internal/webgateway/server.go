@@ -104,6 +104,7 @@ func (s *Server) Start() error {
 		gameEventMux := http.NewServeMux()
 		gameEventMux.HandleFunc("/api/game-event", s.handleGameEvent)
 		gameEventMux.HandleFunc("/api/game-turn", s.handleGameTurn)
+		gameEventMux.HandleFunc("/api/game-state", s.handleGameState)
 
 		s.gameEventHTTPServer = &http.Server{
 			Addr:    s.gameEventBindAddr,

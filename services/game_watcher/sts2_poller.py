@@ -104,6 +104,7 @@ class RunTracker:
     # map) doesn't re-fire every poll_interval_seconds.
     last_turn_signature: Optional[tuple] = None
     last_turn_time: float = 0.0
+    last_state_signature: Optional[tuple] = None
 
     def reset(self):
         self.in_run = False
@@ -113,6 +114,7 @@ class RunTracker:
         self.near_death_armed = True
         self.last_turn_signature = None
         self.last_turn_time = 0.0
+        self.last_state_signature = None
 
 
 async def post_game_event(
@@ -181,6 +183,40 @@ async def post_game_turn(
         logger.warning(f"Failed to POST game turn ({reason}): {e}")
 
 
+async def post_game_state(
+    session: aiohttp.ClientSession,
+    game_state_url: str,
+    game_event_token: str,
+    chat_id: int,
+    floor: int,
+    hp: int,
+    max_hp: int,
+    gold: int,
+    act: int,
+) -> None:
+    if not game_event_token or not game_state_url:
+        return
+    payload = {
+        "chat_id": chat_id,
+        "floor": floor,
+        "hp": hp,
+        "max_hp": max_hp,
+        "gold": gold,
+        "act": act,
+    }
+    try:
+        async with session.post(
+            game_state_url,
+            json=payload,
+            headers={"X-Game-Event-Token": game_event_token},
+            timeout=aiohttp.ClientTimeout(total=3),
+        ) as resp:
+            if resp.status != 200:
+                logger.debug(f"game-state POST returned status {resp.status}")
+    except Exception as e:
+        logger.debug(f"Failed to POST game state: {e}")
+
+
 async def poll_once(
     session: aiohttp.ClientSession,
     sts2_api_url: str,
@@ -191,6 +227,7 @@ async def poll_once(
     rare_relic_rarities: set,
     target_chat_id: int,
     tracker: RunTracker,
+    game_state_url: Optional[str] = None,
 ) -> None:
     try:
         async with session.get(
@@ -310,6 +347,21 @@ async def poll_once(
                 )
     tracker.known_relic_ids = current_ids
 
+    # Extract live game stats for dashboard
+    if tracker.in_run and target_chat_id is not None and game_state_url:
+        act = int(run.get("act", 1) or 1)
+        gold_val = int(player.get("gold", 0) or 0)
+        curr_hp = int(player.get("hp", 0) or 0)
+        curr_max_hp = int(player.get("max_hp", 0) or 0)
+        curr_floor = int(run.get("floor", 0) or 0)
+        state_sig = (curr_floor, curr_hp, curr_max_hp, gold_val, act)
+        if tracker.last_state_signature != state_sig:
+            tracker.last_state_signature = state_sig
+            await post_game_state(
+                session, game_state_url, game_event_token, target_chat_id,
+                curr_floor, curr_hp, curr_max_hp, gold_val, act,
+            )
+
     if target_chat_id is not None and state_type in ACTIONABLE_STATE_TYPES:
         actionable = True
         reason = state_type
@@ -344,6 +396,7 @@ async def main():
     game_event_bind_addr = get_config_val("core_engine.game_event_bind_addr", "127.0.0.1:8090")
     game_event_url = f"http://{game_event_bind_addr}/api/game-event"
     game_turn_url = f"http://{game_event_bind_addr}/api/game-turn"
+    game_state_url = f"http://{game_event_bind_addr}/api/game-state"
 
     # Go's /api/game-turn handler now resolves the real target chat itself
     # from AutonomousPlayState.TargetChatID() (whichever chat sent
@@ -385,6 +438,7 @@ async def main():
             await poll_once(
                 session, sts2_api_url, game_event_url, game_turn_url, game_event_token,
                 near_death_hp_ratio, rare_relic_rarities, target_chat_id, tracker,
+                game_state_url=game_state_url,
             )
             await asyncio.sleep(poll_interval_seconds)
 
