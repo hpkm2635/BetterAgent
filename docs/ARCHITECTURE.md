@@ -111,59 +111,9 @@ graph TD
 
 ## 2. 消息处理与推理时序 (Sequence Diagrams)
 
-### 2.1 Telegram 消息处理时序 (Gotd Adapter)
+### 2.1 Web 前端全双工数字人流式交互时序 (WebGateway & Digital Human Audio/Viseme, 核心主路线)
 
-用户在 Telegram 发送消息后，Go Core、NATS、Memory Service 与 Cognitive Service 之间的完整异步 Pub/Sub 交互时序：
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Telegram User
-    participant Adapter as GotdAdapter (Go)
-    participant NATS as NATS Message Bus
-    participant CSM as CentralStateMachine (Go)
-    participant Memory as MemoryHub (Python)
-    participant Cog as CognitiveEngine (Python)
-    participant LLM as LLM Provider
-
-    User->>Adapter: 发送消息 / 媒体文件
-    Note over Adapter: AntiSpamGuard 校验通过
-    Adapter->>Adapter: 开启 Typing 心跳后台协程
-    Adapter->>NATS: Publish "agent.inbound_message" (InboundMessagePayload)
-    
-    NATS-->>CSM: Notify "agent.inbound_message"
-    CSM->>CSM: 状态切换 TransitionTo(THINKING)
-    CSM->>NATS: Publish "agent.enrich_context_req" (EnrichContextReqPayload)
-    
-    NATS-->>Memory: Notify "agent.enrich_context_req"
-    Memory->>Memory: 检索短时对话 + Qdrant向量记忆 + UserProfile事实
-    Memory->>Memory: TokenBudget 剪裁
-    Memory->>NATS: Publish "agent.reasoning_request" (ReasoningRequestPayload)
-
-    NATS-->>Cog: Notify "agent.reasoning_request"
-    Cog->>Cog: PromptBuilder 组装带情绪与生理状态的 Prompt
-    Cog->>LLM: POST /chat/completions (含 Tool Schema)
-    LLM-->>Cog: 返回文本 / Tool Calls (TTS / 画图)
-    
-    opt 触发 Tool Calls (如生图/语音生成)
-        Cog->>Cog: 执行工具生成图片/音频文件
-    end
-
-    Cog->>NATS: Publish "agent.action.telegram.{chat_id}" (ActionDecisionPayload)
-    
-    NATS-->>Adapter: Notify "agent.action.telegram.*" (Adapter 专属通道)
-    Adapter->>Adapter: 停止 Typing 心跳协程
-    Adapter->>Adapter: HumanizationEngine 模拟拟打字延迟 (min 1.5s, max 8.0s)
-    Adapter->>User: 发送回复文本 / 音频 / 图片
-    Adapter->>NATS: Publish "agent.action_completed" (ActionCompletedPayload)
-
-    NATS-->>Memory: Notify "agent.action_completed" (追加短时对话历史)
-    NATS-->>CSM: Notify "agent.action_completed" (状态切换 TransitionTo IDLE)
-```
-
-### 2.2 Web 前端全双工数字人流式交互时序 (WebGateway & Digital Human Audio/Viseme)
-
-网页前端（`stage-web`）通过 WebSocket (`:8080`) 连接 `WebGateway`，实现**音视频切片流、Live2D Viseme 口型同步与实时多模态交互**：
+网页前端（`stage-web`）通过 WebSocket (`:8080`) 连接 `WebGateway`，实现**音视频切片流、Live2D Viseme 口型同步、流式状态机与双工多模态交互**：
 
 ```mermaid
 sequenceDiagram
@@ -177,24 +127,26 @@ sequenceDiagram
     participant TTS as TTS Service (Python :8091)
 
     WebUser->>GW: WebSocket 文本消息 / VAD 语音切片
-    GW->>NATS: Publish "agent.inbound_message" (source_channel="web")
+    Note over GW: idspace 分配/映射 Web session_id ➔ int64 内部 ID
+    GW->>NATS: Publish "agent.inbound_message" (source_channel="web", generation_id=N)
     
     NATS-->>CSM: Notify "agent.inbound_message"
     CSM->>CSM: 状态切换 TransitionTo(THINKING)
-    CSM->>NATS: Publish "agent.enrich_context_req"
+    CSM->>NATS: Publish "agent.enrich_context_req" (generation_id=N)
     
     NATS-->>Memory: Notify "agent.enrich_context_req"
-    Memory->>NATS: Publish "agent.reasoning_request"
+    Memory->>NATS: Publish "agent.reasoning_request" (generation_id=N)
 
     NATS-->>Cog: Notify "agent.reasoning_request"
     Cog->>Cog: 流式生成 Text Delta
-    Cog->>NATS: Publish "agent.tts.stream_chunk" (流式文本)
+    Cog->>NATS: Publish "agent.tts.stream_chunk" (流式文本, generation_id=N)
 
     NATS-->>TTS: Notify "agent.tts.stream_chunk"
     TTS->>TTS: 实时合成 PCM 音频切片 + 生成 Viseme 口型帧
-    TTS->>NATS: Publish "agent.audio.chunk" & "agent.viseme.data"
+    TTS->>NATS: Publish "agent.audio.chunk" & "agent.viseme.data" (generation_id=N)
 
     NATS-->>GW: Notify "agent.audio.chunk" & "agent.viseme.data" & "agent.action.web.*"
+    Note over GW: 校验 generation_id == 当前最新，丢弃在途过期旧帧
     GW-->>WebUser: WebSocket 双工下发 { audio_base64, visemes, text_delta, emotion_tag }
     
     Note over WebUser: 浏览器底层 AudioContext 播放音频 + Live2D 唇形模型实时渲染
@@ -204,9 +156,9 @@ sequenceDiagram
     NATS-->>CSM: Notify "agent.action_completed" (状态恢复 IDLE)
 ```
 
-### 2.3 Barge-in 用户打断撤销时序 (Realtime Stream Cancel)
+### 2.2 Barge-in 用户打断撤销时序 (Realtime Stream Cancel & Generation Increment)
 
-当数字人正在说话/播放音频时，用户说话或在界面点击“打断”，系统毫秒级撤销在途推理与音频切片：
+当数字人正在说话/播放音频时，用户说话或在界面点击“打断”，系统毫秒级撤销在途推理，并**递增 generation_id 清空过期队列**：
 
 ```mermaid
 sequenceDiagram
@@ -218,7 +170,8 @@ sequenceDiagram
     participant TTS as TTS Service (Python)
 
     WebUser->>GW: VAD 检测用户开口 / 点击打断 (Barge-in)
-    GW->>NATS: Publish "agent.user.interrupt" & "agent.stream.cancel_req"
+    GW->>CSM: IncrementGeneration() ➔ generation_id = N+1
+    GW->>NATS: Publish "agent.user.interrupt" & "agent.stream.cancel_req" (generation_id=N+1)
     
     NATS-->>CSM: Notify "agent.user.interrupt"
     CSM->>CSM: 立即状态切换 TransitionTo(CANCELLING)
@@ -227,17 +180,64 @@ sequenceDiagram
     TTS->>TTS: 终止当前在途音频合成线程 / 清空 Chunk 队列
     TTS->>NATS: Publish "agent.stream.cancel_ack"
 
-    GW-->>WebUser: WebSocket 发送 { type: "STREAM_CANCELLED" }
+    GW-->>WebUser: WebSocket 发送 { type: "STREAM_CANCELLED", generation_id: N+1 }
     Note over WebUser: 前端立刻停止 AudioContext 播放并清空 Viseme 队列
 
-    CSM->>CSM: 状态清空并重新 TransitionTo(THINKING)
+    CSM->>CSM: 状态清空并重新 TransitionTo(THINKING) (带着最新打断文本重新推理)
+```
+
+### 2.3 Telegram 消息处理时序 (Gotd Adapter, 二级异步扩展通道)
+
+用户在 Telegram 发送消息后，Go Core、NATS、Memory Service 与 Cognitive Service 之间的完整 Pub/Sub 交互时序：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Telegram User
+    participant Adapter as GotdAdapter (Go)
+    participant NATS as NATS Message Bus
+    participant CSM as CentralStateMachine (Go)
+    participant Memory as MemoryHub (Python)
+    participant Cog as CognitiveEngine (Python)
+
+    User->>Adapter: 发送消息 / 媒体文件
+    Note over Adapter: AntiSpamGuard 校验通过
+    Adapter->>Adapter: 开启 Typing 心跳后台协程
+    Adapter->>NATS: Publish "agent.inbound_message" (source_channel="telegram")
+    
+    NATS-->>CSM: Notify "agent.inbound_message"
+    CSM->>CSM: 状态切换 TransitionTo(THINKING)
+    CSM->>NATS: Publish "agent.enrich_context_req"
+    
+    NATS-->>Memory: Notify "agent.enrich_context_req"
+    Memory->>NATS: Publish "agent.reasoning_request"
+
+    NATS-->>Cog: Notify "agent.reasoning_request"
+    Cog->>Cog: PromptBuilder 组装带情绪与生理状态的 Prompt
+    Cog->>NATS: Publish "agent.action.telegram.{chat_id}" (ActionDecisionPayload)
+    
+    NATS-->>Adapter: Notify "agent.action.telegram.*" (Adapter 专属通道)
+    Adapter->>Adapter: 停止 Typing 心跳协程
+    Adapter->>Adapter: HumanizationEngine 模拟拟打字延迟 (min 1.5s, max 8.0s)
+    Adapter->>User: 发送回复文本 / 音频 / 图片
+    Adapter->>NATS: Publish "agent.action_completed" (ActionCompletedPayload)
+
+    NATS-->>Memory: Notify "agent.action_completed" (追加短时对话历史)
+    NATS-->>CSM: Notify "agent.action_completed" (状态切换 TransitionTo IDLE)
 ```
 
 ---
 
-## 3. 按 Chat 隔离状态机 (Per-Chat State Machine & Watchdog)
+## 3. 多维会话隔离与代际控制状态机 (Multi-Session Generation State Machine & Watchdog)
 
-系统由 Go 实现的 `PerChatStateMachineManager` (`CentralStateMachine`) 掌控，通过 `map[int64]*ChatStateMachine` + `sync.RWMutex` 实现按 Telegram `chatID` 严格的并发隔离与状态生命周期管理，并配备 **Deadman Switch Watchdog（超时自愈死人开关）**：
+系统由 Go Core 实现的 `CentralStateMachine` 掌控，通过 `map[int64]*ChatStateMachine` + `sync.RWMutex` 实现多维度会话隔离与状态生命周期管理，并配备 **Generation ID (代际防死锁与碰撞)** 与 **Deadman Switch Watchdog (超时自愈死人开关)**：
+
+### 3.1 会话隔离与代际控制 (Idspace & Generation Guard)
+1. **多渠道 ID 空间 (`idspace`)**：Telegram `chat_id` 与 Web 网关 WebSocket `session_id` 均统一映射为 int64 会话空间，避免 Channel 间会话混淆。
+2. **原子代际计数器 (`generation_id`)**：每一轮新消息或 Barge-in 打断触发时，`generation_id` 原性自增。网络网关与消费端校验帧的 `generation_id`，自动滤除在途网络延迟导致的旧代际帧碰撞。
+3. **2小时 TTL 自动回收 (`ChatStateInactivityTTL`)**：`IDLE` 状态空闲会话 2 小时后自动从内存中 Evict 释放，防止临时 WebSession 造成内存泄漏。
+
+### 3.2 状态机迁移规范 (State Transition Matrix)
 
 ```mermaid
 stateDiagram-v2
@@ -263,14 +263,14 @@ stateDiagram-v2
     TALKING --> INTERRUPTED : USER_INTERRUPT (Barge-in 用户打断)
     TALKING --> EXECUTING_ACTION : TOOL_EXECUTION
 
-    INTERRUPTED --> CANCELLING : CANCEL_IN_FLIGHT_REQUESTS
+    INTERRUPTED --> CANCELLING : CANCEL_IN_FLIGHT_REQUESTS (generation_id++)
     CANCELLING --> THINKING : RE_REASONING (带着最新打断输入重新思考)
     CANCELLING --> IDLE : PURGE_RESET
 
     EXECUTING_ACTION --> IDLE : ACTION_COMPLETED
     EXECUTING_ACTION --> ERROR_RECOVERY : TELEGRAM_API_ERROR 或 DEADMAN_TIMEOUT [>45s]
 
-    IDLE --> SLEEPING : TICK [is_sleep_time == True] 或 GOODNIGHT_EVENT
+    IDLE --> SLEEPING : TICK [is_sleep_hours == True] 或 GOODNIGHT_EVENT
     SLEEPING --> THINKING : INBOUND_MESSAGE [加载犯困/梦话 Prompt]
     SLEEPING --> IDLE : TICK [is_wake_time == True]
 
