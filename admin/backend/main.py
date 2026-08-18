@@ -6,6 +6,7 @@ Serves the B 端 admin console on port 8094. Responsibilities:
   * 用户 (User) management     -- read-only + soft delete
   * 会话记录 (Session) viewer  -- read-only over Redis short-term history
   * 知识库 (Knowledge Base)    -- reverse proxy to the campus_kb service (:8093)
+  * 日程提醒 (Schedule) management -- reverse proxy to the companion service (:8096)
 
 This module is self-contained and must NOT import from core/ / shared/ so the
 admin panel stays independent of the rest of BetterAgent.
@@ -53,6 +54,7 @@ DB_PATH = Path(os.getenv("ADMIN_DB_PATH", BACKEND_DIR / "admin.db"))
 
 ADMIN_PORT = int(os.getenv("ADMIN_PORT", "8094"))
 CAMPUS_KB_URL = os.getenv("CAMPUS_KB_URL", "http://127.0.0.1:8093").rstrip("/")
+COMPANION_URL = os.getenv("COMPANION_URL", "http://127.0.0.1:8096").rstrip("/")
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
@@ -239,8 +241,9 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
 # ---------------------------------------------------------------------------
 # 2.2 用户 (User) management -- 只读 + 软删除
 # ---------------------------------------------------------------------------
-# 画像数据来自 Redis user_profile:{user_id}；软删除标记落在一个独立 SQLite 表
-# 中（绝不修改 Redis 的对话历史 key：short_term:{chat_id}）。
+# 画像数据来自 Redis betteragent:profile:{user_id}（主服务写入的 key，兼容旧
+# user_profile:{user_id}）；软删除标记落在一个独立 SQLite 表中（绝不修改
+# Redis 的对话历史 key：short_term:{chat_id}）。
 def _db_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -293,6 +296,28 @@ def _get_redis() -> Any:
     return _redis_client
 
 
+def _as_list(value: Any) -> list:
+    """Coerce a profile fact value to a list.
+
+    Redis hashes store every field as a string, so `likes`/`known_facts` arrive
+    as JSON-encoded lists (e.g. '["篮球"]'). Parse those, pass lists through,
+    and wrap bare scalars so callers always get a list.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+        return [value]
+    return [value]
+
+
 def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     """Normalize a Redis user-profile value into the contract shape."""
     if isinstance(raw, str):
@@ -300,13 +325,9 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    known_facts = raw.get("known_facts")
-    if not isinstance(known_facts, list):
-        known_facts = [known_facts] if known_facts else []
+    known_facts = _as_list(raw.get("known_facts"))
     if not known_facts:
-        likes = raw.get("likes")
-        if isinstance(likes, list):
-            known_facts = list(likes)
+        known_facts = _as_list(raw.get("likes"))
 
     display_name = (raw.get("display_name") or raw.get("preferred_name")
                     or raw.get("name") or f"用户{user_id}")
@@ -319,33 +340,40 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     }
 
 
+# 主服务 (services/memory/user_profile.py) 写入 betteragent:profile:{user_id}；
+# user_profile:{user_id} 是接口契约中记录的旧前缀，作为兜底一并扫描。
+# 后扫者覆盖先扫者，因此把真实前缀放在最后以优先。
+USER_PROFILE_KEY_PREFIXES = ("user_profile:", "betteragent:profile:")
+
+
 def _redis_user_profiles(r: Any) -> Dict[int, Dict[str, Any]]:
-    """Scan user_profile:* keys and parse each profile."""
+    """Scan user profile keys (betteragent:profile:* / user_profile:*) and parse each."""
     profiles: Dict[int, Dict[str, Any]] = {}
     try:
-        for key in r.scan_iter("user_profile:*"):
-            try:
-                user_id = int(key.rsplit(":", 1)[1])
-            except (ValueError, IndexError):
-                continue
-            raw: Any
-            try:
-                if r.type(key) == "hash":
-                    raw = r.hgetall(key)
-                else:
-                    raw = r.get(key)
-                    if raw is None:
-                        continue
-                    try:
-                        parsed = json.loads(raw)
-                        if isinstance(parsed, dict):
-                            raw = parsed
-                    except (TypeError, ValueError):
-                        pass
-            except Exception as exc:
-                logger.warning(f"Failed to read Redis key {key}: {exc}")
-                continue
-            profiles[user_id] = _normalize_profile(user_id, raw)
+        for prefix in USER_PROFILE_KEY_PREFIXES:
+            for key in r.scan_iter(f"{prefix}*"):
+                try:
+                    user_id = int(key.rsplit(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                raw: Any
+                try:
+                    if r.type(key) == "hash":
+                        raw = r.hgetall(key)
+                    else:
+                        raw = r.get(key)
+                        if raw is None:
+                            continue
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, dict):
+                                raw = parsed
+                        except (TypeError, ValueError):
+                            pass
+                except Exception as exc:
+                    logger.warning(f"Failed to read Redis key {key}: {exc}")
+                    continue
+                profiles[user_id] = _normalize_profile(user_id, raw)
     except Exception as exc:
         logger.warning(f"Failed to scan Redis user profiles: {exc}")
     return profiles
@@ -509,22 +537,33 @@ def list_sessions(
 # ---------------------------------------------------------------------------
 # 2.4 知识库 (Knowledge Base) proxy -- 透传 campus_kb，不重复实现逻辑
 # ---------------------------------------------------------------------------
-async def _proxy(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> JSONResponse:
-    url = f"{CAMPUS_KB_URL}{path}"
+async def _forward(
+    base_url: str,
+    service: str,
+    method: str,
+    path: str,
+    body: Optional[Dict[str, Any]] = None,
+) -> JSONResponse:
+    """Forward a request to an upstream loopback service and relay its response."""
+    url = f"{base_url}{path}"
     try:
-        # trust_env=False: campus_kb is a loopback service -- never route it
+        # trust_env=False: upstreams are loopback services -- never route them
         # through an ambient HTTP(S)_PROXY, otherwise a down service surfaces
         # as a proxy 502 instead of a clean 503.
         async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
             resp = await client.request(method, url, json=body)
     except Exception as exc:  # noqa: BLE001 -- any upstream failure maps to 503
-        logger.warning(f"campus_kb service unavailable at {CAMPUS_KB_URL}: {exc}")
-        return _error(503, "campus_kb service unavailable")
+        logger.warning(f"{service} service unavailable at {base_url}: {exc}")
+        return _error(503, f"{service} service unavailable")
 
     try:
         return JSONResponse(status_code=resp.status_code, content=resp.json())
     except ValueError:
         return JSONResponse(status_code=resp.status_code, content={"error": resp.text})
+
+
+async def _proxy(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> JSONResponse:
+    return await _forward(CAMPUS_KB_URL, "campus_kb", method, path, body)
 
 
 @app.post("/api/admin/kb/ingest")
@@ -549,6 +588,37 @@ async def kb_search(
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "admin_backend"}
+
+
+# ---------------------------------------------------------------------------
+# 2.6 日程提醒 (Schedule) management -- 代理至 companion 服务，不重复实现逻辑
+# ---------------------------------------------------------------------------
+@app.get("/api/admin/schedules")
+async def list_schedules(chat_id: int = Query(...)):
+    """列出某 chat_id 下的所有日程（透传 companion /api/schedule/list）。"""
+    return await _forward(
+        COMPANION_URL, "companion", "GET", f"/api/schedule/list?chat_id={chat_id}"
+    )
+
+
+@app.post("/api/admin/schedules")
+async def add_schedule(payload: Optional[Dict[str, Any]] = Body(None)):
+    """新增日程（透传 companion /api/schedule/add）。
+
+    由 companion 侧完成持久化 + APScheduler 到期注册，Admin 只做反向代理，
+    直接写 companion.db 会导致 APScheduler 不知道新日程、提醒不会触发。
+    """
+    if not payload:
+        return _error(400, "empty body")
+    return await _forward(COMPANION_URL, "companion", "POST", "/api/schedule/add", payload)
+
+
+@app.delete("/api/admin/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str):
+    """删除日程（透传 companion /api/schedule/{schedule_id}）。"""
+    return await _forward(
+        COMPANION_URL, "companion", "DELETE", f"/api/schedule/{schedule_id}"
+    )
 
 
 # ---------------------------------------------------------------------------

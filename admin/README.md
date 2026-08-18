@@ -1,7 +1,7 @@
 # BetterAgent 后台管理系统（Admin Panel）
 
 B 端后台管理控制台，对应 `docs/API-CONTRACT.md` 的 **接口契约二**。用于管理数字人角色（Persona）、
-用户（User）、会话记录（Session）与知识库（Knowledge Base，代理至 campus_kb）。
+用户（User）、会话记录（Session）、日程提醒（Schedule，代理至 companion）与知识库（Knowledge Base，代理至 campus_kb）。
 
 - **Admin API 端口**: `8094`（FastAPI）
 - **Admin UI Dev 端口**: `8095`（Vite dev server）
@@ -56,6 +56,7 @@ uvicorn main:app --host 0.0.0.0 --port 8094
 | `REDIS_URL` | `redis://127.0.0.1:6379` | 用户画像 / 会话历史 Redis |
 | `REDIS_PASSWORD` | 空 | Redis 密码（可从 `.env` 读取） |
 | `CAMPUS_KB_URL` | `http://127.0.0.1:8093` | campus_kb 服务地址 |
+| `COMPANION_URL` | `http://127.0.0.1:8096` | companion 服务地址（日程提醒代理） |
 | `ADMIN_SECRET_KEY` | 空 | Admin API 访问令牌（可选） |
 
 > 敏感值（如 `REDIS_PASSWORD`）从 `admin/backend/.env` 读取，不硬编码进代码。
@@ -116,7 +117,7 @@ PATCH 白名单字段：`name`、`appearance`、`base_prompt`、`sleepy_prompt`�
 | GET | `/api/admin/users/{user_id}` | 获取单个用户 |
 | DELETE | `/api/admin/users/{user_id}` | 软删除用户 |
 
-画像数据来自 Redis `user_profile:{user_id}`；软删除标记落在独立 SQLite 表（`admin.db`）。
+画像数据来自 Redis `betteragent:profile:{user_id}`（主服务写入的 key，兼容旧 `user_profile:{user_id}`）；软删除标记落在独立 SQLite 表（`admin.db`）。
 **绝不修改** Redis 中的对话历史 key（`short_term:{chat_id}`）。
 
 ### 2.3 会话记录查看（只读）
@@ -141,3 +142,15 @@ campus_kb 不可用时返回 `503 {"error": "campus_kb service unavailable"}`。
 | 方法 | 路径 | 说明 |
 | :--- | :--- | :--- |
 | GET | `/health` | `{"status": "ok", "service": "admin_backend"}` |
+
+### 2.6 日程提醒管理（代理）
+
+| 方法 | 路径 | 代理到 |
+| :--- | :--- | :--- |
+| GET | `/api/admin/schedules?chat_id={chat_id}` | `GET http://127.0.0.1:8096/api/schedule/list?chat_id={chat_id}` |
+| POST | `/api/admin/schedules` | `POST http://127.0.0.1:8096/api/schedule/add` |
+| DELETE | `/api/admin/schedules/{schedule_id}` | `DELETE http://127.0.0.1:8096/api/schedule/{schedule_id}` |
+
+日程数据由 companion 服务（:8096）持久化，并由其 APScheduler 负责到期触发；Admin 只做反向代理，
+**不直接写 SQLite**（直接写入会导致 APScheduler 感知不到新日程、提醒不会触发）。
+companion 不可用时返回 `503 {"error": "companion service unavailable"}`。
