@@ -116,7 +116,7 @@ PATCH 白名单字段：`name`、`appearance`、`base_prompt`、`sleepy_prompt`�
 | GET | `/api/admin/users/{user_id}` | 获取单个用户 |
 | DELETE | `/api/admin/users/{user_id}` | 软删除用户 |
 
-画像数据来自 Redis `user_profile:{user_id}`；软删除标记落在独立 SQLite 表（`admin.db`）。
+画像数据来自 Redis `betteragent:profile:{user_id}`（主服务写入的 key，兼容旧 `user_profile:{user_id}`）；软删除标记落在独立 SQLite 表（`admin.db`）。
 **绝不修改** Redis 中的对话历史 key（`short_term:{chat_id}`）。
 
 ### 2.3 会话记录查看（只读）

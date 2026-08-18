@@ -239,8 +239,9 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
 # ---------------------------------------------------------------------------
 # 2.2 用户 (User) management -- 只读 + 软删除
 # ---------------------------------------------------------------------------
-# 画像数据来自 Redis user_profile:{user_id}；软删除标记落在一个独立 SQLite 表
-# 中（绝不修改 Redis 的对话历史 key：short_term:{chat_id}）。
+# 画像数据来自 Redis betteragent:profile:{user_id}（主服务写入的 key，兼容旧
+# user_profile:{user_id}）；软删除标记落在一个独立 SQLite 表中（绝不修改
+# Redis 的对话历史 key：short_term:{chat_id}）。
 def _db_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -293,6 +294,28 @@ def _get_redis() -> Any:
     return _redis_client
 
 
+def _as_list(value: Any) -> list:
+    """Coerce a profile fact value to a list.
+
+    Redis hashes store every field as a string, so `likes`/`known_facts` arrive
+    as JSON-encoded lists (e.g. '["篮球"]'). Parse those, pass lists through,
+    and wrap bare scalars so callers always get a list.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+        return [value]
+    return [value]
+
+
 def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     """Normalize a Redis user-profile value into the contract shape."""
     if isinstance(raw, str):
@@ -300,13 +323,9 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    known_facts = raw.get("known_facts")
-    if not isinstance(known_facts, list):
-        known_facts = [known_facts] if known_facts else []
+    known_facts = _as_list(raw.get("known_facts"))
     if not known_facts:
-        likes = raw.get("likes")
-        if isinstance(likes, list):
-            known_facts = list(likes)
+        known_facts = _as_list(raw.get("likes"))
 
     display_name = (raw.get("display_name") or raw.get("preferred_name")
                     or raw.get("name") or f"用户{user_id}")
@@ -319,33 +338,40 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     }
 
 
+# 主服务 (services/memory/user_profile.py) 写入 betteragent:profile:{user_id}；
+# user_profile:{user_id} 是接口契约中记录的旧前缀，作为兜底一并扫描。
+# 后扫者覆盖先扫者，因此把真实前缀放在最后以优先。
+USER_PROFILE_KEY_PREFIXES = ("user_profile:", "betteragent:profile:")
+
+
 def _redis_user_profiles(r: Any) -> Dict[int, Dict[str, Any]]:
-    """Scan user_profile:* keys and parse each profile."""
+    """Scan user profile keys (betteragent:profile:* / user_profile:*) and parse each."""
     profiles: Dict[int, Dict[str, Any]] = {}
     try:
-        for key in r.scan_iter("user_profile:*"):
-            try:
-                user_id = int(key.rsplit(":", 1)[1])
-            except (ValueError, IndexError):
-                continue
-            raw: Any
-            try:
-                if r.type(key) == "hash":
-                    raw = r.hgetall(key)
-                else:
-                    raw = r.get(key)
-                    if raw is None:
-                        continue
-                    try:
-                        parsed = json.loads(raw)
-                        if isinstance(parsed, dict):
-                            raw = parsed
-                    except (TypeError, ValueError):
-                        pass
-            except Exception as exc:
-                logger.warning(f"Failed to read Redis key {key}: {exc}")
-                continue
-            profiles[user_id] = _normalize_profile(user_id, raw)
+        for prefix in USER_PROFILE_KEY_PREFIXES:
+            for key in r.scan_iter(f"{prefix}*"):
+                try:
+                    user_id = int(key.rsplit(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                raw: Any
+                try:
+                    if r.type(key) == "hash":
+                        raw = r.hgetall(key)
+                    else:
+                        raw = r.get(key)
+                        if raw is None:
+                            continue
+                        try:
+                            parsed = json.loads(raw)
+                            if isinstance(parsed, dict):
+                                raw = parsed
+                        except (TypeError, ValueError):
+                            pass
+                except Exception as exc:
+                    logger.warning(f"Failed to read Redis key {key}: {exc}")
+                    continue
+                profiles[user_id] = _normalize_profile(user_id, raw)
     except Exception as exc:
         logger.warning(f"Failed to scan Redis user profiles: {exc}")
     return profiles
