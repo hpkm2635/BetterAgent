@@ -219,6 +219,17 @@ type StreamCancelPayload struct {
 	SourceChannel string `json:"source_channel,omitempty"`
 }
 
+type PersonaUpdatePayload struct {
+	BasePayload
+	PersonaID       string `json:"persona_id"`
+	Name            string `json:"name,omitempty"`
+	Appearance      string `json:"appearance,omitempty"`
+	BasePrompt      string `json:"base_prompt,omitempty"`
+	SleepyPrompt    string `json:"sleepy_prompt,omitempty"`
+	KnowledgeScope  string `json:"knowledge_scope,omitempty"`
+	ForbiddenTopics string `json:"forbidden_topics,omitempty"`
+}
+
 type StreamStateChangePayload struct {
 	BasePayload
 	ChatID        int64  `json:"chat_id"`

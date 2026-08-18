@@ -377,6 +377,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     addCard,
     removeCard,
     updateCard,
+    updateActiveCardModules,
     updateActiveCardConsciousness,
     updateActiveCardDisplayModel,
     updateActiveCardSpeech,

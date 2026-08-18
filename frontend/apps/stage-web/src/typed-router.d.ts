@@ -370,6 +370,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/settings/persona/': RouteRecordInfo<
+      '/settings/persona/',
+      '/settings/persona',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/settings/providers/': RouteRecordInfo<
       '/settings/providers/',
       '/settings/providers',
@@ -1079,6 +1086,12 @@ declare module 'vue-router/auto-routes' {
     '../../packages/stage-pages/src/pages/settings/modules/x.vue': {
       routes:
         | '/settings/modules/x'
+      views:
+        | never
+    }
+    'src/pages/settings/persona/index.vue': {
+      routes:
+        | '/settings/persona/'
       views:
         | never
     }

@@ -8,6 +8,7 @@ from shared.subjects import (
     SUBJECT_ENRICH_CONTEXT_REQ,
     SUBJECT_INBOUND_MESSAGE,
     SUBJECT_ACTION_COMPLETED,
+    SUBJECT_CONSOLIDATE_MEMORY_REQ,
 )
 from shared.schema.payloads import (
     EnrichContextReqPayload,
@@ -16,6 +17,7 @@ from shared.schema.payloads import (
     ReasoningRequestPayload,
 )
 from shared.logger import setup_logger
+from shared.config_loader import get_config_val
 from services.memory.memory_hub import MemoryHub
 
 load_dotenv()
@@ -24,9 +26,6 @@ logger = setup_logger("memory_service")
 
 async def error_cb(e):
     logger.warning(f"NATS Connection event: {e}")
-
-
-from shared.config_loader import get_config_val
 
 
 async def main():
@@ -62,7 +61,7 @@ async def main():
                 "payload": reasoning_req.model_dump(),
             }
             if msg.reply:
-                await nc.publish(msg.reply, json.dumps(resp_envelope).encode())
+                await nc.publish(msg.reply, json.dumps(resp_envelope, ensure_ascii=False).encode())
             logger.info(f"Enriched context for chat_id={req.chat_id}")
         except Exception as e:
             logger.error(f"Error handling enrich_context_req: {e}", exc_info=True)
@@ -86,7 +85,7 @@ async def main():
                     "source": "memory_service",
                     "payload": fallback_reasoning.model_dump(),
                 }
-                await nc.publish(msg.reply, json.dumps(err_envelope).encode())
+                await nc.publish(msg.reply, json.dumps(err_envelope, ensure_ascii=False).encode())
 
     async def inbound_handler(msg):
         try:
@@ -104,11 +103,46 @@ async def main():
         except Exception as e:
             logger.error(f"Error in action_completed_handler: {e}")
 
+    async def consolidate_req_handler(msg):
+        try:
+            data = json.loads(msg.data.decode())
+            payload_dict = data.get("payload", {})
+            user_id = payload_dict.get("user_id") or payload_dict.get("chat_id")
+            if user_id:
+                res = await hub.consolidate_user_memory(int(user_id))
+                if msg.reply:
+                    resp_envelope = {
+                        "id": payload_dict.get("event_id", ""),
+                        "subject": msg.subject,
+                        "source": "memory_service",
+                        "payload": res,
+                    }
+                    await nc.publish(msg.reply, json.dumps(resp_envelope, ensure_ascii=False).encode())
+                logger.info(f"Manual/NATS consolidation completed for user_id={user_id}")
+        except Exception as e:
+            logger.error(f"Error handling consolidate_req: {e}", exc_info=True)
+
+    async def periodic_consolidation_loop():
+        """Hourly background sweep to consolidate memory for inactive active users."""
+        while True:
+            await asyncio.sleep(3600)
+            try:
+                active_user_ids = list(hub.short_term_buffer.buffers.keys())
+                for uid in active_user_ids:
+                    await hub.consolidate_user_memory(uid)
+            except Exception as e:
+                logger.warning(f"Error in periodic consolidation loop: {e}")
+
+    # Subscribe to NATS subjects
     await nc.subscribe(SUBJECT_ENRICH_CONTEXT_REQ, queue="memory_workers", cb=enrich_handler)
     await nc.subscribe(SUBJECT_INBOUND_MESSAGE, queue="memory_workers", cb=inbound_handler)
     await nc.subscribe(SUBJECT_ACTION_COMPLETED, queue="memory_workers", cb=action_completed_handler)
+    await nc.subscribe(SUBJECT_CONSOLIDATE_MEMORY_REQ, queue="memory_workers", cb=consolidate_req_handler)
 
-    logger.info("Memory service listening on NATS subjects...")
+    # Launch hourly consolidation background worker
+    asyncio.create_task(periodic_consolidation_loop())
+
+    logger.info("Memory service listening on NATS subjects (enrich, inbound, action_completed, consolidate_req)...")
     while True:
         await asyncio.sleep(1)
 

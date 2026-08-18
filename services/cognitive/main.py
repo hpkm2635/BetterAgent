@@ -164,10 +164,25 @@ async def main():
         except Exception as e:
             logger.warning(f"Error handling vision frame: {e}")
 
+    async def persona_update_handler(msg):
+        await PersonaLoader.handle_persona_update(msg.data)
+
     await nc.subscribe(SUBJECT_REASONING_REQUEST, queue="cognitive_workers", cb=reasoning_handler)
     await nc.subscribe(SUBJECT_VISION_FRAME, cb=vision_handler)
     await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
     await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
+    await nc.subscribe("agent.persona.update", cb=persona_update_handler)
+
+    async def presenter_sweep_loop():
+        """Sweep idle MCP presenter sessions every 60 seconds."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await engine.presenter_manager.sweep_idle()
+            except Exception as e:
+                logger.warning(f"Error in presenter sweep loop: {e}")
+
+    asyncio.create_task(presenter_sweep_loop())
 
     logger.info("Cognitive service listening on NATS subjects (Stream Reasoning, Vision & Cancel Controls)...")
     while True:

@@ -66,6 +66,8 @@ class ReasoningRequestPayload(BasePayload):
     short_term_history: List[Dict[str, Any]] = Field(default_factory=list)
     user_profile: Dict[str, Any] = Field(default_factory=dict)
     rag_facts: List[str] = Field(default_factory=list)
+    kb_facts: List[str] = Field(default_factory=list)
+    agent_self_events: List[Dict[str, Any]] = Field(default_factory=list)
     proactive_reason: Optional[str] = None
     current_emotion: str = "NEUTRAL"
     mood_score: float = 1.0
@@ -88,6 +90,16 @@ class ReasoningRequestPayload(BasePayload):
     @field_validator("rag_facts", mode="before")
     @classmethod
     def val_rag(cls, v):
+        return v if v is not None else []
+
+    @field_validator("kb_facts", mode="before")
+    @classmethod
+    def val_kb_facts(cls, v):
+        return v if v is not None else []
+
+    @field_validator("agent_self_events", mode="before")
+    @classmethod
+    def val_self_events(cls, v):
         return v if v is not None else []
 
 

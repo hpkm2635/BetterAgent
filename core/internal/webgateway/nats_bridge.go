@@ -183,6 +183,28 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 			}
 		}
 
+	case "admin.persona_update":
+		var p AdminPersonaUpdatePayload
+		if err := json.Unmarshal(wsMsg.Payload, &p); err == nil && p.PersonaID != "" {
+			personaPayload := schema.PersonaUpdatePayload{
+				BasePayload:     schema.NewBasePayload("web_gateway"),
+				PersonaID:       p.PersonaID,
+				Name:            p.Name,
+				Appearance:      p.Appearance,
+				BasePrompt:      p.BasePrompt,
+				SleepyPrompt:    p.SleepyPrompt,
+				KnowledgeScope:  p.KnowledgeScope,
+				ForbiddenTopics: p.ForbiddenTopics,
+			}
+			if err := b.bus.Publish("agent.persona.update", "web_gateway", personaPayload); err != nil {
+				b.logger.Error("Failed to publish PersonaUpdate to NATS", zap.String("persona_id", p.PersonaID), zap.Error(err))
+			} else {
+				b.logger.Info("⚙️ Admin Persona Update -> NATS agent.persona.update",
+					zap.String("persona_id", p.PersonaID),
+				)
+			}
+		}
+
 	default:
 		b.logger.Warn("Unknown WSMessage Type", zap.String("type", wsMsg.Type))
 	}
@@ -609,6 +631,24 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	}
 }
 
+func (b *NatsBridge) buildAgentEmotionPayload(emotionStr string, action string) AgentEmotionPayload {
+	payload := AgentEmotionPayload{
+		Emotion: emotionStr,
+		Action:  action,
+	}
+	if b.emotionalState != nil {
+		payload.Mood = string(b.emotionalState.CurrentMoodTag)
+		payload.Valence = b.emotionalState.Valence
+		payload.Arousal = b.emotionalState.Arousal
+		payload.Energy = b.emotionalState.Energy
+		payload.SocialBattery = b.emotionalState.SocialBattery
+		payload.Affection = b.emotionalState.AffectionLevel
+		payload.IsJealous = b.emotionalState.IsJealous
+		payload.Description = b.emotionalState.ToPromptDescription()
+	}
+	return payload
+}
+
 func (b *NatsBridge) handleEmotionUpdateMsg(msg *nats.Msg) {
 	var env struct {
 		Payload schema.EmotionUpdatePayload `json:"payload"`
@@ -619,11 +659,8 @@ func (b *NatsBridge) handleEmotionUpdateMsg(msg *nats.Msg) {
 
 	p := env.Payload
 	outBytes, _ := json.Marshal(WSMessage{
-		Type: "agent.emotion",
-		Payload: marshalRaw(AgentEmotionPayload{
-			Emotion: p.Emotion,
-			Action:  p.Action,
-		}),
+		Type:    "agent.emotion",
+		Payload: marshalRaw(b.buildAgentEmotionPayload(p.Emotion, p.Action)),
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 }

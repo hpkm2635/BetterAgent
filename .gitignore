@@ -118,3 +118,4 @@ venv_win/
 .godot/
 *.tar.zst
 *.zst
+*.zip

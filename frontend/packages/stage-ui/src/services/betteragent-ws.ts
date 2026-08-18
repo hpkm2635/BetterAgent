@@ -27,6 +27,18 @@ export interface GameStatePayload {
 }
 export type GameStateCallback = (state: GameStatePayload) => void
 
+export interface EmotionalStatePayload {
+  mood: 'HAPPY' | 'NEUTRAL' | 'MOODY' | 'SLEEPY' | 'JEALOUS' | string
+  valence: number
+  arousal: number
+  energy: number
+  social_battery: number
+  affection: number
+  is_jealous: boolean
+  description: string
+}
+export type EmotionStateCallback = (state: EmotionalStatePayload, action?: string) => void
+
 // Binary Audio Frame Protocol
 function encodeBinaryAudioFrame(pcm: Int16Array): ArrayBuffer {
   const buf = new ArrayBuffer(20 + pcm.byteLength)
@@ -61,6 +73,7 @@ export class BetterAgentWSBridge {
 
   private textDeltaListeners: Set<TextDeltaCallback> = new Set()
   private emotionListeners: Set<EmotionCallback> = new Set()
+  private emotionStateListeners: Set<EmotionStateCallback> = new Set()
   private audioChunkListeners: Set<AudioChunkCallback> = new Set()
   private stateChangeListeners: Set<StateChangeCallback> = new Set()
   private gameStateListeners: Set<GameStateCallback> = new Set()
@@ -139,8 +152,14 @@ export class BetterAgentWSBridge {
           break
 
         case 'agent.emotion':
-          if (msg.payload?.emotion) {
-            this.emotionListeners.forEach(cb => cb(msg.payload.emotion, msg.payload.action))
+          if (msg.payload) {
+            const emotionStr = typeof msg.payload === 'string' ? msg.payload : (msg.payload.emotion || msg.payload.mood || '')
+            if (emotionStr) {
+              this.emotionListeners.forEach(cb => cb(emotionStr, msg.payload.action))
+            }
+            if (typeof msg.payload === 'object' && ('valence' in msg.payload || 'mood' in msg.payload)) {
+              this.emotionStateListeners.forEach(cb => cb(msg.payload as EmotionalStatePayload, msg.payload.action))
+            }
           }
           break
 
@@ -242,6 +261,21 @@ export class BetterAgentWSBridge {
   public onStateChange(cb: StateChangeCallback): () => void {
     this.stateChangeListeners.add(cb)
     return () => this.stateChangeListeners.delete(cb)
+  }
+
+  public sendPersonaUpdate(personaId: string, patch: Record<string, unknown>): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const msg: WSMessage = {
+        type: 'admin.persona_update',
+        payload: { persona_id: personaId, ...patch },
+      }
+      this.ws.send(JSON.stringify(msg))
+    }
+  }
+
+  public onEmotionState(cb: EmotionStateCallback): () => void {
+    this.emotionStateListeners.add(cb)
+    return () => this.emotionStateListeners.delete(cb)
   }
 
   public onGameState(cb: GameStateCallback): () => void {

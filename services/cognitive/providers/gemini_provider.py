@@ -208,65 +208,21 @@ class GeminiProvider(BaseLLMProvider):
 
         return contents
 
-    async def generate(self,
-                       messages: List[Dict[str, Any]],
-                       tools_schema: Optional[List[Dict[str, Any]]] = None,
-                       system_prompt: Optional[str] = None) -> Dict[str, Any]:
-        last_msg = messages[-1]["content"] if messages else ""
-
-        if self.client:
-            try:
-                from google.genai import types
-
-                config_kwargs = {}
-                if system_prompt:
-                    config_kwargs["system_instruction"] = system_prompt
-
-                func_decls = self._build_function_declarations(tools_schema)
-                if func_decls:
-                    config_kwargs["tools"] = [types.Tool(function_declarations=func_decls)]
-
-                config = types.GenerateContentConfig(**config_kwargs)
-                contents = self._messages_to_contents(messages)
-
-                import asyncio
-                loop = asyncio.get_running_loop()
-                response = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        lambda: self.client.models.generate_content(
-                            model=self.model_name,
-                            contents=contents if contents else last_msg,
-                            config=config,
-                        )
-                    ),
-                    timeout=35.0
-                )
-
-                tool_calls = []
-                if hasattr(response, "function_calls") and response.function_calls:
-                    for fc in response.function_calls:
-                        tool_calls.append({
-                            "name": fc.name,
-                            "args": dict(fc.args or {})
-                        })
-
-                res_text = response.text or ""
-                return {
-                    "text": res_text,
-                    "tool_calls": tool_calls,
-                    "finish_reason": "STOP"
-                }
-            except Exception as e:
-                logger.error(f"Gemini API generation error: {e}")
-
-        # Fallback catgirl response
-        reply_text = f"喵~ 收到主人的消息了：{last_msg}"
-        return {
-            "text": reply_text,
-            "tool_calls": [],
-            "finish_reason": "STOP"
-        }
+    async def generate(
+        self,
+        messages: List[Dict[str, Any]],
+        tools_schema: Optional[List[Dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delegate to generate_stream() so we never block the thread pool."""
+        full_text = ""
+        tool_calls: List[Dict[str, Any]] = []
+        async for event in self.generate_stream(messages, tools_schema, system_prompt):
+            if event.get("type") == "text":
+                full_text += event.get("delta", "")
+            elif event.get("type") == "tool_calls":
+                tool_calls.extend(event.get("calls", []))
+        return {"text": full_text, "tool_calls": tool_calls, "finish_reason": "STOP"}
 
     async def generate_stream(
         self,

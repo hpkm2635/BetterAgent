@@ -59,6 +59,15 @@ export interface AiriExtension {
       autonomousThreshold?: number
       autonomousTarget?: 'user' | 'assistant'
     }
+
+    persona?: {
+      userCallsign?: string
+      catchphrases?: string[]
+      tsundereWeight?: number
+      clingyWeight?: number
+      campusKbEnabled?: boolean
+      maxReplyLength?: number
+    }
   }
 
   agents: Record<string, {

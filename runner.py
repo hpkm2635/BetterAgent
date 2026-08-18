@@ -679,6 +679,14 @@ def main():
         timeout=10.0,
     )
 
+    # 3.5. Python Campus KB RAG Service (:8093)
+    mgr.spawn_service("campus_kb_service", [mgr.py_exe, "-u", "-m", "services.campus_kb.main"])
+    wait_for_readiness(
+        lambda: mgr.services["campus_kb_service"]["proc"].poll() is None,
+        service_name="Python Campus KB Service (:8093)",
+        timeout=10.0,
+    )
+
     # 4. Python Cognitive Service
     mgr.spawn_service("cognitive_service", [mgr.py_exe, "-u", "-m", "services.cognitive.main"])
 

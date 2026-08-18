@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -48,14 +49,21 @@ class McpSession:
 
             self._session_ctx = ClientSession(read, write)
             self._session = await self._session_ctx.__aenter__()
-            await self._session.initialize()
 
-            listed = await self._session.list_tools()
+            # NOTICE: PPT/VSCode may be slow to cold-start; without a timeout a
+            # hung subprocess silently starves the reasoning loop for this chat.
+            await asyncio.wait_for(self._session.initialize(), timeout=15.0)
+            listed = await asyncio.wait_for(self._session.list_tools(), timeout=10.0)
+
             self.tools = [
                 McpToolSpec(t.name, t.description or "", t.inputSchema or {"type": "object", "properties": {}})
                 for t in listed.tools
             ]
             logger.info(f"MCP session started ({' '.join(self._command)}): {len(self.tools)} tool(s) discovered")
+        except asyncio.TimeoutError:
+            logger.error(f"MCP session start timed out for command: {self._command}")
+            await self.close()
+            raise RuntimeError(f"MCP server did not respond in time: {self._command[0]}")
         except Exception:
             await self.close()
             raise
@@ -69,11 +77,18 @@ class McpSession:
     def has_tool(self, name: str) -> bool:
         return any(t.name == name for t in self.tools)
 
-    async def call_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         if self._session is None:
             raise RuntimeError("MCP session not started")
 
-        result = await self._session.call_tool(name, arguments=args or {})
+        try:
+            result = await asyncio.wait_for(
+                self._session.call_tool(name, arguments=args or {}),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"MCP call_tool timed out ({name}) after {timeout}s")
+            raise RuntimeError(f"MCP tool execution timed out: {name}")
 
         payload = getattr(result, "structuredContent", None)
         if payload is None:

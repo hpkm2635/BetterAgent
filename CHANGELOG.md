@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] - 2026-08-17
+## [Unreleased] - 2026-08-18
+
+### Added & Refactored (Production Debt Remediation — Sprints 1 ~ 7)
+- **Memory Service Modernization (Sprint 1 - Storage & Pipelines)**:
+  - Upgraded Redis operations to `redis.asyncio` async connection pooling (`short_term_buffer.py`).
+  - Implemented `AsyncQdrantClient` vector store in `services/memory/vector_store.py` with multi-provider embedding fallback (OpenAI/Gemini/HashedNgram) and Ebbinghaus decay scoring.
+  - Implemented active memory consolidation in `services/memory/consolidator.py` writing LLM-extracted facts to vector store.
+  - Added Redis Hash persistence for `user_profile.py` user facts.
+- **Context Budget & Fault Tolerance (Sprint 2)**:
+  - Added CJK-weighted character token estimation (`estimate_tokens`) in `token_budget.py` to prevent token overflow on Asian languages.
+  - Narrowed `SentenceSegmenter` JSON barrier regex to prevent false-positive suppression of valid text containing `{`.
+  - Enforced `is_final=True` fallback payloads in `stream_reasoning_loop` exception handlers to unblock Go Core CSM watchdogs.
+- **Campus KB Integration (Sprint 3)**:
+  - Added concurrent `asyncio.gather` context enrichment for personal RAG, Campus KB (`:8093`), and User Profile in `memory_hub.py`.
+  - Added service readiness probes and supervisor launch for `campus_kb_service` in `runner.py`.
+- **Self-Memory & Persona Cleanup (Sprint 4)**:
+  - Integrated `AgentSelfMemory` tracking in `memory_hub.py` for post-action reflection.
+  - Replaced hardcoded persona names with config injection `get_config_val("persona.default_user_name", "主人")`.
+- **LLM Provider Interface Normalization (Sprint 5)**:
+  - Defined `generate_stream()` abstract contract and `supports_vision()` capability hooks in `BaseLLMProvider`.
+  - Refactored `ClaudeProvider` to full `anthropic.AsyncAnthropic` streaming tool-calling engine with API key safety warnings and ID correlation.
+  - Removed thread pool blocking `loop.run_in_executor` in `GeminiProvider.generate()` by delegating to `generate_stream()`.
+- **MCP Subprocess Lifecycle & Anti-Hang (Sprint 6)**:
+  - Added background `presenter_sweep_loop` in `main.py` calling `sweep_idle()` every 60s to prevent orphaned PPT/VSCode child process leaks.
+  - Added `asyncio.wait_for` timeout guards to `McpSession.start()` and `McpSession.call_tool()` preventing infinite coroutine stalls.
+- **Prompt Optimization & Token Reduction (Sprint 7)**:
+  - Added TTL in-memory caching to `PersonaLoader` eliminating per-request YAML file disk I/O.
+  - Optimized `PromptBuilder.build_system_prompt()` to strip non-game memory/KB sections during `game_turn` (saving 100-500 tokens/turn).
+  - Compacted `agent_self_events` to retain latest 1-2 detailed actions while aggregating historical actions into counter summaries (saving 60-80% tokens).
+  - Cleaned up obsolete legacy directories (`persona/`, `adapters/`) and root scratch scripts (`test_session.py`, `session.py`, `test_gemini_tools.py`).
 
 ### Added
 - **API Contract & Team Subservice Boundary (`docs/API-CONTRACT.md`)**:
