@@ -45,6 +45,9 @@ class ScheduleService:
         conn = get_connection()
         try:
             cur = conn.cursor()
+            # 崩溃残留的 firing 状态重置回 scheduled，避免漏触发
+            cur.execute("UPDATE schedules SET status='scheduled' WHERE status='firing'")
+            conn.commit()
             cur.execute(
                 "SELECT schedule_id, title, remind_at, note, chat_id FROM schedules WHERE status='scheduled'"
             )
@@ -63,7 +66,11 @@ class ScheduleService:
                       note: str, chat_id: int) -> None:
         """根据 ISO 时间注册一次性触发任务。"""
         try:
-            run_time = datetime.fromisoformat(remind_at)
+            # 兼容 ISO 时间字符串中的 'Z'（UTC）时区标识
+            normalized = remind_at.strip()
+            if normalized.endswith("Z"):
+                normalized = normalized[:-1] + "+00:00"
+            run_time = datetime.fromisoformat(normalized)
         except ValueError:
             logger.warning(f"Invalid remind_at '{remind_at}', skip scheduling")
             return
@@ -79,7 +86,15 @@ class ScheduleService:
         )
 
     def _fire(self, schedule_id: str, title: str, note: str, chat_id: int) -> None:
-        """到期回调：POST 到技术总监的内部端点，并标记该日程已完成。"""
+        """到期回调：先原子抢占，再 POST 到技术总监端点并标记完成。
+
+        多 Worker 模式下，同一 schedule_id 只会有一个实例抢占成功，
+        从而避免重复触发提醒。
+        """
+        if not self._try_claim(schedule_id):
+            logger.info(f"Reminder '{title}' already claimed by another worker, skip")
+            return
+
         payload = {"chat_id": chat_id, "title": title, "note": note}
         try:
             resp = requests.post(_TRIGGER_URL, json=payload, timeout=5)
@@ -91,6 +106,24 @@ class ScheduleService:
             logger.warning(f"Failed to trigger reminder '{title}': {e}")
         finally:
             self._mark_done(schedule_id)
+
+    def _try_claim(self, schedule_id: str) -> bool:
+        """原子抢占：仅当状态仍为 scheduled 时改成 firing。
+
+        返回 True 表示本实例抢到触发权；False 表示已被其他 Worker 抢占。
+        """
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE schedules SET status='firing' "
+                "WHERE schedule_id=? AND status='scheduled'",
+                (schedule_id,),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
 
     def _mark_done(self, schedule_id: str) -> None:
         conn = get_connection()

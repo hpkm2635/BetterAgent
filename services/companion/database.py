@@ -24,7 +24,7 @@ def get_connection() -> sqlite3.Connection:
 
     使用 row_factory 让查询结果可以通过列名访问，方便转成 dict。
     """
-    conn = sqlite3.connect(_DB_PATH)
+    conn = sqlite3.connect(_DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -34,6 +34,10 @@ def init_db() -> None:
     conn = get_connection()
     try:
         cur = conn.cursor()
+
+        # 开启 WAL 模式：提升并发读写性能，多 Worker 下减少锁冲突
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.fetchone()
 
         # 每日对话统计（由技术总监通过 /api/companion/stat 写入）
         cur.execute("""

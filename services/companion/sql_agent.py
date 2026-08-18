@@ -30,11 +30,11 @@ class SQLAgent:
         if not q:
             raise ValueError("empty query")
 
-        sql, answer_template = self._translate(chat_id, q)
+        sql, params, answer_template = self._translate(chat_id, q)
         if sql is None:
             raise ValueError("unsupported query")
 
-        rows = self._execute_select(sql, chat_id)
+        rows = self._execute_select(sql, params, chat_id)
         answer = self._format_answer(answer_template, rows, q)
         return {
             "answer": answer,
@@ -42,8 +42,11 @@ class SQLAgent:
             "raw_result": rows,
         }
 
-    def _translate(self, chat_id: int, q: str) -> Tuple[Optional[str], str]:
-        """规则匹配：返回 (SQL, 回答模板)。"""
+    def _translate(self, chat_id: int, q: str) -> Tuple[Optional[str], Tuple, str]:
+        """规则匹配：返回 (SQL, 参数元组, 回答模板)。
+
+        所有用户相关值都用 ? 占位符 + 参数元组，避免字符串拼接注入。
+        """
         cid = int(chat_id)
 
         # 1. 本周聊了多少次 / 这周聊了多少次
@@ -51,63 +54,65 @@ class SQLAgent:
             monday = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
-                f"WHERE chat_id={cid} AND date >= '{monday}'"
+                "WHERE chat_id = ? AND date >= ?"
             )
-            return sql, "sum_week"
+            return sql, (cid, monday), "sum_week"
 
         # 2. 今天聊了多少次
         if ("今天" in q or "今日" in q) and ("聊" in q or "消息" in q or "次" in q):
             today = datetime.now().strftime("%Y-%m-%d")
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
-                f"WHERE chat_id={cid} AND date = '{today}'"
+                "WHERE chat_id = ? AND date = ?"
             )
-            return sql, "sum_today"
+            return sql, (cid, today), "sum_today"
 
         # 3. 最近一次/当前情绪
         if "情绪" in q or "心情" in q or "mood" in q:
             sql = (
                 "SELECT mood_score, emotion_tag, ts FROM mood_history "
-                f"WHERE chat_id={cid} ORDER BY ts DESC LIMIT 1"
+                "WHERE chat_id = ? ORDER BY ts DESC LIMIT 1"
             )
-            return sql, "mood"
+            return sql, (cid,), "mood"
 
         # 4. 最近聊了哪些话题
         if "话题" in q or "topic" in q or "聊了什么" in q:
             sql = (
                 "SELECT topic, source, ts FROM topic_log "
-                f"WHERE chat_id={cid} ORDER BY ts DESC LIMIT 5"
+                "WHERE chat_id = ? ORDER BY ts DESC LIMIT 5"
             )
-            return sql, "topics"
+            return sql, (cid,), "topics"
 
         # 5. 主动搭话次数
         if "主动" in q and ("搭话" in q or "聊" in q or "次" in q):
             sql = (
                 "SELECT COALESCE(SUM(proactive_count), 0) AS total FROM chat_stats "
-                f"WHERE chat_id={cid}"
+                "WHERE chat_id = ?"
             )
-            return sql, "proactive"
+            return sql, (cid,), "proactive"
 
         # 6. 累计聊了多少次（默认兜底：总数）
         if "多少" in q or "几次" in q or "几次" in q or "总和" in q or "一共" in q or "总共" in q:
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
-                f"WHERE chat_id={cid}"
+                "WHERE chat_id = ?"
             )
-            return sql, "sum_total"
+            return sql, (cid,), "sum_total"
 
-        return None, ""
+        return None, (), ""
 
-    def _execute_select(self, sql: str, chat_id: int) -> List[Dict[str, Any]]:
-        """安全执行：只允许 SELECT（SQL 由内部规则生成，已限定白名单表）。"""
+    def _execute_select(self, sql: str, params: Tuple, chat_id: int) -> List[Dict[str, Any]]:
+        """安全执行：只允许 SELECT，禁止分号，参数化绑定。"""
         stripped = sql.strip()
         if not re.match(r"^SELECT\b", stripped, re.IGNORECASE):
             raise ValueError("Only SELECT is allowed")
+        if ";" in stripped:
+            raise ValueError("Semicolons are not allowed")
 
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute(sql)
+            cur.execute(sql, params)
             rows = cur.fetchall()
             return [dict(r) for r in rows]
         finally:
