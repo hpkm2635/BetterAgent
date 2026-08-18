@@ -19,7 +19,7 @@ class IngestDocument(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    documents: List[IngestDocument] = Field(..., min_length=1)
+    documents: List[IngestDocument] = Field(..., min_length=1, max_length=100)
 
 
 class SearchRequest(BaseModel):

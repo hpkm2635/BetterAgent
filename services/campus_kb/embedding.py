@@ -9,11 +9,14 @@ EMBEDDING_API_KEY, and EMBEDDING_MODEL are all set, an OpenAI-compatible
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 from typing import List, Protocol
 
 from services.campus_kb.text_utils import text_features
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
@@ -88,4 +91,8 @@ def create_embedder() -> Embedder:
 
     if base_url and api_key and model:
         return OpenAICompatibleEmbedder(base_url, api_key, model, dim)
+    logger.warning(
+        "Using HashedNgramEmbedder fallback: no semantic generalization, "
+        "set EMBEDDING_BASE_URL, EMBEDDING_API_KEY and EMBEDDING_MODEL for better recall."
+    )
     return HashedNgramEmbedder()

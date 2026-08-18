@@ -203,7 +203,10 @@ class KnowledgeStore:
         return ingested, failed
 
     async def _delete_by_source(self, source: str) -> None:
-        old_ids = set(self._source_ids.get(source, set()))
+        # The in-memory _source_ids map is rebuilt from Qdrant on startup, but
+        # if Qdrant was unavailable the map may be empty or stale. Scan the
+        # whole in-memory document set to guarantee no old chunks survive.
+        old_ids = {point_id for point_id, doc in self._docs.items() if doc.get("source") == source}
         for point_id in old_ids:
             self._docs.pop(point_id, None)
         self._source_ids[source] = set()
@@ -253,11 +256,31 @@ class KnowledgeStore:
             logger.info("campus_kb search below relevance threshold for query=%r", query)
             return []
 
+        # Min-max normalize within the candidate set so the two signals are
+        # comparable, then weight by signal strength. A weak dense signal
+        # (below the relevance floor) is down-weighted to avoid noise.
+        min_bm25 = min(bm25_scores) if bm25_scores else 0.0
+        min_dense = min(dense_scores) if dense_scores else 0.0
+        range_bm25 = max_bm25 - min_bm25
+        range_dense = max_dense - min_dense
+        dense_is_strong = max_dense >= _DENSE_MIN_SCORE
+
         relevance: List[float] = []
         for index in range(len(docs)):
-            dense_norm = max(0.0, min(1.0, dense_scores[index]))
-            bm25_norm = (bm25_scores[index] / max_bm25) if max_bm25 > 0 else 0.0
-            relevance.append(0.5 * dense_norm + 0.5 * bm25_norm)
+            dense_norm = (
+                (dense_scores[index] - min_dense) / range_dense
+                if range_dense > 0 else 0.0
+            )
+            bm25_norm = (
+                (bm25_scores[index] - min_bm25) / range_bm25
+                if range_bm25 > 0 else 0.0
+            )
+            if dense_is_strong:
+                # Both signals are usable; arithmetic mean is reasonable.
+                relevance.append(0.5 * dense_norm + 0.5 * bm25_norm)
+            else:
+                # Dense signal is too weak to trust; rely mostly on BM25.
+                relevance.append(0.2 * dense_norm + 0.8 * bm25_norm)
 
         detected_category = None if category is not None else detect_category(query)
         if detected_category:
