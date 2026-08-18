@@ -56,8 +56,24 @@ uvicorn main:app --host 0.0.0.0 --port 8094
 | `REDIS_URL` | `redis://127.0.0.1:6379` | 用户画像 / 会话历史 Redis |
 | `REDIS_PASSWORD` | 空 | Redis 密码（可从 `.env` 读取） |
 | `CAMPUS_KB_URL` | `http://127.0.0.1:8093` | campus_kb 服务地址 |
+| `ADMIN_SECRET_KEY` | 空 | Admin API 访问令牌（可选） |
 
 > 敏感值（如 `REDIS_PASSWORD`）从 `admin/backend/.env` 读取，不硬编码进代码。
+
+### 访问令牌（可选）
+
+设置 `admin/backend/.env` 中的 `ADMIN_SECRET_KEY` 后，所有 `/api/admin/*` 接口都要求携带令牌，
+否则返回 `401 {"error": "unauthorized"}`。支持两种请求头：
+
+```
+X-Admin-Token: <secret>
+Authorization: Bearer <secret>
+```
+
+- 留空（默认）时校验关闭，便于本地开发。
+- Admin Web UI 的 Vite 代理会从 `admin/frontend/.env` 读取同名 `ADMIN_SECRET_KEY` 并注入
+  `X-Admin-Token`，因此两者需配置为相同值；令牌只存在于代理层，不会进入浏览器 JS。
+- `/health` 始终公开，不受令牌保护。
 
 ## 启动 frontend
 

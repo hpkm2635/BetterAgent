@@ -16,11 +16,13 @@ or:
     uvicorn main:app --host 0.0.0.0 --port 8094
 """
 
+import hmac
 import json
 import logging
 import os
 import re
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -53,6 +55,11 @@ ADMIN_PORT = int(os.getenv("ADMIN_PORT", "8094"))
 CAMPUS_KB_URL = os.getenv("CAMPUS_KB_URL", "http://127.0.0.1:8093").rstrip("/")
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+
+# Admin API access token. When set (non-empty), every /api/admin/* endpoint
+# requires a valid `X-Admin-Token: <secret>` or `Authorization: Bearer <secret>`
+# header; when empty, the panel stays open for local development.
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "")
 
 # 2.1 人设字段白名单: 仅允许通过 PATCH 修改这 6 个字段。
 PERSONA_ALLOWED_FIELDS = frozenset({
@@ -96,6 +103,24 @@ app.add_middleware(
 def _error(status_code: int, message: str) -> JSONResponse:
     """Contract-consistent error envelope: {"error": "..."}."""
     return JSONResponse(status_code=status_code, content={"error": message})
+
+
+@app.middleware("http")
+async def enforce_admin_token(request: Request, call_next):
+    """Gate /api/admin/* behind ADMIN_SECRET_KEY when it is configured.
+
+    Accepts either `X-Admin-Token: <secret>` or `Authorization: Bearer <secret>`.
+    Unset/empty ADMIN_SECRET_KEY disables the check (local dev default).
+    """
+    if ADMIN_SECRET_KEY and request.url.path.startswith("/api/admin"):
+        token = request.headers.get("x-admin-token")
+        if not token:
+            auth = request.headers.get("authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth[len("Bearer "):].strip()
+        if not token or not hmac.compare_digest(token, ADMIN_SECRET_KEY):
+            return _error(401, "unauthorized")
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +196,8 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
         if not isinstance(value, str):
             return _error(400, f"Field '{field}' must be a string")
 
-    # 3) 原地更新，保留注释与字段顺序
+    # 3) 原地更新，保留注释与字段顺序；先写同目录临时文件再 os.replace 原子覆盖，
+    #    避免写入中途崩溃把 YAML 留成半截文件。
     try:
         with open(path, "r", encoding="utf-8") as f:
             doc = _yaml_rt.load(f)
@@ -181,8 +207,28 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
         for field, value in payload.items():
             doc[field] = value
 
-        with open(path, "w", encoding="utf-8") as f:
-            _yaml_rt.dump(doc, f)
+        tmp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
+                _yaml_rt.dump(doc, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+            tmp_path = None
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
     except Exception as exc:
         logger.error(f"Failed to update persona YAML {path}: {exc}")
         return _error(500, "failed to update persona")
@@ -204,6 +250,7 @@ def _db_conn() -> sqlite3.Connection:
 def _init_db() -> None:
     try:
         with _db_conn() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS admin_users (
