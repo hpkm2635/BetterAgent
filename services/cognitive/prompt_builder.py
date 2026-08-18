@@ -26,7 +26,11 @@ def _load_sts2_agents_md() -> str:
         return ""
 
 
+from services.memory.token_budget import estimate_tokens
+
 _STS2_AGENTS_MD_CONTENT = _load_sts2_agents_md()
+_STS2_AGENTS_MD_TOKENS = estimate_tokens(_STS2_AGENTS_MD_CONTENT)
+logger.info(f"STS2 AGENTS.md loaded: {len(_STS2_AGENTS_MD_CONTENT)} chars ≈ {_STS2_AGENTS_MD_TOKENS} tokens")
 
 
 # Prepended to every system prompt, ahead of persona content, as a
@@ -96,14 +100,41 @@ class PromptBuilder:
                 "5. 在非战斗场景（地图/奖励/事件），优先调用 sts2_choose_map_node / sts2_claim_reward / sts2_choose_event_option。"
             )
 
-        if payload.user_profile:
-            pref = payload.user_profile.get("preferred_name", "主人")
-            prompt_parts.append(f"[称呼习惯] 你称呼对方为：{pref}")
+        if payload.trigger_type != "game_turn":
+            if payload.user_profile:
+                pref = payload.user_profile.get("preferred_name", "主人")
+                prompt_parts.append(f"[称呼习惯] 你称呼对方为：{pref}")
 
-        if payload.rag_facts:
-            prompt_parts.append("[长史记忆/相关背景信息]:")
-            for fact in payload.rag_facts:
-                prompt_parts.append(f"- {fact}")
+            if payload.rag_facts:
+                prompt_parts.append("[长期记忆/个人相关信息]:")
+                for fact in payload.rag_facts:
+                    prompt_parts.append(f"- {fact}")
+
+            if hasattr(payload, "kb_facts") and payload.kb_facts:
+                prompt_parts.append("[校园知识库 (Campus KB)]:")
+                for fact in payload.kb_facts:
+                    prompt_parts.append(f"- {fact}")
+
+            if hasattr(payload, "agent_self_events") and payload.agent_self_events:
+                events = payload.agent_self_events
+                recent_events = events[-2:]
+                earlier_events = events[:-2] if len(events) > 2 else []
+
+                prompt_parts.append("[Agent 自身近期行为记录]:")
+                if earlier_events:
+                    from collections import Counter
+                    counts = Counter(
+                        e.get("description", "").split(":")[0].strip()
+                        for e in earlier_events
+                    )
+                    summary = "、".join(f"{k}×{v}" for k, v in counts.most_common(5))
+                    if summary:
+                        prompt_parts.append(f"- 早期动作摘要: {summary}")
+
+                for ev in recent_events:
+                    desc = ev.get("description", "")
+                    if desc:
+                        prompt_parts.append(f"- 最新动作: {desc}")
 
         return "\n".join(prompt_parts)
 

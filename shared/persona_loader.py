@@ -22,10 +22,7 @@ class PersonaLoader:
         if not force_reload and cls._cached_persona and cls._last_active_id == active_id:
             return cls._cached_persona
 
-        persona_path = f"config/persona/{active_id}.yaml"
-        if not os.path.exists(persona_path):
-            logger.warning(f"Persona config '{persona_path}' not found. Fallback to 'config/persona/catgirl.yaml'")
-            persona_path = "config/persona/catgirl.yaml"
+        persona_path = cls._persona_path(active_id)
 
         try:
             with open(persona_path, "r", encoding="utf-8") as f:
@@ -44,3 +41,67 @@ class PersonaLoader:
                 "art_style": "anime",
                 "reference_images_dir": "config/reference_images/catgirl",
             }
+
+    @classmethod
+    def invalidate_cache(cls) -> None:
+        """Call when persona configuration is updated or hot-reloaded."""
+        cls._cached_persona = {}
+        cls._last_active_id = ""
+
+    @classmethod
+    async def handle_persona_update(cls, raw: bytes) -> None:
+        """
+        NATS message handler for 'agent.persona.update'.
+        Updates persona YAML on disk in-place and invalidates memory cache.
+        """
+        import json
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            if isinstance(payload, dict) and "payload" in payload:
+                payload = payload["payload"]
+
+            persona_id = payload.get("persona_id") or "catgirl"
+            allowed = {"name", "appearance", "base_prompt", "sleepy_prompt", "knowledge_scope", "forbidden_topics"}
+            patch = {k: v for k, v in payload.items() if k in allowed and isinstance(v, str)}
+
+            if not patch:
+                logger.warning("Empty or invalid persona patch payload received")
+                return
+
+            cls._patch_yaml(persona_id, patch)
+            cls.invalidate_cache()
+            logger.info(f"Persona '{persona_id}' hot-reloaded and in-memory cache invalidated. Fields updated: {list(patch.keys())}")
+        except Exception as err:
+            logger.error(f"Failed to handle persona update NATS message: {err}", exc_info=True)
+
+    @classmethod
+    def _persona_path(cls, persona_id: str) -> str:
+        path = f"config/persona/{persona_id}.yaml"
+        if not os.path.exists(path):
+            return "config/persona/catgirl.yaml"
+        return path
+
+    @classmethod
+    def _patch_yaml(cls, persona_id: str, patch: Dict[str, Any]) -> None:
+        """In-place update of persona YAML using ruamel.yaml (or pyyaml fallback)."""
+        persona_path = cls._persona_path(persona_id)
+
+        try:
+            try:
+                from ruamel.yaml import YAML
+                ryaml = YAML()
+                ryaml.preserve_quotes = True
+                with open(persona_path, "r", encoding="utf-8") as f:
+                    data = ryaml.load(f) or {}
+                data.update(patch)
+                with open(persona_path, "w", encoding="utf-8") as f:
+                    ryaml.dump(data, f)
+            except ImportError:
+                with open(persona_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                data.update(patch)
+                with open(persona_path, "w", encoding="utf-8") as f:
+                    yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        except Exception as err:
+            logger.error(f"Failed to patch YAML file {persona_path}: {err}")
+

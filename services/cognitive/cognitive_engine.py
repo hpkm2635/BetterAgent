@@ -118,7 +118,7 @@ class SentenceSegmenter:
                 return []
 
         # 2. JSON Code Block Barrier Check
-        if "```" in self.buffer or "{" in self.buffer:
+        if "```" in self.buffer or re.search(r'\{\s*"\w+"', self.buffer):
             if "}" in self.buffer or "```" in self.buffer:
                 self.buffer = re.sub(r"```(?:json)?[\s\S]*?```", "", self.buffer)
                 self.buffer = re.sub(r"\{\s*\"[^\"]+\"[\s\S]*?\}", "", self.buffer).lstrip()
@@ -127,12 +127,24 @@ class SentenceSegmenter:
         self.buffer = clean_action_descriptions(self.buffer)
 
         # 4. Unclosed Action Parenthesis Barrier Check
+        # Action tags like (摸摸头) or [伸懒腰] are short (<20 chars) without sentence-ending punctuation.
+        # If text after unclosed paren contains sentence punctuation (。, ！, ？, \n) or exceeds 20 chars,
+        # treat it as normal text so real-time streaming output is never stalled!
+        def _is_short_unclosed(open_p: str, close_p: str) -> bool:
+            if open_p in self.buffer and close_p not in self.buffer:
+                idx = self.buffer.rfind(open_p)
+                tail = self.buffer[idx:]
+                if len(tail) > 20 or any(p in tail for p in ("。", "！", "？", "\n")):
+                    return False
+                return True
+            return False
+
         has_unclosed_paren = (
-            ("（" in self.buffer and "）" not in self.buffer) or
-            ("(" in self.buffer and ")" not in self.buffer) or
-            ("【" in self.buffer and "】" not in self.buffer) or
-            ("[" in self.buffer and "]" not in self.buffer) or
-            (self.buffer.count("`") % 2 == 1)
+            _is_short_unclosed("（", "）") or
+            _is_short_unclosed("(", ")") or
+            _is_short_unclosed("【", "】") or
+            _is_short_unclosed("[", "]") or
+            (self.buffer.count("`") % 2 == 1 and len(self.buffer) - self.buffer.rfind("`") <= 30)
         )
         if has_unclosed_paren:
             return []
@@ -876,4 +888,16 @@ class CognitiveEngine:
                     is_final=True,
                 )
         except Exception as err:
-            logger.error(f"Error in stream_reasoning_loop: {err}")
+            logger.error(f"Error in stream_reasoning_loop: {err}", exc_info=True)
+            fallback_gen_id = gen_id if ('gen_id' in locals() and isinstance(gen_id, int)) else (payload.generation_id if payload.generation_id else 1)
+            yield ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=fallback_gen_id,
+                source_channel=src_channel if 'src_channel' in locals() else payload.source_channel,
+                action_type="send_message",
+                text_content="",
+                chat_action="",
+                is_final=True,
+            )

@@ -87,7 +87,7 @@ onUnmounted(() => {
 .vision-indicator-container {
   position: absolute;
   top: 16px;
-  right: 16px;
+  left: 16px;
   z-index: 99;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   user-select: none;

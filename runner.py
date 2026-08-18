@@ -19,6 +19,23 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+# Force UTF-8 stdout/stderr on Windows. A Chinese-locale (GBK/cp936) console
+# otherwise raises UnicodeEncodeError on the first emoji print (✓/✗/🟢/🚀),
+# which crashes the supervisor before it can spawn any service. Child Python
+# services are also put into PEP 540 UTF-8 mode so their log output is UTF-8.
+if os.name == "nt":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    os.environ.setdefault("PYTHONUTF8", "1")
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)  # UTF-8 code page
+    except Exception:
+        pass
+
 # Project root directory
 ROOT_DIR = Path(__file__).resolve().parent
 LOGS_DIR = ROOT_DIR / "logs"
@@ -676,6 +693,14 @@ def main():
     wait_for_readiness(
         lambda: mgr.services["memory_service"]["proc"].poll() is None,
         service_name="Python Memory Service",
+        timeout=10.0,
+    )
+
+    # 3.5. Python Campus KB RAG Service (:8093)
+    mgr.spawn_service("campus_kb_service", [mgr.py_exe, "-u", "-m", "services.campus_kb.main"])
+    wait_for_readiness(
+        lambda: mgr.services["campus_kb_service"]["proc"].poll() is None,
+        service_name="Python Campus KB Service (:8093)",
         timeout=10.0,
     )
 

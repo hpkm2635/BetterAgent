@@ -17,9 +17,12 @@ services:
     container_name: betteragent-redis
     # Requires REDIS_PASSWORD to be set (see ../.env.example). Redis holds
     # every user's short-term conversation buffer -- must never be anonymous.
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env before starting Redis}"]
+    # Enables RDB snapshotting + AOF persistence mapped to volume.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env before starting Redis}", "--save", "60", "1", "--appendonly", "yes"]
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
 
   qdrant:
@@ -37,3 +40,4 @@ services:
 
 volumes:
   qdrant_data:
+  redis_data:

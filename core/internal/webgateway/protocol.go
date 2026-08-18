@@ -40,8 +40,26 @@ type AgentTextDeltaPayload struct {
 }
 
 type AgentEmotionPayload struct {
-	Emotion string `json:"emotion"`
-	Action  string `json:"action,omitempty"`
+	Emotion       string  `json:"emotion"`
+	Action        string  `json:"action,omitempty"`
+	Mood          string  `json:"mood,omitempty"`
+	Valence       float64 `json:"valence,omitempty"`
+	Arousal       float64 `json:"arousal,omitempty"`
+	Energy        float64 `json:"energy,omitempty"`
+	SocialBattery float64 `json:"social_battery,omitempty"`
+	Affection     float64 `json:"affection,omitempty"`
+	IsJealous     bool    `json:"is_jealous,omitempty"`
+	Description   string  `json:"description,omitempty"`
+}
+
+type AdminPersonaUpdatePayload struct {
+	PersonaID       string `json:"persona_id"`
+	Name            string `json:"name,omitempty"`
+	Appearance      string `json:"appearance,omitempty"`
+	BasePrompt      string `json:"base_prompt,omitempty"`
+	SleepyPrompt    string `json:"sleepy_prompt,omitempty"`
+	KnowledgeScope  string `json:"knowledge_scope,omitempty"`
+	ForbiddenTopics string `json:"forbidden_topics,omitempty"`
 }
 
 type AgentAudioChunkPayload struct {

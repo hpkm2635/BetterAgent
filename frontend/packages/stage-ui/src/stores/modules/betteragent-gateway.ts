@@ -4,6 +4,8 @@ import { betterAgentWSBridge } from '../../services/betteragent-ws'
 import { useChatStreamStore } from '../chat/stream-store'
 import { useSTS2GameStateStore } from './sts2-game-state'
 
+import type { EmotionalStatePayload } from '../../services/betteragent-ws'
+
 export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () => {
   const currentChatId = ref<number | null>(null)
   const csmState = ref<'idle' | 'talking' | 'thinking' | 'listening' | 'executing_action' | string>('idle')
@@ -12,6 +14,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const isGracePeriodActive = ref(false)
   const lastEmotion = ref('')
   const lastAction = ref('')
+  const emotionalState = ref<EmotionalStatePayload | null>(null)
 
   const streamStore = useChatStreamStore()
   const sts2GameState = useSTS2GameStateStore()
@@ -73,6 +76,8 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     return active === msgChatId
   }
 
+  let unsubs: Array<() => void> = []
+
   let initialized = false
   function initialize(pinnedChatId?: number) {
     if (pinnedChatId) {
@@ -83,10 +88,14 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
       return
     initialized = true
 
+    // Clean up previous listeners if re-initializing
+    unsubs.forEach(unsub => unsub())
+    unsubs = []
+
     betterAgentWSBridge.connect()
 
     // 1. Text Delta & Stream Life Cycle
-    betterAgentWSBridge.onTextDelta((text: string, isFinal?: boolean, chatId?: number) => {
+    unsubs.push(betterAgentWSBridge.onTextDelta((text: string, isFinal?: boolean, chatId?: number) => {
       if (!isChatMatch(chatId))
         return
 
@@ -103,10 +112,10 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
         triggerGracePeriod()
         streamStore.finalizeStream()
       }
-    })
+    }))
 
     // 2. CSM State Transitions
-    betterAgentWSBridge.onStateChange((state: string, chatId?: number) => {
+    unsubs.push(betterAgentWSBridge.onStateChange((state: string, chatId?: number) => {
       if (!isChatMatch(chatId))
         return
 
@@ -125,24 +134,28 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
         }
         resetStreamingWatchdog()
       }
-    })
+    }))
 
     // 3. Audio Chunks
-    betterAgentWSBridge.onAudioChunk(() => {
+    unsubs.push(betterAgentWSBridge.onAudioChunk(() => {
       isSpeaking.value = true
-    })
+    }))
 
     // 4. Emotion & Action Tokens
-    betterAgentWSBridge.onEmotion((emotion: string, action?: string) => {
+    unsubs.push(betterAgentWSBridge.onEmotion((emotion: string, action?: string) => {
       lastEmotion.value = emotion
       if (action)
         lastAction.value = action
-    })
+    }))
+
+    unsubs.push(betterAgentWSBridge.onEmotionState((state) => {
+      emotionalState.value = state
+    }))
 
     // 5. Game State
-    betterAgentWSBridge.onGameState((state) => {
+    unsubs.push(betterAgentWSBridge.onGameState((state) => {
       sts2GameState.updateState(state)
-    })
+    }))
   }
 
   return {
@@ -153,6 +166,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     isGracePeriodActive,
     lastEmotion,
     lastAction,
+    emotionalState,
     initialize,
   }
 })
