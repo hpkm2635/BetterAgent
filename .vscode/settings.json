@@ -1,4 +1,6 @@
 {
   // 强制当前工作区所有新建/保存的文件使用 Linux 标准换行符 (LF)
-  "files.eol": "\n"
+  "files.eol": "\n",
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

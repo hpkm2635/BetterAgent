@@ -59,6 +59,8 @@ temp/
 **/temp/
 services/campus_kb/data/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 .postgres/

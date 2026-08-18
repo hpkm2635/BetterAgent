@@ -22,6 +22,7 @@ const tabs = [
   { key: 'personas', label: '人设管理' },
   { key: 'users', label: '用户管理' },
   { key: 'sessions', label: '会话记录' },
+  { key: 'schedules', label: '日程提醒' },
   { key: 'kb', label: '知识库' },
 ]
 const activeTab = ref('personas')
@@ -60,6 +61,19 @@ const userMsg = ref('')
 const chatId = ref(0)
 const sessions = ref([])
 const sessionsTotal = ref(0)
+
+const schedChatId = ref(0)
+const schedules = ref([])
+const schedulesTotal = ref(0)
+const schedMsg = ref('')
+const schedAddMsg = ref('')
+const schedForm = reactive({
+  chat_id: '',
+  user_id: '',
+  title: '',
+  remind_at: '',
+  note: '',
+})
 
 const kbQuery = ref('')
 const kbResults = ref([])
@@ -185,6 +199,69 @@ async function loadSessions() {
   }
 }
 
+// ---- Schedules ------------------------------------------------------------
+async function loadSchedules() {
+  schedMsg.value = ''
+  try {
+    const data = await api(`/api/admin/schedules?chat_id=${encodeURIComponent(schedChatId.value)}`)
+    schedules.value = data.schedules || []
+    schedulesTotal.value = schedules.value.length
+    schedMsg.value = `共 ${schedules.value.length} 条日程`
+  } catch (e) {
+    schedMsg.value = `加载失败: ${e.message}`
+  }
+}
+
+async function addSchedule() {
+  schedAddMsg.value = ''
+  const chatId = Number(schedForm.chat_id)
+  const userId = Number(schedForm.user_id)
+  if (
+    schedForm.chat_id === '' ||
+    schedForm.user_id === '' ||
+    !Number.isInteger(chatId) ||
+    !Number.isInteger(userId)
+  ) {
+    schedAddMsg.value = 'chat_id / user_id 必须为整数'
+    return
+  }
+  if (!schedForm.title.trim() || !schedForm.remind_at.trim()) {
+    schedAddMsg.value = '请填写标题与提醒时间'
+    return
+  }
+  try {
+    const data = await api('/api/admin/schedules', {
+      method: 'POST',
+      body: JSON.stringify({
+        chat_id: chatId,
+        user_id: userId,
+        title: schedForm.title.trim(),
+        remind_at: schedForm.remind_at.trim(),
+        note: schedForm.note.trim(),
+      }),
+    })
+    schedAddMsg.value = `已创建日程 ${data.schedule_id}（${data.status}）`
+    schedForm.title = ''
+    schedForm.remind_at = ''
+    schedForm.note = ''
+    schedChatId.value = chatId
+    await loadSchedules()
+  } catch (e) {
+    schedAddMsg.value = `创建失败: ${e.message}`
+  }
+}
+
+async function deleteSchedule(s) {
+  schedMsg.value = ''
+  try {
+    await api(`/api/admin/schedules/${encodeURIComponent(s.schedule_id)}`, { method: 'DELETE' })
+    schedMsg.value = `日程 ${s.schedule_id} 已删除`
+    await loadSchedules()
+  } catch (e) {
+    schedMsg.value = `删除失败: ${e.message}`
+  }
+}
+
 // ---- KB -------------------------------------------------------------------
 async function kbSearch() {
   kbMsg.value = ''
@@ -228,6 +305,7 @@ function switchTab(key) {
   if (key === 'personas') loadPersonas()
   if (key === 'users') loadUsers()
   if (key === 'sessions') loadSessions()
+  if (key === 'schedules') loadSchedules()
 }
 
 onMounted(() => {
@@ -243,7 +321,7 @@ onMounted(() => {
         <span class="logo">🐱</span>
         <div>
           <h1>BetterAgent 后台管理</h1>
-          <p class="subtitle">数字人角色 · 用户 · 会话 · 知识库</p>
+          <p class="subtitle">数字人角色 · 用户 · 会话 · 日程 · 知识库</p>
         </div>
       </div>
       <div class="health">
@@ -380,6 +458,66 @@ onMounted(() => {
             <div class="bubble">{{ s.content }}</div>
           </li>
         </ul>
+      </section>
+
+      <!-- 日程提醒 -->
+      <section v-else-if="activeTab === 'schedules'" class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h2>日程列表 <span class="muted small">(共 {{ schedulesTotal }} 条)</span></h2>
+            <div class="row">
+              <input
+                v-model.number="schedChatId"
+                type="number"
+                class="input input-short"
+                placeholder="chat_id"
+                @keyup.enter="loadSchedules"
+              />
+              <button class="btn btn-primary" @click="loadSchedules">查询</button>
+            </div>
+          </div>
+          <p v-if="schedMsg" class="muted small">{{ schedMsg }}</p>
+          <ul class="list">
+            <li v-if="!schedules.length" class="muted">暂无日程</li>
+            <li v-for="s in schedules" :key="s.schedule_id" class="list-item">
+              <div class="row">
+                <strong>{{ s.title }}</strong>
+                <span class="tag">{{ s.status }}</span>
+              </div>
+              <div class="muted small">{{ s.remind_at }}</div>
+              <div v-if="s.note" class="bubble">{{ s.note }}</div>
+              <div class="row" style="margin-top: 8px;">
+                <button class="btn btn-danger" @click="deleteSchedule(s)">删除</button>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>新增日程</h2></div>
+          <div class="field">
+            <label>chat_id</label>
+            <input v-model.number="schedForm.chat_id" type="number" class="input" placeholder="如：123456789" />
+          </div>
+          <div class="field">
+            <label>user_id</label>
+            <input v-model.number="schedForm.user_id" type="number" class="input" placeholder="如：123456789" />
+          </div>
+          <div class="field">
+            <label>标题</label>
+            <input v-model="schedForm.title" class="input" placeholder="如：高数考试" />
+          </div>
+          <div class="field">
+            <label>提醒时间</label>
+            <input v-model="schedForm.remind_at" class="input" placeholder="如：2026-08-20T09:00:00+08:00" />
+          </div>
+          <div class="field">
+            <label>备注（可选）</label>
+            <textarea v-model="schedForm.note" class="textarea" rows="2" placeholder="如：带准考证"></textarea>
+          </div>
+          <button class="btn btn-primary" @click="addSchedule">新增日程</button>
+          <p v-if="schedAddMsg" class="muted small" style="margin-top: 10px;">{{ schedAddMsg }}</p>
+        </div>
       </section>
 
       <!-- 知识库 -->
