@@ -300,6 +300,7 @@ stateDiagram-v2
 | **流式控制** | `agent.stt.stream_chunk` / `agent.stt.stream_final` / `agent.tts.stream_end` | STT 转写流 / TTS 结束 |
 | **流式状态** | `agent.stream.cancel_ack` / `agent.stream.state_change` | 流式撤销确认 / 状态变更广播 |
 | **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` | 画面快照 / 情绪动作更新 |
+| **人设与配置** | `agent.persona.update` | 人设热更新广播（YAML 磁盘同步 + PersonaLoader 内存缓存失效） |
 | **游戏感知** | `agent.game_event` | 外部游戏事件广播（稀有圣物、濒死、胜负结算等） |
 
 ### 4.2 系统核心组件 UML 类图 (Core Components Class Diagram)
@@ -610,7 +611,13 @@ graph LR
         subgraph Pinia_Stores["Pinia State Management"]
             StreamStore["stream-store.ts (文本/音频/Viseme 缓冲帧)"]
             STS2Store["sts2-game-state.ts (杀戮尖塔 2 实时 HUD)"]
-            EmotionStore["emotion-store.ts (情绪/姿态响应)"]
+            EmotionStore["betteragent-gateway.ts (VAD 3D 情绪/生理指标)"]
+            PersonaStore["persona.ts (人设与提示词动态编译 Store)"]
+        end
+
+        subgraph Control_Panels["Web UI Control & Overlay"]
+            PersonaControl["/settings/persona (4-Tab 人设与边界控制台)"]
+            EmotionHUD["EmotionHUDWidget.vue (3D 情绪 & 生理 HUD)"]
         end
 
         subgraph Render_Engines["Stage UI Engine Canvas"]

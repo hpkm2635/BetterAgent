@@ -36,9 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added TTL in-memory caching to `PersonaLoader` eliminating per-request YAML file disk I/O.
   - Optimized `PromptBuilder.build_system_prompt()` to strip non-game memory/KB sections during `game_turn` (saving 100-500 tokens/turn).
   - Compacted `agent_self_events` to retain latest 1-2 detailed actions while aggregating historical actions into counter summaries (saving 60-80% tokens).
-  - Cleaned up obsolete legacy directories (`persona/`, `adapters/`) and root scratch scripts (`test_session.py`, `session.py`, `test_gemini_tools.py`).
-
-### Added
+- **Persona Real-Time Control Panel & Emotion HUD (Sprint A - Frontend & Hot-Reload)**:
+  - Added 4-Tab Persona Control Panel UI (`/settings/persona`) for online System Prompt editing, basic identity settings, tsundere/clingy weight compilation, and interactive boundaries.
+  - Implemented dual-channel update pipeline: Admin REST API (`:8094`) HTTP PATCH for disk YAML persistence + WebSocket `admin.persona_update` frame to Go Core, publishing NATS `agent.persona.update` for zero-downtime Python `PersonaLoader` in-memory hot reload.
+  - Added `EmotionHUDWidget.vue` floating widget displaying live 3D VAD metrics, Affection, Energy, Social Battery, and Jealousy status driven by enriched `AgentEmotionPayload` WebSocket frames.
+  - Added prompt compilation header stripping (`stripCompiledHeader`) to guarantee 100% idempotency across repeated save operations.
+  - Moved `VisionPrivacyIndicator.vue` to top-left (`left: 16px`) to resolve UI button overlap.
 - **API Contract & Team Subservice Boundary (`docs/API-CONTRACT.md`)**:
   - Defined rigid HTTP REST interface specs and port assignments for Campus KB (`:8093`), Admin Panel (`:8094`/`:8095`), and Companion Tool Service (`:8096`).
   - Added automated integration tests (`tests/test_api_contract.py`) for PR merge gating.
