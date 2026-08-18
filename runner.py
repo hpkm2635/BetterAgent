@@ -19,6 +19,23 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+# Force UTF-8 stdout/stderr on Windows. A Chinese-locale (GBK/cp936) console
+# otherwise raises UnicodeEncodeError on the first emoji print (✓/✗/🟢/🚀),
+# which crashes the supervisor before it can spawn any service. Child Python
+# services are also put into PEP 540 UTF-8 mode so their log output is UTF-8.
+if os.name == "nt":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    os.environ.setdefault("PYTHONUTF8", "1")
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)  # UTF-8 code page
+    except Exception:
+        pass
+
 # Project root directory
 ROOT_DIR = Path(__file__).resolve().parent
 LOGS_DIR = ROOT_DIR / "logs"
