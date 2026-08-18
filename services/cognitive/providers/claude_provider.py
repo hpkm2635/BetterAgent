@@ -17,7 +17,9 @@ class ClaudeProvider(BaseLLMProvider):
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("CLAUDE_API_KEY", "")
+        self.provider_name = "claude"
         self.model_name = get_config_val("llm.claude.model", "claude-3-5-sonnet-20241022")
+        self.model = self.model_name
         self.client = None
         if self.api_key and not self.api_key.startswith("your_"):
             try:

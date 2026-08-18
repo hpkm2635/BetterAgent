@@ -4,8 +4,7 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional
 from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
 from shared.config_loader import get_config_val
-from services.cognitive.providers.gemini_provider import GeminiProvider
-from services.cognitive.providers.claude_provider import ClaudeProvider
+from services.cognitive.providers.factory import ProviderFactory
 from services.cognitive.tool_registry import ToolRegistry
 from services.cognitive.prompt_builder import PromptBuilder
 from services.cognitive.tools.validation import is_safe_media_filename
@@ -227,18 +226,18 @@ class CognitiveEngine:
         "sts2_select_card_reward": "card_index",
     }
 
-    def __init__(self, default_provider_name: str = "gemini"):
+    def __init__(self, default_provider_name: Optional[str] = None):
+        if not default_provider_name:
+            default_provider_name = get_config_val("llm.default_provider", "gemini")
         self.presenter_manager = PresenterSessionManager(
             server_commands=self._load_presenter_server_commands(),
             idle_timeout_seconds=get_config_val("mcp.presenter.idle_timeout_seconds", 600),
         )
         self.tool_registry = ToolRegistry(presenter_manager=self.presenter_manager)
+        self.default_provider = ProviderFactory.get_provider(default_provider_name)
         self.providers = {
-            "gemini": GeminiProvider(),
-            "claude": ClaudeProvider(),
+            default_provider_name: self.default_provider,
         }
-        self.default_provider = self.providers.get(default_provider_name,
-                                                   self.providers["gemini"])
         self.latest_vision_frames: Dict[int, Dict[str, Any]] = {}
 
     @staticmethod
@@ -519,10 +518,16 @@ class CognitiveEngine:
         all_schemas = self.tool_registry.get_all_schemas()
         if payload.trigger_type == "game_turn":
             all_schemas = all_schemas + self.tool_registry.get_game_schemas()
-        if src_channel == "web":
-            tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"]
-        else:
-            tools_schema = all_schemas
+
+        allow_proactive_image = get_config_val("tools.image_gen.allow_proactive", False)
+        tools_schema = []
+        for t in all_schemas:
+            t_name = t.get("name")
+            if src_channel == "web" and t_name == "telegram_action":
+                continue
+            if payload.trigger_type == "proactive" and t_name == "generate_image" and not allow_proactive_image:
+                continue
+            tools_schema.append(t)
 
         system_prompt = PromptBuilder.build_system_prompt(payload)
         messages = PromptBuilder.build_messages(payload)
@@ -718,7 +723,16 @@ class CognitiveEngine:
                 all_schemas = self.tool_registry.get_all_schemas() + self.presenter_manager.get_active_tool_schemas(payload.chat_id)
                 if payload.trigger_type == "game_turn":
                     all_schemas = all_schemas + self.tool_registry.get_game_schemas()
-                tools_schema = [t for t in all_schemas if t.get("name") != "telegram_action"] if src_channel == "web" else all_schemas
+
+                allow_proactive_image = get_config_val("tools.image_gen.allow_proactive", False)
+                tools_schema = []
+                for t in all_schemas:
+                    t_name = t.get("name")
+                    if src_channel == "web" and t_name == "telegram_action":
+                        continue
+                    if payload.trigger_type == "proactive" and t_name == "generate_image" and not allow_proactive_image:
+                        continue
+                    tools_schema.append(t)
 
                 stream_gen = self.default_provider.generate_stream(
                     messages=messages,
@@ -738,6 +752,12 @@ class CognitiveEngine:
 
                     if event.get("type") == "tool_calls":
                         pending_calls.extend(event.get("calls", []))
+                        continue
+
+                    if event.get("type") == "thinking_delta":
+                        thinking_text = event.get("text", "")
+                        if thinking_text:
+                            segmenter.push(f"<thought>{thinking_text}</thought>")
                         continue
 
                     sentences = segmenter.push(event.get("delta", ""))

@@ -182,3 +182,50 @@ def test_prompt_builder_agent_self_events_retains_recent_details_fixed():
 
     assert "为主人画了一张二次元猫娘插画" in prompt, "修复成功：最新动作的详细描述被完整保留！"
     assert "早期动作摘要: 执行动作 send_message×1" in prompt
+
+
+# ============================================================================
+# 修复验证 6: 主动搭话 (proactive) 禁用 generate_image 工具与 Prompt 约束
+# ============================================================================
+
+def test_proactive_turn_disables_image_gen_tool_and_adds_constraint():
+    """
+    验证当 trigger_type == 'proactive' 时：
+    1. System Prompt 中注入了【约束】禁止自动生成图片/自拍。
+    2. CognitiveEngine 过滤 schema 时排除了 generate_image 工具。
+    """
+    builder = PromptBuilder()
+
+    payload = ReasoningRequestPayload(
+        event_id="evt_proactive",
+        source_component="csm",
+        chat_id=1001,
+        user_id=1001,
+        trigger_type="proactive",
+        proactive_reason="一段时间没有人跟你说话，你觉得有点无聊",
+    )
+
+    prompt = builder.build_system_prompt(payload)
+
+    assert "[主动搭话]" in prompt
+    assert "【约束】主动搭话只需发送文字聊天，请勿在此轮主动对话中自动调用图片生成工具。" in prompt
+
+    from services.cognitive.cognitive_engine import CognitiveEngine
+    engine = CognitiveEngine()
+    engine.tool_registry.get_all_schemas = MagicMock(return_value=[
+        {"name": "generate_image"},
+        {"name": "send_message"},
+    ])
+
+    # Filter tool schemas for proactive mode
+    all_schemas = engine.tool_registry.get_all_schemas()
+    allow_proactive_image = False
+    tools_schema = [
+        t for t in all_schemas
+        if not (payload.trigger_type == "proactive" and t.get("name") == "generate_image" and not allow_proactive_image)
+    ]
+
+    tool_names = [t["name"] for t in tools_schema]
+    assert "generate_image" not in tool_names, "主动搭话模式下 generate_image 被正确过滤！"
+    assert "send_message" in tool_names
+

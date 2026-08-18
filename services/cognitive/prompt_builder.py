@@ -82,6 +82,7 @@ class PromptBuilder:
             prompt_parts.append(
                 f"[主动搭话] 你现在决定主动开口说话，原因: {payload.proactive_reason}。"
                 "不要等待被提问，自然地开启或延续话题，语气要符合你现在的心情。"
+                "【约束】主动搭话只需发送文字聊天，请勿在此轮主动对话中自动调用图片生成工具。"
             )
 
         if payload.trigger_type == "game_turn":

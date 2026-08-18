@@ -4,6 +4,7 @@ from services.cognitive.tools.tts_tool import TTSTool
 from services.cognitive.tools.image_gen_tool import ImageGenTool
 from services.cognitive.tools.telegram_action_tool import TelegramActionTool
 from services.cognitive.tools.presenter_control_tool import PresenterControlTool
+from services.cognitive.tools.campus_kb_tool import CampusKBTool
 from services.cognitive.tools.sts2_http_client import Sts2HttpClient
 from services.cognitive.tools.sts2_action_tool import build_sts2_tools
 from services.cognitive.mcp.presenter_manager import PresenterSessionManager
@@ -17,6 +18,7 @@ class ToolRegistry:
         self.register(TTSTool())
         self.register(ImageGenTool())
         self.register(TelegramActionTool())
+        self.register(CampusKBTool())
         if presenter_manager is not None:
             self.register(PresenterControlTool(presenter_manager))
 

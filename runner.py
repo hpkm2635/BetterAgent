@@ -619,6 +619,15 @@ def clean_logs_if_configured():
     If True, purges *.log files in logs/ directory prior to launching microservices.
     """
     try:
+
+        temp_dir = ROOT_DIR / "temp"
+        if temp_dir.exists():
+            for img_file in temp_dir.glob("photo_*.jpg"):
+                try:
+                    img_file.unlink()
+                except Exception:
+                    pass
+                
         from shared.config_loader import get_config_val
         should_clean = get_config_val("app.clean_logs_on_startup", True)
         if should_clean and LOGS_DIR.exists():
@@ -635,10 +644,41 @@ def clean_logs_if_configured():
         pass
 
 
+def kill_stale_port_listeners(ports: list[int]):
+    """
+    Checks if any specified ports are held by zombie/orphaned processes
+    and terminates them before microservice startup to prevent port bind errors (WinError 10048).
+    """
+    if sys.platform == "win32":
+        for port in ports:
+            try:
+                out = subprocess.check_output(
+                    f"netstat -ano | findstr LISTENING | findstr :{port}",
+                    shell=True,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+                for line in out.strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 5 and f":{port}" in parts[1]:
+                        pid = parts[-1]
+                        if pid.isdigit() and int(pid) != os.getpid():
+                            subprocess.run(
+                                f"taskkill /F /PID {pid}",
+                                shell=True,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            print(f" [🧹] Startup Port Cleanup: Terminated stale process PID {pid} listening on port {port}.")
+            except Exception:
+                pass
+
+
 def main():
     enable_vt100_console()
     init_windows_job_object()
     clean_logs_if_configured()
+    kill_stale_port_listeners([8093, 8090, 50000, 10095])
     print_banner()
 
     mgr = ServiceManager()

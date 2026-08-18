@@ -57,10 +57,12 @@ logs/
 *.logs
 temp/
 **/temp/
+services/campus_kb/data/
 *.db
 *.sqlite
 *.sqlite3
 .postgres/
+
 
 # ==========================================
 # 6. 大文件防爆 (AI 模型权重与大型媒体资产)

@@ -26,7 +26,9 @@ class GeminiProvider(BaseLLMProvider):
     def __init__(self, api_key: Optional[str] = None):
         load_dotenv()
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
+        self.provider_name = "gemini"
         self.model_name = get_config_val("llm.gemini.model", "gemini-3.1-flash-lite")
+        self.model = self.model_name
         self.client = None
         if self.api_key and not self.api_key.startswith("your_"):
             try:
@@ -139,6 +141,7 @@ class GeminiProvider(BaseLLMProvider):
                 if meta.get("vision_frame") and isinstance(meta["vision_frame"], dict):
                     vf = meta["vision_frame"]
                     b64_str = vf.get("image_base64", "")
+                    vision_frame_fmt = vf.get("format", "jpeg")
                     if b64_str:
                         import base64
                         try:
@@ -165,8 +168,11 @@ class GeminiProvider(BaseLLMProvider):
             # Attach raw vision frame bytes if available
             if vision_frame_bytes:
                 try:
-                    parts.append(types.Part.from_bytes(data=vision_frame_bytes, mime_type="image/jpeg"))
-                    logger.info(f"👁️ Attached real-time vision frame image ({len(vision_frame_bytes)} bytes) to Gemini Multimodal Context!")
+                    mime_fmt = vision_frame_fmt if 'vision_frame_fmt' in locals() else "jpeg"
+                    if mime_fmt == "jpg":
+                        mime_fmt = "jpeg"
+                    parts.append(types.Part.from_bytes(data=vision_frame_bytes, mime_type=f"image/{mime_fmt}"))
+                    logger.info(f"👁️ Attached real-time vision frame image ({len(vision_frame_bytes)} bytes, image/{mime_fmt}) to Gemini Multimodal Context!")
                 except Exception as v_err:
                     logger.warning(f"Failed to attach vision_frame_bytes to Gemini context: {v_err}")
 
