@@ -103,6 +103,12 @@ h1 {
   gap: 20px;
 }
 
+/* 阻止长文本把 grid 列/页面撑宽：让卡片内容可收缩并换行 */
+.grid-2 > *,
+.card {
+  min-width: 0;
+}
+
 @media (max-width: 760px) {
   .grid-2 { grid-template-columns: 1fr; }
 }
@@ -243,8 +249,13 @@ h1 {
   border-radius: 8px;
   padding: 12px;
   overflow: auto;
+  max-width: 100%;
   font-size: 12px;
   line-height: 1.5;
+  /* 长文本换行，避免撑宽页面 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .table {
@@ -275,4 +286,45 @@ h1 {
   background: rgba(229, 83, 75, 0.12);
   border: 1px solid var(--danger);
   color: var(--danger);
+}
+
+.banner-ok {
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid var(--ok);
+  color: var(--ok);
+}
+
+/* 软删除确认弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  width: min(440px, calc(100vw - 40px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.modal h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.modal p {
+  line-height: 1.6;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
 }

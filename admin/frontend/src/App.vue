@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 
 // ---- API helper (relative paths are proxied by Vite to :8094) ------------
 async function api(path, options = {}) {
@@ -32,11 +32,30 @@ const healthError = ref('')
 const personas = ref([])
 const selectedId = ref('')
 const personaDetail = ref(null)
-const editName = ref('')
-const editMsg = ref('')
+const personaSaveMsg = ref('')
+// 2.1 白名单 6 字段，详情页可编辑
+const PERSONA_FIELDS = [
+  { key: 'name', label: 'name', type: 'input', rows: 1 },
+  { key: 'appearance', label: 'appearance', type: 'textarea', rows: 2 },
+  { key: 'base_prompt', label: 'base_prompt', type: 'textarea', rows: 8 },
+  { key: 'sleepy_prompt', label: 'sleepy_prompt', type: 'textarea', rows: 6 },
+  { key: 'knowledge_scope', label: 'knowledge_scope', type: 'textarea', rows: 3 },
+  { key: 'forbidden_topics', label: 'forbidden_topics', type: 'textarea', rows: 3 },
+]
+const form = reactive({
+  name: '',
+  appearance: '',
+  base_prompt: '',
+  sleepy_prompt: '',
+  knowledge_scope: '',
+  forbidden_topics: '',
+})
+const original = {}
 
 const users = ref([])
 const usersTotal = ref(0)
+const deleteTarget = ref(null) // 待软删除的用户对象
+const userMsg = ref('')
 
 const chatId = ref(0)
 const sessions = ref([])
@@ -78,30 +97,48 @@ async function loadPersonas() {
   }
 }
 
-async function selectPersona(id) {
-  selectedId.value = id
-  editMsg.value = ''
-  try {
-    personaDetail.value = await api(`/api/admin/personas/${id}`)
-    editName.value = personaDetail.value.name || ''
-  } catch (e) {
-    personaDetail.value = null
-    editMsg.value = `加载失败: ${e.message}`
+function fillForm(detail) {
+  for (const f of PERSONA_FIELDS) {
+    form[f.key] = detail?.[f.key] ?? ''
+    original[f.key] = detail?.[f.key] ?? ''
   }
 }
 
-async function saveName() {
-  editMsg.value = ''
+async function selectPersona(id) {
+  selectedId.value = id
+  personaSaveMsg.value = ''
+  try {
+    personaDetail.value = await api(`/api/admin/personas/${id}`)
+    fillForm(personaDetail.value)
+  } catch (e) {
+    personaDetail.value = null
+    personaSaveMsg.value = `加载失败: ${e.message}`
+  }
+}
+
+async function savePersona() {
+  personaSaveMsg.value = ''
+  // 只提交实际改动的字段（避免把空的可选字段写进 YAML）
+  const payload = {}
+  for (const f of PERSONA_FIELDS) {
+    if (form[f.key] !== (original[f.key] ?? '')) {
+      payload[f.key] = form[f.key]
+    }
+  }
+  if (!Object.keys(payload).length) {
+    personaSaveMsg.value = '没有修改'
+    return
+  }
   try {
     await api(`/api/admin/personas/${selectedId.value}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: editName.value }),
+      body: JSON.stringify(payload),
     })
-    editMsg.value = '已保存 ✓'
+    personaSaveMsg.value = '已保存 ✓'
     await selectPersona(selectedId.value)
     await loadPersonas()
   } catch (e) {
-    editMsg.value = `保存失败: ${e.message}`
+    personaSaveMsg.value = `保存失败: ${e.message}`
   }
 }
 
@@ -117,13 +154,22 @@ async function loadUsers() {
   }
 }
 
-async function deleteUser(userId) {
-  if (!window.confirm(`确定软删除用户 ${userId} 吗？`)) return
+function askDelete(user) {
+  userMsg.value = ''
+  deleteTarget.value = user
+}
+
+async function confirmDelete() {
+  const target = deleteTarget.value
+  if (!target) return
   try {
-    await api(`/api/admin/users/${userId}`, { method: 'DELETE' })
+    await api(`/api/admin/users/${target.user_id}`, { method: 'DELETE' })
+    userMsg.value = `用户 ${target.user_id}（${target.display_name}）已软删除`
+    deleteTarget.value = null
     await loadUsers()
   } catch (e) {
     error.value = e.message
+    deleteTarget.value = null
   }
 }
 
@@ -253,15 +299,22 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>人设详情</h2>
+            <span v-if="selectedId" class="muted small">{{ selectedId }}</span>
           </div>
           <template v-if="personaDetail">
-            <div class="field">
-              <label>name</label>
-              <div class="row">
-                <input v-model="editName" class="input" />
-                <button class="btn btn-primary" @click="saveName">保存</button>
-              </div>
-              <p v-if="editMsg" class="muted small">{{ editMsg }}</p>
+            <div v-for="f in PERSONA_FIELDS" :key="f.key" class="field">
+              <label>{{ f.label }}</label>
+              <textarea
+                v-if="f.type === 'textarea'"
+                v-model="form[f.key]"
+                class="textarea"
+                :rows="f.rows"
+              ></textarea>
+              <input v-else v-model="form[f.key]" class="input" />
+            </div>
+            <div class="row field">
+              <button class="btn btn-primary" @click="savePersona">保存修改</button>
+              <span v-if="personaSaveMsg" class="muted small">{{ personaSaveMsg }}</span>
             </div>
             <details class="field">
               <summary>完整 YAML (JSON)</summary>
@@ -278,6 +331,7 @@ onMounted(() => {
           <h2>用户列表 <span class="muted small">(共 {{ usersTotal }} 人)</span></h2>
           <button class="btn" @click="loadUsers">刷新</button>
         </div>
+        <p v-if="userMsg" class="banner banner-ok">{{ userMsg }}</p>
         <table class="table">
           <thead>
             <tr>
@@ -285,7 +339,7 @@ onMounted(() => {
               <th>display_name</th>
               <th>known_facts</th>
               <th>last_seen</th>
-              <th></th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -300,7 +354,7 @@ onMounted(() => {
               </td>
               <td class="muted">{{ u.last_seen ?? '—' }}</td>
               <td>
-                <button class="btn btn-danger" @click="deleteUser(u.user_id)">软删除</button>
+                <button class="btn btn-danger" @click="askDelete(u)">软删除</button>
               </td>
             </tr>
           </tbody>
@@ -357,5 +411,23 @@ onMounted(() => {
         </div>
       </section>
     </main>
+
+    <!-- 软删除确认弹窗 -->
+    <div v-if="deleteTarget" class="modal-overlay" @click.self="deleteTarget = null">
+      <div class="modal">
+        <h3>确认软删除用户</h3>
+        <p>
+          即将软删除用户 <strong>{{ deleteTarget.display_name }}</strong>
+          （user_id: {{ deleteTarget.user_id }}）。
+        </p>
+        <p class="muted small">
+          软删除后该用户将不再出现在列表中；其画像与对话历史等原始数据保留，不会被物理删除。
+        </p>
+        <div class="modal-actions">
+          <button class="btn" @click="deleteTarget = null">取消</button>
+          <button class="btn btn-danger" @click="confirmDelete">确认软删除</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
