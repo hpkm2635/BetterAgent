@@ -50,7 +50,7 @@ func IsValidTransition(from, to State) bool {
 	}
 	switch from {
 	case StateIdle:
-		return to == StateThinking || to == StateListening || to == StateStreamingSTT || to == StateSleeping || to == StateMoodyRest
+		return to == StateThinking || to == StateListening || to == StateStreamingSTT || to == StateStreamingTTS || to == StateSleeping || to == StateMoodyRest
 	case StateListening:
 		return to == StateStreamingSTT || to == StateThinking || to == StateIdle || to == StateInterrupted || to == StateCancelling
 	case StateStreamingSTT:

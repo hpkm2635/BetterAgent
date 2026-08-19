@@ -1,99 +1,79 @@
-# LLM Provider Expansion & Factory Pattern Implementation Plan
+# Implementation Plan - STS2 Gameplay Happy Path Fix & Robust JSON Tool Call Parser
 
-This plan details the design and implementation for scaling BetterAgent's LLM Provider architecture. It introduces a unified **`ProviderFactory`**, an **`OpenAIProvider`** (supporting OpenAI, DeepSeek, Qwen/DashScope, Moonshot, Ollama, and vLLM via OpenAI-compatible REST API), updated base class probes (`health_check`, `get_context_window`), Thinking Delta isolation (DeepSeek-R1 / Qwen-Thought), OpenAI Tool Call ID matching, and proxy security/privacy warning mechanisms.
+Deep diagnostic analysis of `logs/betteragent_core_stdout.log`, `logs/sts2_poller.log`, and `logs/cognitive_service_stderr.log` revealed the exact root cause causing Qwen STS2 gameplay auto-pilot to stall.
+
+## Diagnostic Findings & Root Cause Analysis
+
+> [!IMPORTANT]
+> **Root Cause 1: Non-Greedy JSON Regex Truncating Nested Multi-Line Tool Call Objects**
+> - **Error Traceback** in `logs/cognitive_service_stderr.log`:
+>   ```text
+>   Failed to parse text-based tool call JSON: {
+>     "tool": "get_game_state",
+>     "arguments": {
+>       "format": "json"
+>     } (Expecting ',' delimiter: line 5 column 4 (char 71))
+>   ```
+> - **Mechanism**:
+>   - In `OpenAIProvider._extract_text_tool_calls()`, the regex `pattern_json_block = r'(?:```(?:json)?\s*)?({(?:\s*"tool"\s*|\s*"name"\s*|\s*"function"\s*):.*?})(?:\s*```)?'` used non-greedy `.*?`.
+>   - When Qwen emitted multi-line nested JSON (`"arguments": {"format": "json"}`), `.*?` stopped at the FIRST closing brace `}` inside `"arguments"`, cutting off the outer `}` of the JSON object.
+>   - `json.loads()` failed, causing `process_json_block()` to return `False`.
+>   - As a result, Qwen's tool calls were discarded, no actions reached STS2 game server, and `stream_reasoning_loop()` hit its 20-round budget limit.
+
+> [!WARNING]
+> **Root Cause 2: Autopilot Game Turn Loop Stalling**
+> - Because Qwen's tool calls were rejected due to JSON truncation, `sts2_poller` remained stuck on `monster_player_turn`.
+> - Every 50 seconds, `sts2_poller` re-fired `monster_player_turn` to NATS, causing an infinite stall loop without any cards being played or turns ended.
+
+---
 
 ## User Review Required
 
 > [!IMPORTANT]
-> - **OpenAI SDK Dependency**: Implementing `OpenAIProvider` requires adding `openai>=1.0.0` to Python dependencies (`pyproject.toml` / `requirements.txt`).
-> - **Thinking Delta Isolation**: For reasoning models (DeepSeek-R1, Qwen2.5-Coder-Thought), `delta.reasoning_content` is yielded as `{"type": "thinking_delta", "text": ...}`. This separates thinking thoughts from final speech text, preventing TTS from attempting to read out internal reasoning tokens.
-> - **Tool Call ID Consistency**: OpenAI API strictly requires matching `tool_call_id` in subsequent `role: "tool"` messages. We maintain a deterministic ID mapping in `_build_messages()`.
-> - **Security & Privacy Warning**: Using custom non-official `base_url` endpoints (third-party relay proxies) will trigger a high-visibility terminal warning during service initialization to protect project maintainers from issue reports caused by third-party proxy failures.
-
-## Open Questions
-
-None. All technical design requirements have been incorporated into this plan.
+> **Key Architectural Choices for Approval**:
+> 1. **Balanced Bracket JSON Extractor (`_extract_json_objects`)**: Replace fragile non-greedy regexes with a depth-tracking, string-escaped JSON bracket parser in `OpenAIProvider`. This guarantees 100% precise extraction of nested multi-line JSON objects of arbitrary depth without truncation.
+> 2. **Prose & Codeblock Co-Existence**: Retain support for XML `<tool_call>`, Markdown ````json ... ```` codeblocks, and `👉 combat_play_card(...)` prose syntax alongside balanced JSON parsing.
 
 ---
 
 ## Proposed Changes
 
-### Provider Core & Base Architecture
+### Component 1: Cognitive Service (`services/cognitive/`)
 
-#### [MODIFY] [base.py](file:///d:/projects/BetterAgent/services/cognitive/providers/base.py)
-- Add abstract method `async health_check(self) -> bool` to probe API key and connectivity.
-- Add `get_context_window(self) -> int` returning the model's maximum Token budget (default 128,000).
-- Add `supports_tool_calling(self) -> bool` (default `True`).
-- Add helper method `_check_and_log_security_notice(base_url: str, official_domains: List[str])` to log security/privacy warnings when third-party endpoints are configured.
-
-#### [NEW] [openai_provider.py](file:///d:/projects/BetterAgent/services/cognitive/providers/openai_provider.py)
-- Implement `OpenAIProvider(BaseLLMProvider)` driven by `AsyncOpenAI`.
-- Support configuration for `api_key`, `base_url`, `model`, `temperature`, and `max_tokens`.
-- Implement `_build_messages()`:
-  - Converts internal message format (including `vision_frame` base64 data URIs) into OpenAI chat completion messages.
-  - **Tool Call ID History Mapping**: Builds deterministic `call_xxx` ID mappings between `assistant` tool calls and subsequent `role: "tool"` responses to guarantee OpenAI 400 Bad Request validation passes.
-- Implement `_build_tools()` converting internal JSON schemas into OpenAI `tools` format (`type: "function"`).
-- Implement `generate_stream()`:
-  - **Thinking Delta Extraction**: Checks `hasattr(delta, "reasoning_content")` and yields `{"type": "thinking_delta", "text": delta.reasoning_content}` for DeepSeek-R1 / Qwen-Thought.
-  - Streaming text delta parsing (`delta.content`), tool calls accumulation, and `cancel_event` collaborative cancellation.
-- Add robust exception handling for non-JSON/HTML 502/504 gateway proxy errors.
-- Implement `health_check()` via lightweight `/models` list request or single-token ping.
-
-#### [NEW] [factory.py](file:///d:/projects/BetterAgent/services/cognitive/providers/factory.py)
-- Implement `ProviderFactory` with class registration and dynamic provider instantiation.
-- Support named presets: `gemini`, `claude`, `openai`, `deepseek`, `qwen`, `ollama`.
-- Read configuration from `config/config.yaml` (`llm.default_provider`, `llm.openai`, `llm.deepseek`, `llm.ollama`, etc.).
-- Maintain singleton instance cache to prevent redundant client initializations.
+#### [MODIFY] [openai_provider.py](file:///d:/projects/BetterAgent/services/cognitive/providers/openai_provider.py)
+- Implement `_extract_json_objects(text: str)` helper:
+  - Scans `text` for `{` containing `"tool"`, `"name"`, or `"function"` keys.
+  - Tracks brace depth (`{` / `}`) while respecting string quotes `"` and backslash escapes `\` to isolate full, untruncated JSON strings.
+- Refactor `_extract_text_tool_calls()`:
+  - First run `_extract_json_objects()` to extract all valid multi-line / nested JSON tool call blocks.
+  - Replace parsed JSON blocks in text with empty strings.
+  - Then run `pattern_prose` regex for `👉 func(...)` prose tool calls.
+  - Return cleaned user-facing text and complete array of parsed `tool_calls`.
 
 ---
 
-### Integration & Configuration
+### Component 2: Verification Test Suite (`tests/`)
 
-#### [MODIFY] [cognitive_engine.py](file:///d:/projects/BetterAgent/services/cognitive/cognitive_engine.py)
-- Update `CognitiveEngine.__init__()` to use `ProviderFactory` for lazy/dynamic provider instantiation instead of hardcoded `self.providers = {"gemini": ..., "claude": ...}`.
-- In `stream_reasoning_loop`, handle `thinking_delta` stream events by appending reasoning text into `<thought>...</thought>` blocks so it is excluded from TTS audio generation.
-- Use `provider.get_context_window()` when evaluating token trimming budgets.
-
-#### [MODIFY] [config.yaml](file:///d:/projects/BetterAgent/config/config.yaml)
-- Add provider configuration blocks for `openai`, `deepseek`, `qwen`, and `ollama`:
-  ```yaml
-  llm:
-    default_provider: "gemini"
-    gemini:
-      model: "gemini-3.1-flash-lite"
-    claude:
-      model: "claude-3-5-sonnet-20241022"
-    openai:
-      model: "gpt-4o"
-      base_url: "https://api.openai.com/v1"
-    deepseek:
-      model: "deepseek-chat"
-      base_url: "https://api.deepseek.com/v1"
-    ollama:
-      model: "qwen2.5-coder:7b"
-      base_url: "http://127.0.0.1:11434/v1"
-  ```
-
----
-
-### Verification & Test Suite
-
-#### [NEW] [test_sprint9_provider_factory.py](file:///d:/projects/BetterAgent/tests/test_sprint9_provider_factory.py)
-- Test `ProviderFactory.get_provider()` for registered providers and fallbacks.
-- Test `OpenAIProvider.generate_stream()` with mock AsyncOpenAI stream events:
-  - Test text delta & function tool calls.
-  - Test `reasoning_content` -> `thinking_delta` extraction for DeepSeek-R1.
-- Test `OpenAIProvider._build_messages()` multi-modal `vision_frame` formatting and Tool Call ID mapping consistency.
-- Test non-official `base_url` security notice warning log triggers.
-- Test non-JSON HTML 502 proxy error handling and fallback messages.
+#### [MODIFY] [test_sprint9_provider_factory.py](file:///d:/projects/BetterAgent/tests/test_sprint9_provider_factory.py)
+- Add unit test `test_openai_provider_nested_multiline_json_tool_call()`:
+  - Feeds multi-line nested JSON (`{"tool": "get_game_state", "arguments": {"format": "json"}}`) into `generate_stream()`.
+  - Verifies that `json.loads()` succeeds, no truncation occurs, and `tool_calls` contains `{"name": "get_game_state", "args": {"format": "json"}}`.
 
 ---
 
 ## Verification Plan
 
 ### Automated Tests
-- Run `pytest tests/test_sprint9_provider_factory.py -v`
-- Run full test suite: `pytest tests/ -v`
+- Run Pytest for provider factory & tool call parser:
+  ```powershell
+  $env:PYTHONPATH="."; .\.venv\Scripts\pytest tests/test_sprint9_provider_factory.py -v
+  ```
+- Run full pytest regression suite across all 15 test files:
+  ```powershell
+  $env:PYTHONPATH="."; .\.venv\Scripts\pytest tests/ -v
+  ```
 
 ### Manual Verification
-- Test switching `llm.default_provider` in `config/config.yaml` to `openai` / `deepseek` / `ollama` and verifying startup health check and DeepSeek-R1 reasoning content isolation.
+- Launch microservices with `python runner.py` or `.\scripts\win_start.ps1`.
+- Trigger game auto-pilot with `/game_start` in web UI (`http://localhost:5173`) while running STS2 singleplayer.
+- Verify `logs/sts2_poller.log` and `logs/cognitive_service.log` to confirm Qwen successfully executes `get_game_state`, plays cards (`combat_play_card`), and ends turn (`combat_end_turn`), advancing the game state smoothly.

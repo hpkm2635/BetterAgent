@@ -299,8 +299,25 @@ export const useChatSessionStore = defineStore('chat-session', () => {
 
   function appendSessionMessage(sessionId: string, message: ChatHistoryItem) {
     ensureSession(sessionId)
+    const existing = sessionMessages.value[sessionId] ?? []
+    const lastMsg = existing.at(-1)
+
+    // Deduplication guard: drop duplicate or near-duplicate assistant messages sharing common prefixes
+    if (message.role === 'assistant' && lastMsg && lastMsg.role === 'assistant') {
+      const newText = (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).trim()
+      const lastText = (typeof lastMsg.content === 'string' ? lastMsg.content : JSON.stringify(lastMsg.content)).trim()
+      if (newText && lastText) {
+        const prefix1 = newText.slice(0, 15)
+        const prefix2 = lastText.slice(0, 15)
+        if (newText === lastText || (prefix1.length >= 10 && prefix1 === prefix2)) {
+          console.warn('[SessionStore] Dropped duplicate/overlapping assistant message append:', newText.slice(0, 30))
+          return
+        }
+      }
+    }
+
     replaceSessionMessages(sessionId, [
-      ...(sessionMessages.value[sessionId] ?? []),
+      ...existing,
       message,
     ])
   }

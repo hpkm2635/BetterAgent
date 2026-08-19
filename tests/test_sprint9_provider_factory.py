@@ -253,3 +253,223 @@ async def test_openai_provider_qwen_codeblock_tool_call_interception():
     assert len(calls) == 1
     assert calls[0]["name"] == "get_game_state"
     assert calls[0]["args"] == {"format": "json"}
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_qwen_prose_tool_call_interception():
+    """验证 Qwen 在拟人回复中吐出 '👉 get_game_state' 时被拦截并解析为 tool_calls"""
+    provider = OpenAIProvider(api_key="sk-test", provider_name="qwen")
+
+    raw_content = (
+        "喵？新状况来啦！让我先看看现在的局面~\n"
+        "👉 get_game_state"
+    )
+
+    chunk = MagicMock()
+    chunk.choices = [MagicMock(delta=MagicMock(content=raw_content))]
+    chunk.choices[0].delta.reasoning_content = None
+    chunk.choices[0].delta.tool_calls = None
+
+    class MockAsyncStream:
+        async def __aiter__(self):
+            yield chunk
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=MockAsyncStream())
+    provider._client = mock_client
+
+    events = []
+    async for ev in provider.generate_stream([{"role": "user", "content": "hi"}]):
+        events.append(ev)
+
+    text_events = [e for e in events if e.get("type") == "text"]
+    full_text = "".join(e.get("delta", "") for e in text_events)
+    assert "👉" not in full_text
+    assert "get_game_state" not in full_text
+    assert "喵？新状况来啦！" in full_text
+
+    tool_events = [e for e in events if e.get("type") == "tool_calls"]
+    assert len(tool_events) == 1
+    calls = tool_events[0]["calls"]
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_game_state"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_qwen_prose_tool_call_with_arguments():
+    """验证 Qwen 在拟人回复中吐出带参数的工具调用时（如 👉 combat_play_card(card_index=2, target="KIN_PRIEST_0")），参数能被正确解析"""
+    provider = OpenAIProvider(api_key="sk-test", provider_name="qwen")
+
+    raw_content = (
+        "喵~主人！看我的这招攻击！\n"
+        '👉 combat_play_card(card_index=2, target="KIN_PRIEST_0")'
+    )
+
+    chunk = MagicMock()
+    chunk.choices = [MagicMock(delta=MagicMock(content=raw_content))]
+    chunk.choices[0].delta.reasoning_content = None
+    chunk.choices[0].delta.tool_calls = None
+
+    class MockAsyncStream:
+        async def __aiter__(self):
+            yield chunk
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=MockAsyncStream())
+    provider._client = mock_client
+
+    events = []
+    async for ev in provider.generate_stream([{"role": "user", "content": "hi"}]):
+        events.append(ev)
+
+    text_events = [e for e in events if e.get("type") == "text"]
+    full_text = "".join(e.get("delta", "") for e in text_events)
+    assert "👉" not in full_text
+    assert "combat_play_card" not in full_text
+    assert "喵~主人！" in full_text
+
+    tool_events = [e for e in events if e.get("type") == "tool_calls"]
+    assert len(tool_events) == 1
+    calls = tool_events[0]["calls"]
+    assert len(calls) == 1
+    assert calls[0]["name"] == "combat_play_card"
+    assert calls[0]["args"] == {"card_index": 2, "target": "KIN_PRIEST_0"}
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_qwen_json_chunk_buffering_and_sts2_normalization():
+    """验证 Qwen 分块吐出 JSON（如 { "tool": "sts2_get_game_state", ... }）时：
+    1. 零 JSON 碎片泄露给 text delta
+    2. sts2_ 前缀被成功归一化为 get_game_state
+    """
+    provider = OpenAIProvider(api_key="sk-test", provider_name="qwen")
+
+    chunks_data = [
+        "喵呜，让我看看现在的局势！\n",
+        '{\n  "tool": "sts2_get_game_state",\n',
+        '  "parameters": {\n',
+        '    "format": "json"\n',
+        '  }\n}'
+    ]
+
+    async def gen_chunks():
+        for text in chunks_data:
+            chunk = MagicMock()
+            chunk.choices = [MagicMock(delta=MagicMock(content=text))]
+            chunk.choices[0].delta.reasoning_content = None
+            chunk.choices[0].delta.tool_calls = None
+            yield chunk
+
+    class MockAsyncStream:
+        def __aiter__(self):
+            return gen_chunks()
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=MockAsyncStream())
+    provider._client = mock_client
+
+    events = []
+    async for ev in provider.generate_stream([{"role": "user", "content": "hi"}]):
+        events.append(ev)
+
+    text_events = [e for e in events if e.get("type") == "text"]
+    full_text = "".join(e.get("delta", "") for e in text_events)
+
+    # 验证没有任何 JSON 字符泄露
+    assert "{" not in full_text
+    assert "sts2_get_game_state" not in full_text
+    assert "喵呜，让我看看现在的局势！" in full_text
+
+    # 验证成功提取 normalized 工具调用
+    tool_events = [e for e in events if e.get("type") == "tool_calls"]
+    assert len(tool_events) == 1
+    calls = tool_events[0]["calls"]
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_game_state"
+    assert calls[0]["args"] == {"format": "json"}
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_qwen_malformed_json_silent_discard():
+    """验证 Qwen 吐出无法解析的畸形 JSON 时，能在 Provider 内部被静默丢弃（Discard），绝不上抛给 text delta"""
+    provider = OpenAIProvider(api_key="sk-test", provider_name="qwen")
+
+    raw_malformed = '{\n  "tool": "",\n  "parameters": }\n'
+
+    chunk = MagicMock()
+    chunk.choices = [MagicMock(delta=MagicMock(content=raw_malformed))]
+    chunk.choices[0].delta.reasoning_content = None
+    chunk.choices[0].delta.tool_calls = None
+
+    class MockAsyncStream:
+        async def __aiter__(self):
+            yield chunk
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=MockAsyncStream())
+    provider._client = mock_client
+
+    events = []
+    async for ev in provider.generate_stream([{"role": "user", "content": "hi"}]):
+        events.append(ev)
+
+    text_events = [e for e in events if e.get("type") == "text"]
+    full_text = "".join(e.get("delta", "") for e in text_events)
+
+    # 畸形 JSON 块应该被完全静默丢弃
+    assert full_text == ""
+    tool_events = [e for e in events if e.get("type") == "tool_calls"]
+    assert len(tool_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_qwen_tool_use_nested_json_extraction():
+    """验证 Qwen 吐出带有 tool_use 和 embedded text 的嵌套 JSON 时：
+    1. 提取出干净的对话文本 "喵？局势有变喵，让我检查一下当前状态！"
+    2. JSON 结构被完全剥离，只生成对应的 tool_calls
+    """
+    provider = OpenAIProvider(api_key="sk-test", provider_name="qwen")
+
+    chunks_data = [
+        '{\n  "tool_use": {\n',
+        '    "id": "toolu_01L8bX7Z5Q9k2vW3mP1nR4sT",\n',
+        '    "name": "sts2_get_game_state",\n',
+        '    "input": {\n      "format": "json"\n    }\n',
+        '  },\n  "text": "喵？局势有变喵，让我检查一下当前状态！"\n}'
+    ]
+
+    async def gen_chunks():
+        for text in chunks_data:
+            chunk = MagicMock()
+            chunk.choices = [MagicMock(delta=MagicMock(content=text))]
+            chunk.choices[0].delta.reasoning_content = None
+            chunk.choices[0].delta.tool_calls = None
+            yield chunk
+
+    class MockAsyncStream:
+        def __aiter__(self):
+            return gen_chunks()
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=MockAsyncStream())
+    provider._client = mock_client
+
+    events = []
+    async for ev in provider.generate_stream([{"role": "user", "content": "hi"}]):
+        events.append(ev)
+
+    text_events = [e for e in events if e.get("type") == "text"]
+    full_text = "".join(e.get("delta", "") for e in text_events)
+
+    # 验证 JSON 代码无泄露，对话文本保留
+    assert "tool_use" not in full_text
+    assert "{" not in full_text
+    assert "喵？局势有变喵，让我检查一下当前状态！" in full_text
+
+    # 验证提取出工具调用
+    tool_events = [e for e in events if e.get("type") == "tool_calls"]
+    assert len(tool_events) == 1
+    calls = tool_events[0]["calls"]
+    assert len(calls) == 1
+    assert calls[0]["name"] == "get_game_state"
+    assert calls[0]["args"] == {"format": "json"}

@@ -16,6 +16,7 @@ from shared.subjects import (
 )
 from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayload
 from shared.logger import setup_logger
+from shared.text_utils import clean_tts_text
 from services.tts.cosyvoice_client import CosyVoiceClient
 from services.tts.viseme_generator import text_to_visemes
 from services.tts.audio_normalizer import add_wav_header
@@ -87,9 +88,11 @@ async def main():
     async def synthesize_and_publish_tts(act: ActionDecisionPayload, cancel_event: asyncio.Event):
         chat_id = act.chat_id
         gen_id = getattr(act, "generation_id", 1)
-        text = act.text_content or ""
+        raw_text = act.text_content or ""
+        text = clean_tts_text(raw_text)
 
-        if not text.strip():
+        if not text:
+            logger.info(f"🧹 Skipped non-pronounceable or pure emoji/code text '{raw_text[:20]}' for chat_id={chat_id}")
             return
 
         try:

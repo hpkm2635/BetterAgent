@@ -33,7 +33,7 @@ const hpBarColor = computed(() => {
   >
     <div
       v-if="isLikelyActive"
-      class="pointer-events-none absolute right-4 top-4 z-25 min-w-[240px] select-none"
+      class="pointer-events-auto absolute right-4 top-16 z-30 min-w-[240px] select-none"
     >
       <div
         class="border border-neutral-200/40 dark:border-white/10 rounded-2xl bg-white/80 dark:bg-neutral-900/85 p-3.5 shadow-xl backdrop-blur-xl transition-all duration-300"

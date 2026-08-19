@@ -36,7 +36,17 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def get_tool(self, name: str) -> Optional[BaseTool]:
-        return self._tools.get(name)
+        if name in self._tools:
+            return self._tools[name]
+        if not name.startswith("sts2_") and f"sts2_{name}" in self._tools:
+            return self._tools[f"sts2_{name}"]
+        if name.startswith("sts2_") and name[5:] in self._tools:
+            return self._tools[name[5:]]
+        if name == "combat_play_card":
+            return self._tools.get("sts2_play_card")
+        if name == "combat_end_turn":
+            return self._tools.get("sts2_end_turn")
+        return None
 
     def get_all_schemas(self) -> List[Dict[str, Any]]:
         return [{

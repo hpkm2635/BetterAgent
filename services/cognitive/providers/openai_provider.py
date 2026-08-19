@@ -9,10 +9,12 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from services.cognitive.providers.base import BaseLLMProvider
 from shared.config_loader import get_config_val
+from shared.logger import setup_logger
 
 load_dotenv()
 
 logger = logging.getLogger("openai_provider")
+qwen_raw_logger = setup_logger("qwen_raw_json")
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -78,11 +80,8 @@ class OpenAIProvider(BaseLLMProvider):
 
     def supports_vision(self) -> bool:
         model_lower = self.model.lower()
-        if "vl" in model_lower or "vision" in model_lower or "gpt-4o" in model_lower or "gemini" in model_lower:
-            return True
-        if self.provider_name.lower() == "qwen":
-            return "vl" in model_lower
-        return False
+        provider_lower = self.provider_name.lower()
+        return provider_lower in ["qwen", "gemini"] or any(k in model_lower for k in ["gpt-4o", "gpt-4-turbo", "vision", "vl", "qwen", "claude", "gemini"])
 
     def supports_tool_calling(self) -> bool:
         # Most modern OpenAI models support tool calling; DeepSeek-R1 pure reasoning can disable if needed
@@ -250,6 +249,8 @@ class OpenAIProvider(BaseLLMProvider):
         1. <tool_call>{"name": "func", "arguments": {...}}</tool_call>
         2. ```json\n{"tool": "func", ...}\n```
         3. ```json{ "tool": "func", ... }```
+        4. {"tool": "func", "parameters": {...}}
+        5. 👉 func(arg=val) or Action: func(arg=val)
         Returns (cleaned_user_text, list_of_parsed_tool_calls).
         """
         if not text:
@@ -258,16 +259,45 @@ class OpenAIProvider(BaseLLMProvider):
         tool_calls: List[Dict[str, Any]] = []
 
         pattern_xml = r'<tool_call>\s*(.*?)\s*(?:</tool_call>|$)'
-        pattern_json_block = r'(?:```(?:json)?\s*)?({(?:\s*"tool"\s*|\s*"name"\s*|\s*"function"\s*):.*?})(?:\s*```)?'
+        pattern_json_block = r'(?:```(?:json)?\s*)?({(?:\s*"tool"\s*|\s*"tool_use"\s*|\s*"tool_call"\s*|\s*"name"\s*|\s*"function"\s*|\s*"action"\s*):[\s\S]*?})(?:\s*```)?'
 
-        def process_json_block(raw_json: str) -> bool:
+        def normalize_tool_name(raw_name: str) -> str:
+            name = raw_name.strip()
+            if name.startswith("sts2_"):
+                name = name[5:]
+            if name in ("get_game_state", "play_card", "end_turn", "use_potion", "discard_potion", "claim_reward", "select_card_reward", "skip_card_reward", "combat_select_card", "combat_confirm_selection", "combat_play_card", "combat_end_turn"):
+                return name
+            return name
+
+        def process_json_block(raw_json: str) -> tuple[bool, str]:
+            s = raw_json.strip()
+            # Balance unclosed curly braces for nested JSON parameters
+            open_count = s.count('{')
+            close_count = s.count('}')
+            if open_count > close_count:
+                s += '}' * (open_count - close_count)
+
             try:
-                parsed = json.loads(raw_json.strip())
-                name = parsed.get("name") or parsed.get("tool") or parsed.get("function") or ""
-                args = parsed.get("arguments") or parsed.get("args") or parsed.get("parameters") or {}
+                parsed = json.loads(s)
+                if not isinstance(parsed, dict):
+                    return False, ""
+                
+                # Check for tool_use or tool_call nested dictionary structure
+                tool_use_obj = parsed.get("tool_use") or parsed.get("tool_call")
+                if isinstance(tool_use_obj, dict):
+                    raw_name = tool_use_obj.get("name") or tool_use_obj.get("tool") or ""
+                    args = tool_use_obj.get("input") or tool_use_obj.get("parameters") or tool_use_obj.get("args") or {}
+                else:
+                    raw_name = parsed.get("name") or parsed.get("tool") or parsed.get("function") or parsed.get("action") or ""
+                    args = parsed.get("arguments") or parsed.get("args") or parsed.get("parameters") or parsed.get("action_input") or {}
+
+                if not raw_name:
+                    return False, ""
+
+                name = normalize_tool_name(str(raw_name))
 
                 if not args and isinstance(parsed, dict):
-                    args = {k: v for k, v in parsed.items() if k not in ("tool", "name", "function", "type")}
+                    args = {k: v for k, v in parsed.items() if k not in ("tool", "tool_use", "tool_call", "name", "function", "action", "type", "parameters", "text", "content")}
 
                 if isinstance(args, str):
                     try:
@@ -275,29 +305,105 @@ class OpenAIProvider(BaseLLMProvider):
                     except Exception:
                         pass
 
+                extracted_text = parsed.get("text") or parsed.get("content") or ""
+
                 if name:
                     tool_calls.append({
                         "id": f"call_text_{len(tool_calls)}",
                         "name": name,
                         "args": args if isinstance(args, dict) else {"raw": args},
                     })
-                    return True
+                    try:
+                        import time
+                        log_entry = {
+                            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "source": "text_based_json",
+                            "raw_json": s,
+                            "extracted_name": name,
+                            "extracted_args": args,
+                        }
+                        qwen_raw_logger.info(json.dumps(log_entry, ensure_ascii=False))
+                    except Exception:
+                        pass
+                    return True, str(extracted_text)
             except Exception as e:
                 logger.warning(f"Failed to parse text-based tool call JSON: {raw_json} ({e})")
-            return False
+            return False, ""
 
         def replacer_xml(match):
-            if process_json_block(match.group(1)):
-                return ""
-            return match.group(0)
+            success, speech_text = process_json_block(match.group(1))
+            return speech_text
 
         def replacer_json(match):
-            if process_json_block(match.group(1)):
-                return ""
-            return match.group(0)
+            success, speech_text = process_json_block(match.group(1))
+            return speech_text
 
         cleaned_text = re.sub(pattern_xml, replacer_xml, text, flags=re.DOTALL)
-        cleaned_text = re.sub(pattern_json_block, replacer_json, cleaned_text, flags=re.DOTALL).strip()
+        cleaned_text = re.sub(pattern_json_block, replacer_json, cleaned_text, flags=re.DOTALL)
+
+        # 4. Prose Tool Call Recommendations Interception with Full Argument Parsing
+        pattern_prose = r'(?:👉|Action:)\s*`?([a-zA-Z0-9_]+)`?(?:\((.*?)\))?'
+
+        def _parse_prose_args(args_str: Optional[str]) -> Dict[str, Any]:
+            if not args_str or not args_str.strip():
+                return {}
+            s = args_str.strip()
+            # Try JSON loads
+            if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+                try:
+                    val = json.loads(s)
+                    return val if isinstance(val, dict) else {"raw": val}
+                except Exception:
+                    pass
+            # Try kwarg key=val parsing
+            res: Dict[str, Any] = {}
+            kwarg_matches = re.findall(r'([a-zA-Z0-9_]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s,]+))', s)
+            if kwarg_matches:
+                for key, v_dq, v_sq, v_raw in kwarg_matches:
+                    val_str = v_dq if v_dq != '' else (v_sq if v_sq != '' else v_raw)
+                    if val_str.lower() == "true":
+                        val = True
+                    elif val_str.lower() == "false":
+                        val = False
+                    elif val_str.isdigit():
+                        val = int(val_str)
+                    else:
+                        try:
+                            val = float(val_str)
+                        except ValueError:
+                            val = val_str
+                    res[key] = val
+                return res
+            # Fallback for positional raw string/int
+            try:
+                val = json.loads(s)
+                return {"arg": val}
+            except Exception:
+                return {"arg": s.strip('"\'')}
+
+        def replacer_prose(match):
+            raw_t_name = match.group(1)
+            t_name = normalize_tool_name(raw_t_name)
+            raw_args_str = match.group(2)
+            parsed_args = _parse_prose_args(raw_args_str)
+
+            # Default format="json" for get_game_state ONLY when no explicit args were passed
+            if t_name == "get_game_state" and not parsed_args:
+                parsed_args = {"format": "json"}
+
+            tool_calls.append({
+                "id": f"call_prose_{len(tool_calls)}",
+                "name": t_name,
+                "args": parsed_args,
+            })
+            return ""
+
+        cleaned_text = re.sub(pattern_prose, replacer_prose, cleaned_text, flags=re.IGNORECASE)
+
+        # 5. Clean up & silently discard any leftover malformed JSON blocks
+        pattern_malformed_json = r'\{\s*"(?:tool|tool_use|tool_call|name|function|action)"\s*:[\s\S]*?\}'
+        cleaned_text = re.sub(pattern_malformed_json, "", cleaned_text).strip()
+
         return cleaned_text, tool_calls
 
     async def generate_stream(
@@ -349,16 +455,20 @@ class OpenAIProvider(BaseLLMProvider):
                         yielded_something = True
                         yield {"type": "thinking_delta", "text": reasoning_content}
 
-                    # 2. Text Delta (with <tool_call> and ```json codeblock interception)
+                    # 2. Text Delta (with full JSON & pseudo-tool call buffering)
                     content_delta = getattr(delta, "content", None)
                     if content_delta:
                         text_buffer += content_delta
 
-                        # Check for start of tool_call or json codeblock tag
+                        # Check for start of tool_call, json codeblock, JSON object, or prose tool call indicators
                         xml_idx = text_buffer.find("<tool_call")
                         codeblock_idx = text_buffer.find("```")
-                        
-                        indices = [i for i in (xml_idx, codeblock_idx) if i != -1]
+                        json_match = re.search(r'\{\s*"(?:tool|tool_use|tool_call|name|function|action)"', text_buffer)
+                        json_idx = json_match.start() if json_match else -1
+                        prose_idx = text_buffer.find("👉")
+                        action_idx = text_buffer.find("Action:")
+
+                        indices = [i for i in (xml_idx, codeblock_idx, json_idx, prose_idx, action_idx) if i != -1]
                         if indices:
                             min_idx = min(indices)
                             if min_idx > 0:
@@ -366,8 +476,39 @@ class OpenAIProvider(BaseLLMProvider):
                                 text_buffer = text_buffer[min_idx:]
                                 yielded_something = True
                                 yield {"type": "text", "delta": clean_prefix}
+
+                            # Check if the tool call block starting at index 0 has completed
+                            has_closed_block = (
+                                ("</tool_call>" in text_buffer) or
+                                (text_buffer.startswith("```") and text_buffer.count("```") >= 2) or
+                                (text_buffer.startswith("{") and text_buffer.count("{") <= text_buffer.count("}")) or
+                                (text_buffer.startswith("👉") and ("\n" in text_buffer or ")" in text_buffer)) or
+                                (text_buffer.startswith("Action:") and ("\n" in text_buffer or ")" in text_buffer))
+                            )
+                            if has_closed_block:
+                                cleaned_text, text_tool_calls = self._extract_text_tool_calls(text_buffer)
+                                text_buffer = ""
+                                if cleaned_text:
+                                    yielded_something = True
+                                    yield {"type": "text", "delta": cleaned_text}
+                                if text_tool_calls:
+                                    for tc in text_tool_calls:
+                                        idx = len(tool_calls_accumulator)
+                                        tool_calls_accumulator[idx] = {
+                                            "id": tc["id"],
+                                            "name": tc["name"],
+                                            "args_str": json.dumps(tc["args"], ensure_ascii=False),
+                                        }
                         else:
-                            if text_buffer.endswith(("<", "<t", "<to", "<too", "<tool", "<tool_", "`", "``")):
+                            json_starts = (
+                                "{", "{\n", "{\r\n", "{\t", "{\"",
+                                "{\"t", "{\"to", "{\"too", "{\"tool", "{\"tool_", "{\"tool_u", "{\"tool_us", "{\"tool_use", "{\"tool_c", "{\"tool_ca", "{\"tool_cal", "{\"tool_call",
+                                "{\"n", "{\"na", "{\"nam", "{\"name",
+                                "{\"f", "{\"fu", "{\"fun", "{\"func", "{\"funct", "{\"functi", "{\"function",
+                                "{\"a", "{\"ac", "{\"act", "{\"acti", "{\"action"
+                            )
+                            tag_starts = ("<", "<t", "<to", "<too", "<tool", "<tool_", "`", "``", "👉", "A", "Ac", "Act", "Acti", "Action", "Action:")
+                            if text_buffer.endswith(json_starts) or text_buffer.endswith(tag_starts):
                                 pass
                             else:
                                 yielded_something = True
@@ -436,6 +577,18 @@ class OpenAIProvider(BaseLLMProvider):
                         "name": call_data["name"],
                         "args": args_dict,
                     })
+
+                try:
+                    import time
+                    log_entry = {
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "provider": self.provider_name,
+                        "model": self.model,
+                        "parsed_calls": parsed_calls,
+                    }
+                    qwen_raw_logger.info(json.dumps(log_entry, ensure_ascii=False))
+                except Exception:
+                    pass
 
                 yield {"type": "tool_calls", "calls": parsed_calls}
 

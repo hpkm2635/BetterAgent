@@ -313,7 +313,15 @@ class ServiceManager:
 
     def start_nats_if_needed(self) -> bool:
         if is_port_open("127.0.0.1", 4222):
-            print(" [✓] NATS Server is already running on port 4222.")
+            print(" [✓] NATS Server is already running on port 4222 (Docker/Service).")
+            try:
+                res = subprocess.run(["docker", "logs", "--tail", "100", "betteragent-nats"], capture_output=True, text=True)
+                log_text = (res.stdout or "") + (res.stderr or "")
+                if log_text.strip():
+                    with open(LOGS_DIR / "nats_server.log", "w", encoding="utf-8") as f:
+                        f.write(log_text)
+            except Exception:
+                pass
             return True
 
         nats_user = os.environ.get("NATS_USER")
@@ -695,19 +703,62 @@ def main():
     except Exception:
         pass
     
-    # 0. 自动检测并拉起 Docker 中的 Redis 和 Qdrant 基础设施
-    docker_compose_file = ROOT_DIR / "deploy" / "docker-compose.yml"
-    env_file = ROOT_DIR / ".env"
-    if docker_compose_file.exists():
-        print(" [0/5] Checking Docker infrastructure (Redis, Qdrant)...")
+    # 0. 自动检测并拉起 Docker 中的 Redis (6379) 和 Qdrant (6333) 基础设施
+    def check_tcp(host: str, port: int) -> bool:
         try:
-            cmd = ["docker", "compose", "-f", str(docker_compose_file)]
-            if env_file.exists():
-                cmd.extend(["--env-file", str(env_file)])
-            cmd.extend(["up", "-d"])
-            subprocess.run(cmd, check=False)
-        except FileNotFoundError:
-            print(" [!] Warning: 'docker' command not found. Please ensure Docker Desktop is running.")
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except (OSError, socket.error):
+            return False
+
+    redis_alive = check_tcp("127.0.0.1", 6379)
+    qdrant_alive = check_tcp("127.0.0.1", 6333)
+
+    if not (redis_alive and qdrant_alive):
+        print(" [0/5] Probing Docker infrastructure (Redis:6379, Qdrant:6333)...")
+        docker_compose_file = ROOT_DIR / "deploy" / "docker-compose.yml"
+        env_file = ROOT_DIR / ".env"
+        if docker_compose_file.exists():
+            try:
+                cmd = ["docker", "compose", "-f", str(docker_compose_file)]
+                if env_file.exists():
+                    cmd.extend(["--env-file", str(env_file)])
+                cmd.extend(["up", "-d"])
+                res = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                if res.returncode == 0:
+                    print("     -> Triggered 'docker compose up -d' for Redis & Qdrant.")
+                else:
+                    err_msg = res.stderr.strip()[:120] if res.stderr else "Docker Desktop not responding"
+                    print(f" [!] Warning: Docker Compose execution note: {err_msg}")
+            except FileNotFoundError:
+                print(" [!] Warning: 'docker' CLI not found on system PATH.")
+
+        # Polling readiness probe (up to 4.0s deadline) to eliminate container cold-start race conditions
+        probe_deadline = time.time() + 4.0
+        redis_now = False
+        qdrant_now = False
+        while time.time() < probe_deadline:
+            if not redis_now:
+                redis_now = check_tcp("127.0.0.1", 6379)
+            if not qdrant_now:
+                qdrant_now = check_tcp("127.0.0.1", 6333)
+            if redis_now and qdrant_now:
+                break
+            time.sleep(0.5)
+
+        if redis_now:
+            print(" [✓] Redis is ONLINE on 127.0.0.1:6379 🟢")
+        else:
+            print(" [!] NOTICE: Redis (127.0.0.1:6379) is offline. Memory service will run in in-memory fallback mode.")
+            print("     -> Run 'docker compose -f deploy/docker-compose.yml up -d' to enable persistent Redis buffer.")
+
+        if qdrant_now:
+            print(" [✓] Qdrant is ONLINE on 127.0.0.1:6333 🟢")
+        else:
+            print(" [!] NOTICE: Qdrant (127.0.0.1:6333) is offline. Campus KB will run in HashedNgram fallback mode.")
+            print("     -> Run 'docker compose -f deploy/docker-compose.yml up -d' to enable Qdrant vector memory RAG.")
+    else:
+        print(" [✓] Infrastructure Verified: Redis (6379) & Qdrant (6333) are active 🟢")
 
     # 1. NATS Infrastructure Check (True readiness probe)
     if not mgr.start_nats_if_needed():
