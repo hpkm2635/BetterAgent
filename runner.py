@@ -14,6 +14,7 @@ import sys
 import time
 import socket
 import signal
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -224,6 +225,19 @@ def get_python_interpreter() -> str:
         return str(alt_venv_py)
 
     return sys.executable
+
+
+def find_cli_cmd(tool_name: str) -> Optional[str]:
+    """Finds CLI command executable path cross-platform (supporting .cmd/.exe/.bat on Windows)."""
+    if IS_WINDOWS:
+        for ext in (".cmd", ".exe", ".bat", ""):
+            found = shutil.which(f"{tool_name}{ext}")
+            if found:
+                return found
+    found = shutil.which(tool_name)
+    if found:
+        return found
+    return None
 
 
 def is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
@@ -686,7 +700,7 @@ def main():
     enable_vt100_console()
     init_windows_job_object()
     clean_logs_if_configured()
-    kill_stale_port_listeners([8093, 8090, 50000, 10095])
+    kill_stale_port_listeners([8093, 8090, 8094, 8095, 5173, 50000, 10095])
     print_banner()
 
     mgr = ServiceManager()
@@ -809,6 +823,44 @@ def main():
     # /api/game-event endpoint; harmless no-op otherwise, same graceful-
     # degradation posture as every other optional integration here)
     mgr.spawn_service("game_watcher_service", [mgr.py_exe, "-u", "-m", "services.game_watcher.sts2_poller"])
+
+    # 8. Admin Backend Service (:8094)
+    admin_backend_main = ROOT_DIR / "admin" / "backend" / "main.py"
+    if admin_backend_main.exists():
+        mgr.spawn_service("admin_backend_service", [mgr.py_exe, "-u", str(admin_backend_main)])
+        wait_for_readiness(
+            lambda: is_port_open("127.0.0.1", 8094),
+            service_name="Admin Backend Service (:8094)",
+            timeout=10.0,
+        )
+
+    # 9. Admin Frontend Vue Service (:8095)
+    admin_frontend_dir = ROOT_DIR / "admin" / "frontend"
+    if admin_frontend_dir.exists() and (admin_frontend_dir / "package.json").exists():
+        npm_cmd = find_cli_cmd("npm")
+        if npm_cmd:
+            mgr.spawn_service("admin_frontend_service", [npm_cmd, "run", "dev"], cwd=admin_frontend_dir)
+            wait_for_readiness(
+                lambda: is_port_open("127.0.0.1", 8095),
+                service_name="Admin Frontend Vue Service (:8095)",
+                timeout=15.0,
+            )
+        else:
+            print(" [!] NOTICE: 'npm' command not found in PATH. Skipping Admin Frontend Vue Service (:8095).")
+
+    # 10. Stage Web Frontend Vue Service (:5173)
+    stage_web_dir = ROOT_DIR / "frontend"
+    if stage_web_dir.exists() and (stage_web_dir / "package.json").exists():
+        pnpm_cmd = find_cli_cmd("pnpm") or find_cli_cmd("npm")
+        if pnpm_cmd:
+            mgr.spawn_service("stage_web_frontend_service", [pnpm_cmd, "run", "dev"], cwd=stage_web_dir)
+            wait_for_readiness(
+                lambda: is_port_open("127.0.0.1", 5173),
+                service_name="Stage Web Frontend Vue Service (:5173)",
+                timeout=15.0,
+            )
+        else:
+            print(" [!] NOTICE: 'pnpm' / 'npm' command not found in PATH. Skipping Stage Web Frontend Vue Service (:5173).")
 
     mgr.write_pid_file()
 

@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `EmotionHUDWidget.vue` floating widget displaying live 3D VAD metrics, Affection, Energy, Social Battery, and Jealousy status driven by enriched `AgentEmotionPayload` WebSocket frames.
   - Added prompt compilation header stripping (`stripCompiledHeader`) to guarantee 100% idempotency across repeated save operations.
   - Moved `VisionPrivacyIndicator.vue` to top-left (`left: 16px`) to resolve UI button overlap.
+- **Supervisor & Admin Panel Integration (`runner.py`)**:
+  - Integrated Admin Backend REST Service (`:8094`) and Admin Frontend Vue Service (`:8095`) into `runner.py` process supervisor with cross-platform CLI discovery (`find_cli_cmd` / `shutil.which`).
+  - Added stale port listener cleanup for `:8094`, `:8095`, and `:5173`.
+- **Frontend Build Tooling & Vite Upgrade (`frontend/`)**:
+  - Upgraded Vite build engine dependencies across `stage-web` and Admin Frontend services.
 - **API Contract & Team Subservice Boundary (`docs/API-CONTRACT.md`)**:
   - Defined rigid HTTP REST interface specs and port assignments for Campus KB (`:8093`), Admin Panel (`:8094`/`:8095`), and Companion Tool Service (`:8096`).
   - Added automated integration tests (`tests/test_api_contract.py`) for PR merge gating.
