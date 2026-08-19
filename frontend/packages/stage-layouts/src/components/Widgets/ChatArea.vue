@@ -68,16 +68,14 @@ async function handleSend() {
   const textToSend = messageInput.value
   messageInput.value = ''
 
-  // Send message to BetterAgent Go WebGateway via WebSocket
-  if (typeof window !== 'undefined' && (window as any).__betterAgentWSBridge) {
-    (window as any).__betterAgentWSBridge.sendUserText(textToSend)
-  }
-
   try {
-    const providerConfig = providersStore.getProviderConfig(activeProvider.value)
+    const providerConfig = activeProvider.value ? providersStore.getProviderConfig(activeProvider.value) : {}
+    const chatProvider = activeProvider.value
+      ? await providersStore.getProviderInstance<ChatProvider>(activeProvider.value).catch(() => ({} as ChatProvider))
+      : ({} as ChatProvider)
 
     await ingest(textToSend, {
-      chatProvider: await providersStore.getProviderInstance(activeProvider.value) as ChatProvider,
+      chatProvider,
       model: activeModel.value,
       providerConfig,
     })

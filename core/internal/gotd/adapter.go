@@ -153,7 +153,23 @@ func (a *GotdAdapter) SendTypingAction(ctx context.Context, chatID int64, action
 	return err
 }
 
+func HasSessionFile() bool {
+	paths := []string{"gotd.session.json", "core/gotd.session.json"}
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *GotdAdapter) Start(ctx context.Context) error {
+	if !HasSessionFile() {
+		a.logger.Info("No existing Telegram session file found (gotd.session.json). Skipping Telegram MTProto client startup.")
+		<-ctx.Done()
+		return nil
+	}
+
 	a.logger.Info("Starting GotdAdapter (User Account)...")
 
 	// Register dispatcher event handlers
