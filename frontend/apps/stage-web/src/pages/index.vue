@@ -122,13 +122,18 @@ async function startAudioInteraction() {
 
     // Hook once
     stopOnStopRecord = onStopRecord(async (recording) => {
+      if (isBetterAgentBridgeActive()) {
+        return
+      }
       const text = await transcribeForRecording(recording)
       if (!text || !text.trim())
         return
 
       try {
+        if (!activeChatProvider.value || !activeChatModel.value)
+          return
         const provider = await providersStore.getProviderInstance(activeChatProvider.value)
-        if (!provider || !activeChatModel.value)
+        if (!provider)
           return
 
         await chatStore.ingest(text, { model: activeChatModel.value, chatProvider: provider as ChatProvider })
