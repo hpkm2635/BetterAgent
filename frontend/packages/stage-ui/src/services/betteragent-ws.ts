@@ -87,9 +87,7 @@ export class BetterAgentWSBridge {
     if (!serverUrl.includes('token=')) {
       const token = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BETTERAGENT_WS_TOKEN)
         ? import.meta.env.VITE_BETTERAGENT_WS_TOKEN
-        : (typeof import.meta !== 'undefined' && import.meta.env?.VITE_WEBGATEWAY_TOKEN)
-            ? import.meta.env.VITE_WEBGATEWAY_TOKEN
-            : undefined
+        : undefined
       if (token) {
         serverUrl += (serverUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`
       }

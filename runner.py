@@ -45,37 +45,13 @@ BIN_DIR = ROOT_DIR / "bin"
 LOGS_DIR.mkdir(exist_ok=True)
 BIN_DIR.mkdir(exist_ok=True)
 
-env_file = ROOT_DIR / ".env"
-env_example = ROOT_DIR / ".env.example"
-
-if not env_file.exists() and env_example.exists():
-    import shutil
-    print(" [!] .env file missing in root directory. Auto-creating from .env.example...")
-    try:
-        shutil.copy(env_example, env_file)
-    except Exception as e:
-        print(f" [!] Warning: Failed to copy .env.example to .env: {e}")
-
+# Load root .env into this process's environment BEFORE spawning any child
+# process (native nats-server, `docker compose`, Go core, Python services),
+# so NATS_USER/NATS_PASSWORD and other secrets are inherited consistently
+# regardless of which working directory runner.py was launched from.
 try:
-    from dotenv import load_dotenv, dotenv_values
-    load_dotenv(env_file)
-    env_vals = dotenv_values(env_file)
-    gw_token = env_vals.get("WEBGATEWAY_TOKEN") or os.environ.get("WEBGATEWAY_TOKEN")
-    vite_token = env_vals.get("VITE_BETTERAGENT_WS_TOKEN") or os.environ.get("VITE_BETTERAGENT_WS_TOKEN")
-
-    if gw_token and (not vite_token or vite_token != gw_token):
-        print(f" [!] Syncing VITE_BETTERAGENT_WS_TOKEN in .env to match WEBGATEWAY_TOKEN...")
-        os.environ["VITE_BETTERAGENT_WS_TOKEN"] = gw_token
-        try:
-            content = env_file.read_text(encoding="utf-8")
-            if "VITE_BETTERAGENT_WS_TOKEN=" in content:
-                import re
-                content = re.sub(r"VITE_BETTERAGENT_WS_TOKEN=.*", f"VITE_BETTERAGENT_WS_TOKEN={gw_token}", content)
-            else:
-                content += f"\nVITE_BETTERAGENT_WS_TOKEN={gw_token}\n"
-            env_file.write_text(content, encoding="utf-8")
-        except Exception as sync_err:
-            print(f" [!] Warning: Failed to update .env with VITE_BETTERAGENT_WS_TOKEN: {sync_err}")
+    from dotenv import load_dotenv
+    load_dotenv(ROOT_DIR / ".env")
 except ImportError:
     pass
 
