@@ -70,12 +70,7 @@ async function handleSend() {
 
   // Send message to BetterAgent Go WebGateway via WebSocket
   if (typeof window !== 'undefined' && (window as any).__betterAgentWSBridge) {
-    chatSession.pushMessage({
-      role: 'user',
-      content: textToSend,
-    })
-    ;(window as any).__betterAgentWSBridge.sendUserText(textToSend)
-    return
+    (window as any).__betterAgentWSBridge.sendUserText(textToSend)
   }
 
   try {
