@@ -2757,9 +2757,6 @@ export const useProvidersStore = defineStore('providers', () => {
 
   // Function to get localized provider metadata
   function getProviderMetadata(providerId: string) {
-    if (!providerId)
-      return undefined as any
-
     const metadata = providerMetadata[providerId]
 
     if (!metadata)

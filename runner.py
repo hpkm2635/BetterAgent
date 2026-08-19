@@ -45,72 +45,37 @@ BIN_DIR = ROOT_DIR / "bin"
 LOGS_DIR.mkdir(exist_ok=True)
 BIN_DIR.mkdir(exist_ok=True)
 
-def _auto_generate_env_secrets_if_needed(env_file_path: Path, env_example_path: Path):
-    import secrets
-    import shutil
-    import re
-
-    if not env_file_path.exists() and env_example_path.exists():
-        print(" [!] .env file missing in root directory. Auto-creating from .env.example...")
-        try:
-            shutil.copy(env_example_path, env_file_path)
-        except Exception as e:
-            print(f" [!] Warning: Failed to copy .env.example to .env: {e}")
-            return
-
-    if not env_file_path.exists():
-        return
-
-    try:
-        content = env_file_path.read_text(encoding="utf-8")
-        modified = False
-
-        secret_keys = ["NATS_PASSWORD", "WEBGATEWAY_TOKEN", "VITE_BETTERAGENT_WS_TOKEN", "REDIS_PASSWORD", "QDRANT_API_KEY"]
-        generated_values = {}
-
-        for key in secret_keys:
-            pattern = re.compile(rf"^{key}=(.*)$", re.MULTILINE)
-            match = pattern.search(content)
-            val = match.group(1).strip() if match else ""
-
-            if not val or val == "change_me_to_a_strong_random_secret":
-                if key == "VITE_BETTERAGENT_WS_TOKEN" and "WEBGATEWAY_TOKEN" in generated_values:
-                    rand_secret = generated_values["WEBGATEWAY_TOKEN"]
-                else:
-                    rand_secret = secrets.token_hex(16)
-                
-                generated_values[key] = rand_secret
-                
-                if match:
-                    content = pattern.sub(f"{key}={rand_secret}", content)
-                else:
-                    content += f"\n{key}={rand_secret}\n"
-                modified = True
-
-        gw_match = re.search(r"^WEBGATEWAY_TOKEN=(.*)$", content, re.MULTILINE)
-        vite_match = re.search(r"^VITE_BETTERAGENT_WS_TOKEN=(.*)$", content, re.MULTILINE)
-        if gw_match and vite_match:
-            gw_val = gw_match.group(1).strip()
-            vite_val = vite_match.group(1).strip()
-            if gw_val and vite_val != gw_val:
-                content = re.sub(r"^VITE_BETTERAGENT_WS_TOKEN=.*$", f"VITE_BETTERAGENT_WS_TOKEN={gw_val}", content, flags=re.MULTILINE)
-                modified = True
-
-        if modified:
-            env_file_path.write_text(content, encoding="utf-8")
-            print(" [✓] Auto-generated random secure passwords & synced tokens in .env 🔑")
-
-    except Exception as err:
-        print(f" [!] Warning: Auto-generating .env secrets encountered an error: {err}")
-
-
 env_file = ROOT_DIR / ".env"
 env_example = ROOT_DIR / ".env.example"
-_auto_generate_env_secrets_if_needed(env_file, env_example)
+
+if not env_file.exists() and env_example.exists():
+    import shutil
+    print(" [!] .env file missing in root directory. Auto-creating from .env.example...")
+    try:
+        shutil.copy(env_example, env_file)
+    except Exception as e:
+        print(f" [!] Warning: Failed to copy .env.example to .env: {e}")
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv, dotenv_values
     load_dotenv(env_file)
+    env_vals = dotenv_values(env_file)
+    gw_token = env_vals.get("WEBGATEWAY_TOKEN") or os.environ.get("WEBGATEWAY_TOKEN")
+    vite_token = env_vals.get("VITE_BETTERAGENT_WS_TOKEN") or os.environ.get("VITE_BETTERAGENT_WS_TOKEN")
+
+    if gw_token and (not vite_token or vite_token != gw_token):
+        print(f" [!] Syncing VITE_BETTERAGENT_WS_TOKEN in .env to match WEBGATEWAY_TOKEN...")
+        os.environ["VITE_BETTERAGENT_WS_TOKEN"] = gw_token
+        try:
+            content = env_file.read_text(encoding="utf-8")
+            if "VITE_BETTERAGENT_WS_TOKEN=" in content:
+                import re
+                content = re.sub(r"VITE_BETTERAGENT_WS_TOKEN=.*", f"VITE_BETTERAGENT_WS_TOKEN={gw_token}", content)
+            else:
+                content += f"\nVITE_BETTERAGENT_WS_TOKEN={gw_token}\n"
+            env_file.write_text(content, encoding="utf-8")
+        except Exception as sync_err:
+            print(f" [!] Warning: Failed to update .env with VITE_BETTERAGENT_WS_TOKEN: {sync_err}")
 except ImportError:
     pass
 
