@@ -45,8 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Supervisor & Admin Panel Integration (`runner.py`)**:
   - Integrated Admin Backend REST Service (`:8094`) and Admin Frontend Vue Service (`:8095`) into `runner.py` process supervisor with cross-platform CLI discovery (`find_cli_cmd` / `shutil.which`).
   - Added stale port listener cleanup for `:8094`, `:8095`, and `:5173`.
-- **Frontend Build Tooling & Vite Upgrade (`frontend/`)**:
+- **Companion Schedule & Memory Integration (`services/companion/`)**:
+  - Integrated `ScheduleHUDWidget.vue` floating schedule widget and `Schedule.vue` action button in `stage-web`.
+  - Added `companion_tool.py` enabling Cognitive LLM to create, query, and manage user reminders via HTTP REST API (`:8096`).
+  - Added `schedule-api.ts` and `memory-api.ts` for frontend memory inspection and reminder management.
+- **Gotd MTProto Headless Handling (`core/internal/gotd/`)**:
+  - Implemented `HasSessionFile()` check in Go Core `gotd/adapter.go` to gracefully skip MTProto login when `gotd.session.json` is absent.
+- **Frontend Build Tooling & Robustness (`frontend/`)**:
   - Upgraded Vite build engine dependencies across `stage-web` and Admin Frontend services.
+  - Added empty `providerId` guards in `MobileInteractiveArea.vue` and `ChatArea.vue` preventing console errors in WebSocket bridge mode.
 - **API Contract & Team Subservice Boundary (`docs/API-CONTRACT.md`)**:
   - Defined rigid HTTP REST interface specs and port assignments for Campus KB (`:8093`), Admin Panel (`:8094`/`:8095`), and Companion Tool Service (`:8096`).
   - Added automated integration tests (`tests/test_api_contract.py`) for PR merge gating.

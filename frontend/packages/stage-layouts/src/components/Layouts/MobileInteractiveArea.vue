@@ -26,11 +26,15 @@ import { RouterLink } from 'vue-router'
 import ViewControls from '../Layouts/InteractiveArea/Actions/ViewControls.vue'
 import IndicatorMicVolume from '../Widgets/IndicatorMicVolume.vue'
 import ActionAbout from './InteractiveArea/Actions/About.vue'
+import ActionEmotion from './InteractiveArea/Actions/Emotion.vue'
+import ActionSchedule from './InteractiveArea/Actions/Schedule.vue'
 
 import { useTranscriptions } from '../../composables/use-transcriptions'
 import { useChatToolCallRerun } from '../../composables/useChatToolCallRerun'
 import { useStopSpeakingButton } from '../../composables/useStopSpeakingButton'
 import { BackgroundDialogPicker } from '../Backgrounds'
+
+import { useBetterAgentGatewayStore } from '@proj-airi/stage-ui/stores/modules/betteragent-gateway'
 
 const { isDark, toggleDark } = useTheme()
 const chatOrchestrator = useChatOrchestratorStore()
@@ -201,6 +205,8 @@ onMounted(() => {
       </div>
       <div translate-y="[-100%]" absolute right-0 px-3 pb-3 font-sans>
         <div flex="~ col" gap-1>
+          <ActionSchedule />
+          <ActionEmotion />
           <ActionAbout />
           <div flex="~ col" items-end gap-1>
             <button

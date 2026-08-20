@@ -58,17 +58,25 @@ async def test_memory_consolidator_and_cursor():
 @pytest.mark.asyncio
 async def test_user_profile_manager_defaults():
     mgr = UserProfileManager()
-    profile = await mgr.get_profile(1122334455667788)
+    user_id = 9988776655443322
+    try:
+        if mgr.redis_client:
+            await mgr.redis_client.delete(f"betteragent:profile:{user_id}", f"user_profile:{user_id}")
+    except Exception:
+        pass
+
+    profile = await mgr.get_profile(user_id)
     assert profile["preferred_name"] == "主人"
     assert profile["likes"] == []
     assert profile["dislikes"] == []
 
-    await mgr.update_fact(1122334455667788, "preferred_name", "小明")
-    updated = await mgr.get_profile(1122334455667788)
+    await mgr.update_fact(user_id, "preferred_name", "小明")
+    updated = await mgr.get_profile(user_id)
     assert updated["preferred_name"] == "小明"
 
-    prompt = await mgr.get_formatted_profile_prompt(1122334455667788)
+    prompt = await mgr.get_formatted_profile_prompt(user_id)
     assert "小明" in prompt
+
 
 
 @pytest.mark.asyncio

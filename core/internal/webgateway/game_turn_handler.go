@@ -79,7 +79,8 @@ func (s *Server) handleGameTurn(w http.ResponseWriter, r *http.Request) {
 	// cross-process state -- if the previous game turn hasn't returned to
 	// IDLE yet, skip this poll's request rather than firing a second
 	// concurrent turn for the same chat.
-	if s.bridge == nil || s.bridge.csm == nil || s.bridge.csm.GetChatState(targetChatID) != engine.StateIdle {
+	currentState := s.bridge.csm.GetChatState(targetChatID)
+	if s.bridge == nil || s.bridge.csm == nil || currentState != engine.StateIdle {
 		writeGameEventJSON(w, http.StatusOK, map[string]interface{}{"status": "busy"})
 		return
 	}

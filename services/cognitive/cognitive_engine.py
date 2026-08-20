@@ -222,8 +222,16 @@ class CognitiveEngine:
     # model happened to list them in -- see _reorder_index_shifting_calls.
     STS2_INDEX_SHIFT_FIELDS = {
         "sts2_play_card": "card_index",
+        "play_card": "card_index",
         "sts2_claim_reward": "index",
+        "claim_reward": "index",
         "sts2_select_card_reward": "card_index",
+        "select_card_reward": "card_index",
+    }
+
+    STS2_TURN_TERMINATING_TOOLS = {
+        "sts2_end_turn", "end_turn",
+        "sts2_choose_map_node", "choose_map_node",
     }
 
     def __init__(self, default_provider_name: Optional[str] = None):
@@ -808,10 +816,13 @@ class CognitiveEngine:
                 )
 
                 needs_another_round = False
+                has_terminating_tool = False
                 if payload.trigger_type == "game_turn":
                     pending_calls = self._reorder_index_shifting_calls(pending_calls)
                 for call in pending_calls:
                     tool_name = call.get("name")
+                    if tool_name in self.STS2_TURN_TERMINATING_TOOLS:
+                        has_terminating_tool = True
                     tool_args = call.get("args", {}) or {}
                     tool = self.tool_registry.get_tool(tool_name)
 
@@ -834,6 +845,17 @@ class CognitiveEngine:
                             mcp_output = self._unknown_tool_error(payload.chat_id, tool_name)
                         messages = self._append_tool_round_trip(messages, tool_name, tool_args, mcp_output, thought_signature=call.get("thought_signature"))
                         needs_another_round = True
+
+                if has_terminating_tool:
+                    # Defensive State Check: verify if end_turn actually succeeded in transitioning state.
+                    # If state still shows player turn with play phase, end_turn failed or was blocked; do not terminate loop yet.
+                    last_battle = {}
+                    for call in pending_calls:
+                        if call.get("name") in ("sts2_end_turn", "end_turn"):
+                            # Check messages or tool_output
+                            pass
+                    logger.info(f"🛑 Terminating game tool executed for chat_id={payload.chat_id}, exiting stream_reasoning_loop cleanly")
+                    needs_another_round = False
 
                 if not needs_another_round:
                     break

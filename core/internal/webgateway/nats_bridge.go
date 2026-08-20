@@ -618,10 +618,10 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 
-	// TouchWatchdog & Maintain STREAMING_TTS while audio chunks arrive
+	// TouchWatchdog & Maintain STREAMING_TTS while audio chunks arrive (5s sliding window)
 	if b.csm != nil {
 		b.csm.TransitionToChat(p.ChatID, engine.StateStreamingTTS, "audio_chunk_streaming")
-		b.csm.TouchWatchdogChat(p.ChatID, 30*time.Second)
+		b.csm.TouchWatchdogChat(p.ChatID, 5*time.Second)
 	}
 
 	// 2. High-Performance Zero-Copy Binary WebSocket Frame (0% Base64 Overhead)

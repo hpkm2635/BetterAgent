@@ -13,6 +13,8 @@ import ViewControls from '../Layouts/InteractiveArea/Actions/ViewControls.vue'
 import { useStopSpeakingButton } from '../../composables/useStopSpeakingButton'
 import { BackgroundDialogPicker } from '../Backgrounds'
 
+import { useBetterAgentGatewayStore } from '@proj-airi/stage-ui/stores/modules/betteragent-gateway'
+
 const { cleanupMessages } = useChatMaintenanceStore()
 const { messages } = storeToRefs(useChatSessionStore())
 const { trackChatMessagesCleared } = useAnalytics()

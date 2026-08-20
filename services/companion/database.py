@@ -86,6 +86,34 @@ def init_db() -> None:
             )
         """)
 
+        # 用户记忆事实库 (User Profile & Long-term Memories)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_profile_facts (
+                fact_id TEXT PRIMARY KEY,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                category TEXT DEFAULT 'general',
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        # Seed initial memories if table is empty
+        cur.execute("SELECT COUNT(*) as count FROM user_profile_facts")
+        if cur.fetchone()["count"] == 0:
+            seed_facts = [
+                ("fact_101", 1001, 1, "identity", "用户称呼", "主人"),
+                ("fact_102", 1001, 1, "identity", "校园身份", "计算机专业应届毕业生"),
+                ("fact_103", 1001, 1, "preference", "喜好游戏", "杀戮尖塔2、二次元手游"),
+                ("fact_104", 1001, 1, "preference", "常用工具", "AIRI 桌面虚拟主播、BetterAgent"),
+                ("fact_105", 1001, 1, "campus", "寝室编号", "海韵园区 4号楼 502"),
+            ]
+            cur.executemany(
+                "INSERT INTO user_profile_facts (fact_id, chat_id, user_id, category, key, value) VALUES (?, ?, ?, ?, ?, ?)",
+                seed_facts,
+            )
+
         conn.commit()
     finally:
         conn.close()

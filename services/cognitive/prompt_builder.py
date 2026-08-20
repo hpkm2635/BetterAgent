@@ -79,6 +79,12 @@ class PromptBuilder:
             payload.current_emotion,  # Contains emotion + personality + circadian description
         ]
 
+        if persona_data.get("knowledge_scope"):
+            prompt_parts.append(f"[知识专业范围]: 你擅长并专注于回答关于【{persona_data['knowledge_scope']}】的相关知识与问题。")
+
+        if persona_data.get("forbidden_topics"):
+            prompt_parts.append(f"[禁忌话题与交互边界 - 严格遵守]: 严禁讨论以下话题内容【{persona_data['forbidden_topics']}】。如果用户提及相关内容，请委婉拒绝或引导回人设话题。")
+
         if payload.trigger_type == "proactive" and payload.proactive_reason:
             prompt_parts.append(
                 f"[主动搭话] 你现在决定主动开口说话，原因: {payload.proactive_reason}。"
@@ -90,8 +96,8 @@ class PromptBuilder:
             if _STS2_AGENTS_MD_CONTENT:
                 prompt_parts.append(_STS2_AGENTS_MD_CONTENT)
             prompt_parts.append(
-                "[游戏自动托管 - 精简快节奏解说模式]\n"
-                "1. 【发言极简】打牌解说请保持极度短小精悍（每轮不超过 1 句短句，10 字以内，如“看招，吃我重击！”、“能量空了，结束回合喵！”），绝不要长篇大论，确保语气与打牌节奏同步。\n"
+                "[游戏自动托管 - 极速快节奏解说模式]\n"
+                "1. 【发言极其简短】打牌解说请严格控制在 5 至 8 个字以内（单句短句，如“看招喵！”、“防御，结束回合喵！”），严禁任何多余的解释或策略分析！确保解说与极速打牌节奏完全同步。\n"
                 "2. 【强制动作】你必须通过调用工具（Tool Call）执行游戏动作，禁止仅输出纯聊天文本。\n"
                 "3. 如果手牌有可用卡牌且能量足够，优先按右到左顺序调用 sts2_play_card 打出。\n"
                 "3.5. 【批量出牌，节省时间】如果你已经想好了这整个回合要打哪几张牌（不需要先看某张牌打出后的效果再决定下一步），"

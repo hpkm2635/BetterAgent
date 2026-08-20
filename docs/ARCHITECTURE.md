@@ -652,6 +652,37 @@ graph LR
 | **Admin Frontend** | `admin/frontend/` | `:8095` (Web Dev)| 谢自立 | Vue 3 + Element Plus 独立后台管理界面 |
 | **Companion Service** | `services/companion/` | `:8096` (HTTP) | 张劭哲 | SQLite 陪伴统计、APScheduler 日程提醒与 NL2SQL 查询 |
 
+### 7.1 Campus KB 校园知识库交互数据流 (Campus KB RAG Flow)
+
+猫娘（BetterAgent）与校园知识库 `services/campus_kb` 的交互采用**预注入 RAG 上下文**与**自主 Tool Calling**双通道机制：
+
+```mermaid
+sequenceDiagram
+    participant User as 用户消息
+    participant Mem as MemoryHub (:8090)
+    participant KB as Campus KB (:8093)
+    participant Cog as CognitiveEngine / LLM
+    
+    rect rgb(240, 248, 255)
+    note right of Mem: 通道 1: 预注入上下文 (Passive RAG)
+    User->>Mem: NATS (enrich_context_req)
+    Mem->>KB: HTTP POST /api/kb/search (query)
+    KB-->>Mem: 返回匹配知识条目 (kb_facts)
+    Mem->>Cog: NATS (reasoning_req + kb_facts)
+    Cog->>Cog: PromptBuilder 注入 [校园知识库] 到 System Prompt
+    end
+
+    rect rgb(255, 245, 238)
+    note right of Cog: 通道 2: 自主工具调用 (Autonomous Tool Calling)
+    Cog->>Cog: LLM 判断预注入上下文不足，触发 tool_call: search_campus_kb
+    Cog->>KB: CampusKBTool 发起 HTTP POST /api/kb/search
+    KB-->>Cog: 返回精确检索结果 (facts)
+    Cog->>Cog: LLM 结合 Tool Message 二次推理
+    end
+    
+    Cog-->>User: 生成包含猫娘口吻与校园知识的最终回复
+```
+
 ---
 
 ## 8. 防腐化策略 (Documentation Maintenance Rules)

@@ -5,6 +5,8 @@ import { useRouter } from 'vue-router'
 import HeaderAvatar from './HeaderAvatar.vue'
 import HeaderLink from './HeaderLink.vue'
 import ActionAbout from './InteractiveArea/Actions/About.vue'
+import ActionEmotion from './InteractiveArea/Actions/Emotion.vue'
+import ActionSchedule from './InteractiveArea/Actions/Schedule.vue'
 
 const router = useRouter()
 
@@ -17,6 +19,8 @@ function handleNavigation() {
   <header mb-1 w-full flex items-center justify-between gap-2>
     <HeaderLink />
     <div flex items-center gap-2>
+      <ActionSchedule />
+      <ActionEmotion />
       <ActionAbout />
       <ProfileSwitcherPopover @manage="handleNavigation" />
       <HeaderAvatar />

@@ -66,6 +66,8 @@ class Sts2HttpClient:
 
     async def post_action(self, action: str, args: Dict[str, Any]) -> Dict[str, Any]:
         body = {"action": action, **{k: v for k, v in args.items() if v is not None}}
+        if action == "end_turn":
+            body["force"] = True
         try:
             session = self._get_session()
             async with session.post(self._base_url, json=body) as resp:
@@ -77,33 +79,32 @@ class Sts2HttpClient:
 
         # Short animation-safe pacing delay to allow Godot's UI node tree to complete
         # card play / end turn animations before fetching state and returning to LLM.
-        action_delay = float(get_config_val("game_watcher.sts2.action_delay_seconds", 0.6))
+        action_delay = float(get_config_val("game_watcher.sts2.action_delay_seconds", 0.3))
         if action == "end_turn":
-            # Godot Boss Intent and end-turn animations can take up to ~1.0s.
-            action_delay = max(action_delay, 1.0)
+            # Godot Boss Intent and end-turn animations can take up to ~0.8s.
+            action_delay = max(action_delay, 0.8)
         if action_delay > 0:
             await asyncio.sleep(action_delay)
 
         state = await self.get_state()
 
-        # Robust retry guard: if end_turn was called while Godot's UI button was temporarily
-        # locked by an in-flight animation, turn will still show 'player' with 0 energy.
-        # Send a defensive retry once the UI node tree has settled.
-        if action == "end_turn" and state.get("status") == "ok":
-            # get_state() spreads the mod's fields directly into the top
-            # level (return {"status": "ok", **data}), same as _trim_state
-            # reads it above -- there is no "data" sub-key.
-            battle = state.get("battle") or {}
-            player = state.get("player") or {}
-            if battle.get("turn") == "player" and battle.get("is_play_phase") and player.get("energy", 0) == 0:
-                logger.warning("🔄 Godot EndTurn button was locked during initial call; retrying end_turn...")
+        # Robust multi-attempt retry guard: if end_turn was called while Godot's UI button was temporarily
+        # locked by an in-flight animation queue (hand.InCardPlay), mod returns an error or turn remains 'player'.
+        # Active-poll and retry end_turn until Godot node tree settles and turn transitions away from player.
+        if action == "end_turn":
+            for attempt in range(1, 8):
+                battle = (state.get("battle") or {}) if isinstance(state, dict) else {}
+                if battle.get("turn") != "player" or not battle.get("is_play_phase"):
+                    break
+                logger.warning(f"🔄 Godot EndTurn locked by in-flight card animation (attempt {attempt}/7, last msg={result.get('message')!r}); retrying end_turn...")
+                await asyncio.sleep(0.5)
                 try:
                     async with session.post(self._base_url, json=body) as resp:
                         result = await resp.json()
-                    await asyncio.sleep(0.8)
-                    state = await self.get_state()
                 except Exception as e:
-                    logger.warning(f"Retry end_turn failed: {e}")
+                    logger.warning(f"Retry end_turn failed on attempt {attempt}: {e}")
+                await asyncio.sleep(0.3)
+                state = await self.get_state()
 
         if state.get("status") == "ok":
             result["state"] = _trim_state(state)

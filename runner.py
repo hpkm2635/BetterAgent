@@ -701,7 +701,6 @@ def main():
     init_windows_job_object()
     clean_logs_if_configured()
     kill_stale_port_listeners([8093, 8090, 8094, 8095, 5173, 50000, 10095])
-    print_banner()
 
     mgr = ServiceManager()
     print(f" [i] Python Interpreter: {mgr.py_exe}")
@@ -875,7 +874,12 @@ def main():
     monitor_thread = threading.Thread(target=mgr.monitor_loop, daemon=True)
     monitor_thread.start()
 
-    print("\n [✓] All microservices active & healthy. Monitoring... Press Ctrl+C to stop.\n")
+    print_banner()
+    print("\n =========================================================================")
+    print("  [✓] All microservices active & healthy! System ready 🟢")
+    print("  🐱 数字猫娘前端界面: http://localhost:5173/")
+    print("  ⚙️ 后台管理系统面板: http://localhost:8095/")
+    print(" =========================================================================\n")
 
     try:
         while True:

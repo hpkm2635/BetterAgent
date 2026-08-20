@@ -62,3 +62,35 @@ async def test_persona_loader_whitelist_filtering(tmp_path):
     assert "New Camelia" in content
     assert "malicious_provider" not in content
     assert "hacked_key" not in content
+
+
+@pytest.mark.asyncio
+async def test_prompt_builder_injects_knowledge_scope_and_forbidden_topics(tmp_path):
+    """Verify PromptBuilder includes knowledge_scope and forbidden_topics in system prompt."""
+    from services.cognitive.prompt_builder import PromptBuilder
+    from shared.schema.payloads import ReasoningRequestPayload
+
+    PersonaLoader.invalidate_cache()
+    test_yaml = tmp_path / "test_catgirl.yaml"
+    test_yaml.write_text(
+        "id: catgirl\n"
+        "name: Camelia\n"
+        "base_prompt: 你叫 Camelia，是一个猫娘喵~\n"
+        "knowledge_scope: 校园 FAQ 知识域\n"
+        "forbidden_topics: 政治敏感与非法话题\n",
+        encoding="utf-8"
+    )
+    PersonaLoader._persona_path = lambda persona_id: str(test_yaml)
+
+    payload = ReasoningRequestPayload(
+        event_id="evt_test",
+        source_component="test",
+        chat_id=123,
+        user_id=456,
+        current_emotion="[情绪]: 快乐",
+    )
+
+    system_prompt = PromptBuilder.build_system_prompt(payload)
+    assert "[知识专业范围]: 你擅长并专注于回答关于【校园 FAQ 知识域】" in system_prompt
+    assert "[禁忌话题与交互边界 - 严格遵守]: 严禁讨论以下话题内容【政治敏感与非法话题】" in system_prompt
+

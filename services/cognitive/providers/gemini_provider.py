@@ -86,15 +86,18 @@ class GeminiProvider(BaseLLMProvider):
                 for p_name, p_info in raw_props.items()
             }
 
+            schema_kwargs: Dict[str, Any] = {
+                "type": "OBJECT",
+                "properties": props,
+            }
+            if bool(req_fields):
+                schema_kwargs["required"] = req_fields
+
             func_decls.append(
                 types.FunctionDeclaration(
                     name=t["name"],
                     description=t.get("description", ""),
-                    parameters=types.Schema(
-                        type="OBJECT",
-                        properties=props,
-                        required=req_fields,
-                    ),
+                    parameters=types.Schema(**schema_kwargs),
                 )
             )
         return func_decls
@@ -112,12 +115,12 @@ class GeminiProvider(BaseLLMProvider):
             if isinstance(meta, dict) and meta.get("function_call"):
                 fc = meta["function_call"]
                 thought_sig = fc.get("thought_signature")
-                parts = [
-                    types.Part(
-                        function_call=types.FunctionCall(name=fc["name"], args=fc.get("args") or {}),
-                        thought_signature=thought_sig,
-                    )
-                ]
+                part_kwargs: Dict[str, Any] = {
+                    "function_call": types.FunctionCall(name=fc["name"], args=fc.get("args") or {}),
+                }
+                if thought_sig is not None:
+                    part_kwargs["thought_signature"] = thought_sig
+                parts = [types.Part(**part_kwargs)]
                 contents.append(types.Content(role="model", parts=parts))
                 continue
             if isinstance(meta, dict) and meta.get("function_response"):
