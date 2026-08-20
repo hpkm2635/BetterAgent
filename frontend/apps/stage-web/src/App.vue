@@ -89,9 +89,8 @@ onMounted(async () => {
   await displayModelsStore.initialize()
   cardStore.initialize()
 
-  if (onboardingStore.needsOnboarding) {
-    onboardingStore.showingSetup = true
-  }
+  // First-time setup (onboarding) dialog is not required for this project,
+  // so it is intentionally not auto-shown on launch.
 
   await chatSessionStore.initialize()
   await serverChannelStore.initialize({ possibleEvents: ['ui:configure'] }).catch(err => console.error('Failed to initialize Mods Server Channel in App.vue:', err))
