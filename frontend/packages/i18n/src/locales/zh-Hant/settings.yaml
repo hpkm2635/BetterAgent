@@ -10,8 +10,8 @@ animations:
 dialogs:
   onboarding:
     official:
-      title: AIRI 官方提供者
-    title: 歡迎來到 AIRI！
+      title: Better Agent 官方提供者
+    title: 歡迎來到 Better Agent！
     description: 讓我們先設定您的第一個服務來源來開始使用。
     selectProvider: 選擇服務來源
     configureProvider: 設定 {provider}
@@ -35,13 +35,13 @@ dialogs:
     retry: 重試
     credentialsSafeLabel: 請妥善保管 API 金鑰與憑證！
     credentialsSafeLocal: >-
-      AIRI 完全在您的電腦本機執行，我們絕不會竊取您用於 AI / LLM 提供者的憑證。但請注意，API 金鑰屬於敏感資訊，請妥善保管，切勿與他人分享。
+      Better Agent 完全在您的電腦本機執行，我們絕不會竊取您用於 AI / LLM 提供者的憑證。但請注意，API 金鑰屬於敏感資訊，請妥善保管，切勿與他人分享。
     credentialsSafeOpenSource: >-
-      AIRI 以 {github} 開放原始碼，如果您想了解我們如何處理您的憑證，歡迎檢視我們的程式碼。
+      Better Agent 以 {github} 開放原始碼，如果您想了解我們如何處理您的憑證，歡迎檢視我們的程式碼。
     enableChatCheck: >-
-      允許 airi 傳送「ping」訊息給第一個可用的聊天模型，以檢查是否可用
+      允許 Better Agent 傳送「ping」訊息給第一個可用的聊天模型，以檢查是否可用
     start: 開始吧！
-    loginPrompt: Sign in to use the official AIRI provider for the best experience.
+    loginPrompt: Sign in to use the official Better Agent provider for the best experience.
     loginAction: Sign in
     setupWithoutSigningIn: Setup with your provider
     flux: Flux
@@ -95,7 +95,7 @@ analytics:
   notice:
     title: Usage analytics
     description: >-
-      AIRI collects anonymous usage analytics to help us understand how the app is used and improve stability. No personal data is collected.
+      Better Agent collects anonymous usage analytics to help us understand how the app is used and improve stability. No personal data is collected.
     privacyPrefix: Read the
     privacyLink: privacy policy
     onboardingHint: You can turn analytics off later in Settings > System > General.
@@ -144,7 +144,7 @@ live2d:
   theme-color-from-model:
     title: 從模型中提取顏色
     description: >
-      Extract prominent colors from current rendering canvas. Click on the color to apply it to AIRI. Try to extract multiple times, with the model in different poses, if the colors are not desirable.
+      Extract prominent colors from current rendering canvas. Click on the color to apply it to Better Agent. Try to extract multiple times, with the model in different poses, if the colors are not desirable.
     button-extract:
       title: 提取
   animation:
@@ -167,7 +167,7 @@ live2d:
       description: Force blinking animation with external timer
     blink-mode:
       title: Blink mode
-      description: Choose the model built-in blink or AIRI's forced blink timer.
+      description: Choose the model built-in blink or Better Agent's forced blink timer.
     idle-motion:
       title: Idle animation
       no-motion: No animation available
@@ -231,7 +231,7 @@ pages:
     connections:
       tab: Connected accounts
       title: Connected accounts
-      description: Sign in to AIRI through these providers. Unlink to revoke access, then link again to switch to a different account.
+      description: Sign in to Better Agent through these providers. Unlink to revoke access, then link again to switch to a different account.
       status:
         linked: Linked
         notLinked: Not linked
@@ -248,7 +248,7 @@ pages:
         listFailed: Could not load connected accounts.
         unlinkFailed: Could not unlink this account.
         linkFailed: Could not start the link flow.
-        accountAlreadyLinkedToDifferentUser: 這個 OAuth 帳戶已經連結到另一個 AIRI 帳戶了。請選擇另一個第三方帳戶，或先在另一個 AIRI 帳戶中解除連結。
+        accountAlreadyLinkedToDifferentUser: 這個 OAuth 帳戶已經連結到另一個 Better Agent 帳戶了。請選擇另一個第三方帳戶，或先在另一個 Better Agent 帳戶中解除連結。
         oauthCallbackFailed: 暫時無法連結這個 OAuth 帳戶。請重試，或選擇另一個第三方帳戶。
         lastAccount: This is your only sign-in method. Set a password first before unlinking it.
     security:
@@ -320,7 +320,7 @@ pages:
     delete: 刪除
     delete_card: 刪除角色卡
     delete_confirmation: 確定要刪除此角色卡嗎？
-    description: 使用 AIRI 角色卡預設
+    description: 使用 Better Agent 角色卡預設
     description_label: 描述
     drop_here: 放開以上傳檔案
     create_card: 建立新角色卡
@@ -390,7 +390,7 @@ pages:
       model: 聲音 / 模型
       voice: 聲音 / 聲線
     systemprompt: 系統提示詞
-    title: AIRI 角色卡
+    title: Better Agent 角色卡
     try_different_search: 嘗試使用其他關鍵字搜尋
     export: 匯出
     exported: 角色卡套件已匯出
@@ -399,13 +399,13 @@ pages:
     import_missing_file: 角色卡套件缺少必要檔案
     import_invalid_file: 角色卡套件檔案無效
     upload: 上傳
-    upload_desc: 點擊或拖曳 AIRI 角色卡套件以匯入
+    upload_desc: 點擊或拖曳 Better Agent 角色卡套件以匯入
   memory:
     description: 存放記憶的地方，以及策略
     title: 記憶體
   data:
     title: 資料
-    description: 管理已儲存的 AIRI 資料、匯出與重置作業
+    description: 管理已儲存的 Better Agent 資料、匯出與重置作業
     sections:
       chats:
         title: 對話紀錄
@@ -434,11 +434,11 @@ pages:
         delete: 刪除所有資料
       desktop-folder:
         title: 開啟應用程式資料夾
-        description: 在檔案管理器中開啟 AIRI 的資料夾。
+        description: 在檔案管理器中開啟 Better Agent 的資料夾。
         open: 開啟資料夾
       desktop:
         title: 重設桌面設定與狀態
-        description: 清除 AIRI 桌面設定與執行階段狀態
+        description: 清除 Better Agent 桌面設定與執行階段狀態
         center: 將桌面視窗移至中央
         reset: 重設桌面資料
     confirmations:
@@ -535,7 +535,7 @@ pages:
           name: Nano Banana（預覽）
           description: 使用 Google AI Studio 進行圖像預覽與回應。
       card:
-        description: 設定 AIRI 生成圖像與視覺內容的方式。
+        description: 設定 Better Agent 生成圖像與視覺內容的方式。
         comfyui_empty: 尚未設定 ComfyUI 工作流程。前往「設定 → 提供者 → ComfyUI」上傳工作流程範本。
         exposed_fields: '已公開 {count} 個欄位'
         open_on_replicate: 在 Replicate 上開啟
@@ -611,7 +611,7 @@ pages:
       description: 一起玩 Factorio！
       title: 異星工廠 Factorio
       enable: 啟用異星工廠集成
-      enable-description: 允許 AIRI 與異星工廠遊戲互動
+      enable-description: 允許 Better Agent 與異星工廠遊戲互動
       server-address: 伺服器地址
       server-address-description: 異星工廠伺服器的 IP 地址或主機名稱
       server-address-placeholder: 輸入伺服器地址（例如：localhost 或 192.168.1.100）
@@ -678,7 +678,7 @@ pages:
       description: Discord 訊息與語音聊天
       title: Discord
       enable: 啟用 Discord 集成
-      enable-description: 允許 AIRI 透過 Discord 進行互動
+      enable-description: 允許 Better Agent 透過 Discord 進行互動
       token: 機器人權杖
       token-description: 您的 Discord 機器人权杖
       token-placeholder: 輸入您的 Discord 機器人权杖
@@ -717,7 +717,7 @@ pages:
             search_voices_results: 找到 {count} / {total} 條聲線
             unsupported_voice_warning_title: 未支援的語音
             unsupported_voice_warning_content: >-
-              嘗試使用不同的模型或提供者。我們正努力盡快支援此模型的所有語音；若你急需此功能，請在 GitHub 回報：https://github.com/moeru-ai/airi/issues。
+              嘗試使用不同的模型或提供者。我們正努力盡快支援此模型的所有語音；若你急需此功能，請在 GitHub 回報：https://github.com/moeru-ai/Better Agent/issues。
             show_less: 顯示更少
             show_more: 顯示更多
             title: 選擇語音合成服務來源
@@ -736,7 +736,7 @@ pages:
       description: X / Twitter 的瀏覽與使用
       title: X / Twitter
       enable: 啟用 X / Twitter 集成
-      enable-description: 允許 AIRI 與 X / Twitter 互動
+      enable-description: 允許 Better Agent 與 X / Twitter 互動
       api-key: API 金鑰
       api-key-description: 您的 X / Twitter API 金鑰
       api-key-placeholder: 輸入您的 X / Twitter API 金鑰
@@ -752,16 +752,16 @@ pages:
       configured: X / Twitter 已正確設定！
     web-search:
       title: 網路搜尋
-      description: 讓 AIRI 連網搜尋最新資訊
+      description: 讓 Better Agent 連網搜尋最新資訊
       enable: 啟用網路搜尋
-      enable-description: 允許 AIRI 在對話中連網搜尋
+      enable-description: 允許 Better Agent 在對話中連網搜尋
       api-key: Tavily API 金鑰
       api-key-description: 網路搜尋由 Tavily 提供支援，可在 tavily.com 免費取得 API 金鑰。
       api-key-placeholder: 輸入您的 Tavily API 金鑰
       configured: 網路搜尋已就緒！
     mcp-server:
       title: MCP 伺服器
-      description: 設定 MCP 伺服器並將其工具帶入 AIRI。
+      description: 設定 MCP 伺服器並將其工具帶入 Better Agent。
       config-path: 設定檔
       runtime-title: 執行狀態
       empty: 尚無 MCP 伺服器 — 點擊下方「新增伺服器」建立一個，或透過「編輯 JSON」貼上設定。
@@ -942,7 +942,7 @@ pages:
                   openai-compatible-check-connectivity:
                     label: 需要為 Ollama 進行額外配置
                     content: >-
-                      很抱歉，Ollama 連接檢查失敗。不要擔心，如果使用 Ollama，需要額外配置才能通過 Ollama。 您需要在啟動 Olama 應用程序或 Ollama CLI 伺服器時明確設置 <code>OLLAMA_HOST</code> 詳情，請檢查 <a href="https://airi.moeru.ai/docs/en/docs/manual/integrations/providers/chat/ollama">Ollama 集成指南</a>。
+                      很抱歉，Ollama 連接檢查失敗。不要擔心，如果使用 Ollama，需要額外配置才能通過 Ollama。 您需要在啟動 Olama 應用程序或 Ollama CLI 伺服器時明確設置 <code>OLLAMA_HOST</code> 詳情，請檢查 <a href="https://Better Agent.moeru.ai/docs/en/docs/manual/integrations/providers/chat/ollama">Ollama 集成指南</a>。
     common:
       continueAnyway: 仍然繼續
       goToModelSelection: 選擇模型→
@@ -1005,7 +1005,7 @@ pages:
     helpinfo:
       title: 第一次使用？
       description: >
-        AIRI 需要設定至少一個 {chat} 服務來源，才能正常思考與運作。你可以把它看作是 AIRI 系統中角色的大腦。
+        Better Agent 需要設定至少一個 {chat} 服務來源，才能正常思考與運作。你可以把它看作是 Better Agent 系統中角色的大腦。
     explained:
       chat: 文字生成模型服務來源，例如 OpenRouter、OpenAI、Ollama
       Speech: 語音（文字轉語音）模型服務來源，例如 ElevenLabs、Azure Speech
@@ -1116,7 +1116,7 @@ pages:
               placeholder: http://localhost:8188
           cors:
             title: CORS Block Detected
-            description: ComfyUI blocks requests from other applications by default. To allow AIRI to connect, you must start ComfyUI with the `--enable-cors-header "*"` flag.
+            description: ComfyUI blocks requests from other applications by default. To allow Better Agent to connect, you must start ComfyUI with the `--enable-cors-header "*"` flag.
             command: python main.py --enable-cors-header "*"
           workflows:
             title: Workflow Templates
@@ -1128,7 +1128,7 @@ pages:
             remove: Remove
             config_snippet: Artistry Config Snippet
             copy_json: Copy JSON
-            paste_hint: Paste this into your AIRI Card artistry config to override these nodes.
+            paste_hint: Paste this into your Better Agent Card artistry config to override these nodes.
           upload:
             prompt: Drop or select a workflow_api.json file
             invalid_json: Invalid JSON
@@ -1382,13 +1382,13 @@ pages:
         title: 網頁語音 API
       official:
         title: Official Provider
-        description: Official AI provider by AIRI.
+        description: Official AI provider by Better Agent.
         speech-title: Official Speech Provider
-        speech-description: Official text-to-speech provider by AIRI.
+        speech-description: Official text-to-speech provider by Better Agent.
         speech-streaming-title: Official Streaming Speech Provider
-        speech-streaming-description: Official low-latency text-to-speech provider by AIRI (bidirectional WebSocket).
+        speech-streaming-description: Official low-latency text-to-speech provider by Better Agent (bidirectional WebSocket).
         transcription-title: Official Transcription Provider
-        transcription-description: Official speech-to-text provider by AIRI.
+        transcription-description: Official speech-to-text provider by Better Agent.
       transcriptions:
         playground:
           title: 實驗平台
@@ -1406,7 +1406,7 @@ pages:
     server-hostname:
       label: Expose On Network
       description: >-
-        Choose whether the AIRI gateway only listens on this device or can be reached from your local network.
+        Choose whether the Better Agent gateway only listens on this device or can be reached from your local network.
       advanced-label: Bind Hostname
       advanced-description: >-
         Use a specific hostname or IP address when you need manual network binding.
@@ -1417,14 +1417,14 @@ pages:
     server-auth-token:
       label: Auth Token
       description: >-
-        Security token required by remote clients that connect to this gateway. When left empty, AIRI generates a new token automatically.
+        Security token required by remote clients that connect to this gateway. When left empty, Better Agent generates a new token automatically.
       placeholder: Auto-generate
     qr:
       title: Connect from Stage Pocket
       description: >-
         Scan this QR code from Stage Pocket to try all reachable local network addresses and save the first working one.
       refresh: Refresh
-      image-alt: AIRI server channel connection QR code
+      image-alt: Better Agent server channel connection QR code
       candidates: Candidate addresses
       token-hint: >-
         The QR code includes the auth token so Stage Pocket can authenticate after connecting. Do not share it publicly.
@@ -1434,7 +1434,7 @@ pages:
     qr-scan:
       title: Quick Connect
       description: Scan the QR code from Tamagotchi to quick connect
-      instructions: Point the camera at the AIRI connection QR code.
+      instructions: Point the camera at the Better Agent connection QR code.
       action: Scan
       success:
         title: Connected address saved
@@ -1517,8 +1517,8 @@ pages:
           presets:
             default:
               colors:
-                color-1: AIRI 綠
-              description: AIRI 為您帶來的預設綠色系主題色彩！
+                color-1: Better Agent 綠
+              description: Better Agent 為您帶來的預設綠色系主題色彩！
               title: 預設色彩
             morandi:
               colors:
@@ -1619,7 +1619,7 @@ sections:
 theme:
   title: 主題
   description: |
-    切換 AIRI 的基礎主題，亮色模式或暗色模式。
+    切換 Better Agent 的基礎主題，亮色模式或暗色模式。
 title: 設定
 voices: 聲線
 vrm:

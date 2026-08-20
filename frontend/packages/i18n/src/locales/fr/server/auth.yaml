@@ -1,17 +1,17 @@
 electronCallback:
   title:
     loading: Finalisation de connexion
-    openingAiri: Ouverture d'AIRI
+    openingBetter Agent: Ouverture d'Better Agent
     signedIn: Vous êtes connecté
     signInFailed: Échec de la connexion
-    finishSignInInAiri: Terminer la connexion dans AIRI
-    openAiriToContinue: Ouvrez AIRI pour continuer
+    finishSignInInBetter Agent: Terminer la connexion dans Better Agent
+    openBetter AgentToContinue: Ouvrez Better Agent pour continuer
   message:
-    checkingResponse: Vérification de votre réponse de connexion et préparation du transfert vers AIRI.
-    passingToAiri: Transmission de votre connexion à AIRI en cours. Cette page devrait se fermer dans un instant.
-    syncedAndSafeToClose: Nous avons notifié le client AIRI depuis lequel vous vous êtes connecté.
+    checkingResponse: Vérification de votre réponse de connexion et préparation du transfert vers Better Agent.
+    passingToBetter Agent: Transmission de votre connexion à Better Agent en cours. Cette page devrait se fermer dans un instant.
+    syncedAndSafeToClose: Nous avons notifié le client Better Agent depuis lequel vous vous êtes connecté.
     invalidResponse: Nous n'avons pas pu utiliser cette réponse de connexion.
-    loopbackUnreachable: Le navigateur n'a pas pu joindre AIRI via le port de rappel local.
+    loopbackUnreachable: Le navigateur n'a pas pu joindre Better Agent via le port de rappel local.
     tryOpenDirectly: Nous allons essayer d'ouvrir le transfert local directement. Si cela échoue encore, utilisez le bouton ci-dessous.
     automaticHandoffFailed: Le transfert automatique ne s'est pas terminé dans cette session de navigateur.
   label:
@@ -19,7 +19,7 @@ electronCallback:
     safeToClose: Vous pouvez fermer cet onglet en toute sécurité.
     whyStillHere: Pourquoi cet onglet est-il encore là ?
   action:
-    openAiriManually: Ouvrir AIRI manuellement
+    openBetter AgentManually: Ouvrir Better Agent manuellement
   hint:
     closeTabManually: Certains navigateurs ne permettent pas à cette page de se fermer automatiquement. Vous pouvez la fermer manuellement.
 signIn:
@@ -153,7 +153,7 @@ profile:
     setLinkSent: Vérifiez {email} pour le lien pour définir votre mot de passe.
     setLinkFailed: Nous n'avons pas pu envoyer le lien de configuration du mot de passe.
   linkedAccounts:
-    description: Connectez-vous à AIRI par l'intermédiaire de ces fournisseurs. Déconnectez-vous en pour révoquer l'accès, puis liez à nouveau pour basculer vers un autre compte.
+    description: Connectez-vous à Better Agent par l'intermédiaire de ces fournisseurs. Déconnectez-vous en pour révoquer l'accès, puis liez à nouveau pour basculer vers un autre compte.
     status:
       linked: Relié
       notLinked: Non relié
@@ -195,6 +195,6 @@ webCallback:
     missingCodeOrState: Code d'autorisation ou état manquant
     missingFlowState: État du flux OIDC manquant - veuillez réessayer de vous connecter
     tokenExchangeFailed: L'échange de jetons a échoué
-    finalizing: Finalisation de l'authentification avec AIRI.
+    finalizing: Finalisation de l'authentification avec Better Agent.
   action:
     tryAgain: Réessayez

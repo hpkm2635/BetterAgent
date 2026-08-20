@@ -3,7 +3,7 @@ chat:
     retry: Thử lại
   message:
     character-name:
-      airi: AIRI
+      Better Agent: Better Agent
       core-system: Hệ thống lõi
       you: Bạn
   reasoning: Đang suy nghĩ

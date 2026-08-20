@@ -3,7 +3,7 @@ chat:
     retry: Повторить
   message:
     character-name:
-      airi: AIRI
+      Better Agent: Better Agent
       core-system: Core система
       you: Ты
   reasoning: Причина

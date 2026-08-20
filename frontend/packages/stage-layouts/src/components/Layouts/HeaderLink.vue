@@ -20,7 +20,7 @@ const { isDark: dark } = useTheme()
       <img :src="Logo" h-8 w-8 class="theme-colored">
     </template>
     <div translate-y="[2px]" font-quicksand font-semibold>
-      <span>AIRI</span>
+      <span>Better Agent</span>
     </div>
   </RouterLink>
 </template>

@@ -10,8 +10,8 @@ animations:
 dialogs:
   onboarding:
     official:
-      title: AIRI 官方提供商
-    title: 欢迎来到 AIRI！
+      title: Better Agent 官方提供商
+    title: 欢迎来到 Better Agent！
     description: 让我们设置您的第一个服务来源来开始使用。
     selectProvider: 选择服务来源
     configureProvider: 配置 {provider}
@@ -35,13 +35,13 @@ dialogs:
     retry: 重试
     credentialsSafeLabel: 保证您的 API 密钥和凭据的安全！
     credentialsSafeLocal: >-
-      AIRI 完全本地运行在您的电脑中，我们绝不窃取您对大模型提供商的凭据。但请牢记，您的 API 密钥属于敏感信息。务必妥善保管，切勿与他人分享。
+      Better Agent 完全本地运行在您的电脑中，我们绝不窃取您对大模型提供商的凭据。但请牢记，您的 API 密钥属于敏感信息。务必妥善保管，切勿与他人分享。
     credentialsSafeOpenSource: >-
-      AIRI 在 {github} 开源，如果您想确认我们如何存储您的凭据，您可以自由浏览源码。
+      Better Agent 在 {github} 开源，如果您想确认我们如何存储您的凭据，您可以自由浏览源码。
     enableChatCheck: >-
-      允许 AIRI 向第一个可用的聊天模式发送「ping」消息以检查可用性
+      允许 Better Agent 向第一个可用的聊天模式发送「ping」消息以检查可用性
     start: 开始吧！
-    loginPrompt: 登录并使用 AIRI 官方提供的服务以获得最佳体验。
+    loginPrompt: 登录并使用 Better Agent 官方提供的服务以获得最佳体验。
     loginAction: 登录
     setupWithoutSigningIn: 配置您自己的 AI 服务来源
     flux: Flux 电量
@@ -95,7 +95,7 @@ analytics:
   notice:
     title: 使用数据及崩溃分析
     description: >-
-      AIRI 开发者将会收集脱敏的匿名使用数据，以及崩溃及错误细节，以帮助我们了解应用程序是如何使用和提高稳定性的，不会收集任何个人数据。
+      Better Agent 开发者将会收集脱敏的匿名使用数据，以及崩溃及错误细节，以帮助我们了解应用程序是如何使用和提高稳定性的，不会收集任何个人数据。
     privacyPrefix: 阅读
     privacyLink: 隐私政策
     onboardingHint: 您可以稍后在「设置」>「系统」>「通用」中关闭使用数据及崩溃分析。
@@ -144,7 +144,7 @@ live2d:
   theme-color-from-model:
     title: 从模型提取主题颜色
     description: >
-      从当前渲染画布提取主要颜色。点击颜色即可应用到 AIRI；如果颜色不理想，请让模型摆出不同姿势后多次提取。
+      从当前渲染画布提取主要颜色。点击颜色即可应用到 Better Agent；如果颜色不理想，请让模型摆出不同姿势后多次提取。
     button-extract:
       title: 提取
   animation:
@@ -167,7 +167,7 @@ live2d:
       description: 使用外部计时器强制播放眨眼动画
     blink-mode:
       title: 眨眼模式
-      description: 选择模型内置眨眼或 AIRI 的强制眨眼计时器。
+      description: 选择模型内置眨眼或 Better Agent 的强制眨眼计时器。
     idle-motion:
       title: 空闲动画
       no-motion: 没有可用动画
@@ -231,7 +231,7 @@ pages:
     connections:
       tab: 已关联的帐户
       title: 已关联的账户
-      description: 可以通过第三方帐户登录至 AIRI。解除关联即可撤回对第三方帐户的授权，也可以通过解除关联来关联至另一个帐户。
+      description: 可以通过第三方帐户登录至 Better Agent。解除关联即可撤回对第三方帐户的授权，也可以通过解除关联来关联至另一个帐户。
       status:
         linked: 已关联
         notLinked: 未关联
@@ -248,7 +248,7 @@ pages:
         listFailed: 暂时无法加载已关联的帐户
         unlinkFailed: 无法解除此帐户的关联
         linkFailed: 暂时无法开始关联的流程，要之后再试试吗？
-        accountAlreadyLinkedToDifferentUser: 这个 OAuth 帐户已经关联到另一个 AIRI 帐户了。请选择另一个第三方帐户，或者先在另一个 AIRI 帐户中解除关联。
+        accountAlreadyLinkedToDifferentUser: 这个 OAuth 帐户已经关联到另一个 Better Agent 帐户了。请选择另一个第三方帐户，或者先在另一个 Better Agent 帐户中解除关联。
         oauthCallbackFailed: 暂时无法关联这个 OAuth 帐户。请重试，或选择另一个第三方帐户。
         lastAccount: 这是你当前唯一的登录方式，请务必先设置密码再解除关联哦
     security:
@@ -320,7 +320,7 @@ pages:
     delete: 删除
     delete_card: 删除角色卡
     delete_confirmation: 确定要删除这张角色卡吗？
-    description: 使用 AIRI 角色卡预设
+    description: 使用 Better Agent 角色卡预设
     description_label: 描述
     drop_here: 放开以上传文件
     create_card: 创建新角色卡
@@ -390,7 +390,7 @@ pages:
       model: 声音 / 模型
       voice: 声音 / 声线
     systemprompt: 系统提示词
-    title: AIRI 角色卡
+    title: Better Agent 角色卡
     try_different_search: 尝试使用其他关键词搜索
     export: 导出
     exported: 卡片包已导出
@@ -399,13 +399,13 @@ pages:
     import_missing_file: 卡片包缺少必需文件
     import_invalid_file: 卡片包文件无效
     upload: 上传
-    upload_desc: 点击或拖动 AIRI 角色卡包以导入
+    upload_desc: 点击或拖动 Better Agent 角色卡包以导入
   memory:
     description: 存放记忆的地方，以及策略
     title: 记忆体
   data:
     title: Data
-    description: 管理存储 AIRI 数据、导出和重置
+    description: 管理存储 Better Agent 数据、导出和重置
     sections:
       chats:
         title: 聊天会话
@@ -434,11 +434,11 @@ pages:
         delete: 删除所有数据
       desktop-folder:
         title: 打开应用数据文件夹
-        description: 在文件管理器中打开 AIRI 的数据文件夹。
+        description: 在文件管理器中打开 Better Agent 的数据文件夹。
         open: 打开文件夹
       desktop:
         title: 重置桌面设置和状态
-        description: 清除 AIRI 桌面设置和运行状态。
+        description: 清除 Better Agent 桌面设置和运行状态。
         center: 将桌面窗口移至中央
         reset: 重置桌面数据
     confirmations:
@@ -535,7 +535,7 @@ pages:
           name: Nano Banana（预览）
           description: 使用 Google AI Studio 进行图像预览和响应。
       card:
-        description: 配置 AIRI 生成图像和视觉内容的方式。
+        description: 配置 Better Agent 生成图像和视觉内容的方式。
         comfyui_empty: 未配置 ComfyUI 工作流。前往设置 → 提供商 → ComfyUI 上传工作流模板。
         exposed_fields: '{count} exposed fields'
         open_on_replicate: Open on Replicate
@@ -611,7 +611,7 @@ pages:
       description: 一起玩 Factorio！
       title: 异星工厂 Factorio
       enable: 启用异星工厂集成
-      enable-description: 允许AIRI与异星工厂游戏互动
+      enable-description: 允许Better Agent与异星工厂游戏互动
       server-address: 服务器地址
       server-address-description: 异星工厂服务器的IP地址或主机名
       server-address-placeholder: 输入服务器地址（例如：localhost或192.168.1.100）
@@ -678,7 +678,7 @@ pages:
       description: Discord 发消息和语音聊天
       title: Discord
       enable: 启用Discord集成
-      enable-description: 允许AIRI通过Discord进行互动
+      enable-description: 允许Better Agent通过Discord进行互动
       token: 机器人令牌
       token-description: 您的Discord机器人令牌
       token-placeholder: 输入您的Discord机器人令牌
@@ -717,7 +717,7 @@ pages:
             search_voices_results: 找到 {count} / {total} 个声线
             unsupported_voice_warning_title: 没有支持的声线
             unsupported_voice_warning_content: >-
-              我们正在尽快支持该模型的所有音色，如果你迫切希望支持该模型音色，请在 GitHub 上联系我们 https://github.com/moeru-ai/airi/issues
+              我们正在尽快支持该模型的所有音色，如果你迫切希望支持该模型音色，请在 GitHub 上联系我们 https://github.com/moeru-ai/Better Agent/issues
             show_less: 显示更少
             show_more: 显示更多
             title: 选择语音合成服务来源
@@ -736,7 +736,7 @@ pages:
       description: X / Twitter 的浏览和使用
       title: X / Twitter
       enable: 启用X / Twitter集成
-      enable-description: 允许AIRI与X / Twitter互动
+      enable-description: 允许Better Agent与X / Twitter互动
       api-key: API密钥
       api-key-description: 您的X / Twitter API密钥
       api-key-placeholder: 输入您的X / Twitter API密钥
@@ -752,16 +752,16 @@ pages:
       configured: X / Twitter已正确配置！
     web-search:
       title: 网络搜索
-      description: 让 AIRI 联网搜索最新信息
+      description: 让 Better Agent 联网搜索最新信息
       enable: 启用网络搜索
-      enable-description: 允许 AIRI 在对话中联网搜索
+      enable-description: 允许 Better Agent 在对话中联网搜索
       api-key: Tavily API 密钥
       api-key-description: 网络搜索由 Tavily 提供支持，可在 tavily.com 免费获取 API 密钥。
       api-key-placeholder: 输入您的 Tavily API 密钥
       configured: 网络搜索已就绪！
     mcp-server:
       title: MCP 集成
-      description: 配置其他 MCP 服务器并将能力拓展至 AIRI
+      description: 配置其他 MCP 服务器并将能力拓展至 Better Agent
       config-path: 配置文件
       runtime-title: 运行状态
       empty: 尚无已配置的 MCP 集成 - 点击「添加服务器」来创建一个，或者通过「编辑 JSON」直接粘贴配置
@@ -942,7 +942,7 @@ pages:
                   openai-compatible-check-connectivity:
                     label: Ollama需要额外的配置
                     content: >-
-                      很抱歉，Ollama 连接检查失败。不要担心，如果是 Ollama，需要额外配置才能通过 Ollama。 您需要在启动 Olama 应用程序或 Ollama CLI 服务器时明确设置 <code>OLLAMA_HOST</code> 详情，请检查 <a href="https://airi.moeru.ai/docs/en/docs/manual/integrations/providers/chat/ollama">Ollama 集成指南</a>。
+                      很抱歉，Ollama 连接检查失败。不要担心，如果是 Ollama，需要额外配置才能通过 Ollama。 您需要在启动 Olama 应用程序或 Ollama CLI 服务器时明确设置 <code>OLLAMA_HOST</code> 详情，请检查 <a href="https://Better Agent.moeru.ai/docs/en/docs/manual/integrations/providers/chat/ollama">Ollama 集成指南</a>。
     common:
       continueAnyway: 仍然继续
       goToModelSelection: 选择模型→
@@ -1005,7 +1005,7 @@ pages:
     helpinfo:
       title: 第一次使用？
       description: >
-        AIRI 需要配置至少一个 {chat} 服务来源，才能正常思考和运作。你可以把它看作是 AIRI 系统中角色的大脑。
+        Better Agent 需要配置至少一个 {chat} 服务来源，才能正常思考和运作。你可以把它看作是 Better Agent 系统中角色的大脑。
     explained:
       chat: 文本生成模型服务来源，例如 OpenRouter, OpenAI, Ollama
       Speech: 语音（文本转语音）模型服务来源，例如 ElevenLabs, Azure Speech
@@ -1116,7 +1116,7 @@ pages:
               placeholder: http://localhost:8188
           cors:
             title: 检测到 CORS 阻止
-            description: ComfyUI 默认会阻止来自其他应用程序的请求。若要允许 AIRI 连接，必须使用 --enable-cors-header "*" 参数启动 ComfyUI。
+            description: ComfyUI 默认会阻止来自其他应用程序的请求。若要允许 Better Agent 连接，必须使用 --enable-cors-header "*" 参数启动 ComfyUI。
             command: python main.py --enable-cors-header "*"
           workflows:
             title: 工作流模板
@@ -1128,7 +1128,7 @@ pages:
             remove: 移除
             config_snippet: 绘图配置片段
             copy_json: 复制 JSON
-            paste_hint: 将其粘贴到 AIRI 角色卡绘图配置中，以覆盖这些节点。
+            paste_hint: 将其粘贴到 Better Agent 角色卡绘图配置中，以覆盖这些节点。
           upload:
             prompt: 拖放或选择 workflow_api.json 文件
             invalid_json: 无效的 JSON
@@ -1381,13 +1381,13 @@ pages:
         description: 浏览器原生STT (需要 Chrome/Edge/Safari)
         title: Web 语音API
       official:
-        title: AIRI官方提供商
+        title: Better Agent官方提供商
         description: 登录后即可使用的服务来源
-        speech-title: AIRI 官方语音合成服务
+        speech-title: Better Agent 官方语音合成服务
         speech-description: 登录后即可使用的发声单元服务
         speech-streaming-title: 官方流式语音服务提供商
-        speech-streaming-description: AIRI 官方低延迟文本转语音服务提供商（双向 WebSocket）。
-        transcription-title: AIRI 官方语音识别服务
+        speech-streaming-description: Better Agent 官方低延迟文本转语音服务提供商（双向 WebSocket）。
+        transcription-title: Better Agent 官方语音识别服务
         transcription-description: 登录后即可使用的听觉单元服务
       transcriptions:
         playground:
@@ -1406,7 +1406,7 @@ pages:
     server-hostname:
       label: 是否暴露在连接的网络下（WiFi，有线）
       description: >-
-        选择是否只允许此设备与 AIRI 进行配对，或是也允许来自其他本地网络的设备进行配对
+        选择是否只允许此设备与 Better Agent 进行配对，或是也允许来自其他本地网络的设备进行配对
       advanced-label: 会监听的 hostname
       advanced-description: >-
         当您需要手动绑定时，使用指定的主机名或 IP 地址。
@@ -1417,14 +1417,14 @@ pages:
     server-auth-token:
       label: 认证凭据
       description: >-
-        连接和配对需要安全令牌。如果留空，AIRI 自动生成一个新的令牌。
+        连接和配对需要安全令牌。如果留空，Better Agent 自动生成一个新的令牌。
       placeholder: 自动生成
     qr:
       title: 从 Pocket（口袋）版配对
       description: >-
         从 Pocket（口袋）版扫描此二维码以进行配对
       refresh: 刷新
-      image-alt: AIRI 配对码
+      image-alt: Better Agent 配对码
       candidates: 备选连接地址
       token-hint: >-
         二维码包含了认证凭据，所以 Pocket（口袋）版可以自动配对，请不要公开分享此二维码。
@@ -1438,7 +1438,7 @@ pages:
       action: 扫描
       success:
         title: 连接地址已更新
-        description: '现在配对到的 AIRI 主端 {url}'
+        description: '现在配对到的 Better Agent 主端 {url}'
       errors:
         title: 二维码扫描失败
         failed: 扫描或连接二维码失败。
@@ -1517,8 +1517,8 @@ pages:
           presets:
             default:
               colors:
-                color-1: AIRI Green
-              description: 默认的绿色主题，由 AIRI 为您带来！
+                color-1: Better Agent Green
+              description: 默认的绿色主题，由 Better Agent 为您带来！
               title: 默认颜色
             morandi:
               colors:
@@ -1619,7 +1619,7 @@ sections:
 theme:
   title: 主题
   description: |
-    切换 AIRI 的基础主题，亮色模式或暗色模式。
+    切换 Better Agent 的基础主题，亮色模式或暗色模式。
 title: 设置
 voices: 声线
 vrm:

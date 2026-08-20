@@ -47,6 +47,14 @@ else
 router.beforeEach((to, from) => {
   if (to.path !== from.path)
     NProgress.start()
+
+  // Auth gate: anything outside /login and the OIDC /auth/* callback
+  // requires a local login marker. This is a placeholder until the real
+  // backend user management is wired in.
+  const localAuthed = localStorage.getItem('betteragent/local-auth') === '1'
+  const isPublic = to.path === '/login' || to.path.startsWith('/auth/')
+  if (!isPublic && !localAuthed)
+    return { path: '/login', query: { redirect: to.fullPath } }
 })
 
 router.afterEach(() => {

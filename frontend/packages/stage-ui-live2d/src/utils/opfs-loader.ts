@@ -268,8 +268,11 @@ export class OPFSCache {
       context.source = [new File([blob], fileName)]
     }
     catch (e) {
-      console.error(`[OPFS] Failed to fetch blob for ${key}`, e)
-      throw e
+      // NOTICE: Fall back to ZipLoader instead of throwing, so a transient
+      // pre-fetch failure (e.g. stale Service Worker, cold-start race) doesn't
+      // prevent the model from rendering. OPFS caching is skipped in this case.
+      console.warn(`[OPFS] Failed to pre-fetch blob for ${key}, falling back to ZipLoader`, e)
+      context.source = blobUrl
     }
 
     return next()

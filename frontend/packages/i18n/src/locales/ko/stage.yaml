@@ -3,7 +3,7 @@ chat:
     retry: Retry
   message:
     character-name:
-      airi: AIRI
+      Better Agent: Better Agent
       core-system: 코어
       you: 당신
   reasoning: 추론

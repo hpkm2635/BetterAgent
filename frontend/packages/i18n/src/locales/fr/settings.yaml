@@ -10,8 +10,8 @@ animations:
 dialogs:
   onboarding:
     official:
-      title: AIRI Official Provider
-    title: Bienvenue dans AIRI!
+      title: Better Agent Official Provider
+    title: Bienvenue dans Better Agent!
     description: Configurez votre premier fournisseur d’IA pour commencer.
     selectProvider: Choisissez un fournisseur d'IA.
     configureProvider: Configurer {provider}
@@ -35,13 +35,13 @@ dialogs:
     retry: Réessayer
     credentialsSafeLabel: Gardez vos clés API et identifiants en sécurité !
     credentialsSafeLocal: >-
-      AIRI fonctionne entièrement en local sur votre PC et nous ne volerons jamais vos identifiants pour les fournisseurs d'IA / LLM. Gardez toutefois à l'esprit que vos clés API sont des informations sensibles. Veillez à les conserver en lieu sûr et à ne les partager avec personne.
+      Better Agent fonctionne entièrement en local sur votre PC et nous ne volerons jamais vos identifiants pour les fournisseurs d'IA / LLM. Gardez toutefois à l'esprit que vos clés API sont des informations sensibles. Veillez à les conserver en lieu sûr et à ne les partager avec personne.
     credentialsSafeOpenSource: >-
-      AIRI est open source sur {github}, si vous souhaitez vérifier comment nous gérons vos identifiants, n'hésitez pas à inspecter notre code.
+      Better Agent est open source sur {github}, si vous souhaitez vérifier comment nous gérons vos identifiants, n'hésitez pas à inspecter notre code.
     enableChatCheck: >-
-      Autoriser AIRI à envoyer un message "ping" au premier modèle de chat disponible pour vérifier sa disponibilité
+      Autoriser Better Agent à envoyer un message "ping" au premier modèle de chat disponible pour vérifier sa disponibilité
     start: Commençons !
-    loginPrompt: Connectez-vous pour utiliser le fournisseur officiel AIRI et bénéficier de la meilleure expérience.
+    loginPrompt: Connectez-vous pour utiliser le fournisseur officiel Better Agent et bénéficier de la meilleure expérience.
     loginAction: Se connecter
     setupWithoutSigningIn: Configurer avec votre fournisseur
     flux: Flux
@@ -95,7 +95,7 @@ analytics:
   notice:
     title: Statistiques d'utilisation
     description: >-
-      AIRI collecte des statistiques d'utilisation anonymes pour nous aider à comprendre comment l'application est utilisée et améliorer sa stabilité. Aucune donnée personnelle n'est collectée.
+      Better Agent collecte des statistiques d'utilisation anonymes pour nous aider à comprendre comment l'application est utilisée et améliorer sa stabilité. Aucune donnée personnelle n'est collectée.
     privacyPrefix: Read the
     privacyLink: politique de confidentialité
     onboardingHint: Vous pouvez désactiver les statistiques plus tard dans Paramètres > Système > Général.
@@ -144,7 +144,7 @@ live2d:
   theme-color-from-model:
     title: Extraire les couleurs du modèle
     description: >
-      Extract prominent colors from current rendering canvas. Click on the color to apply it to AIRI. Try to extract multiple times, with the model in different poses, if the colors are not desirable.
+      Extract prominent colors from current rendering canvas. Click on the color to apply it to Better Agent. Try to extract multiple times, with the model in different poses, if the colors are not desirable.
     button-extract:
       title: Extraire
   animation:
@@ -167,7 +167,7 @@ live2d:
       description: Force blinking animation with external timer
     blink-mode:
       title: Blink mode
-      description: Choose the model built-in blink or AIRI's forced blink timer.
+      description: Choose the model built-in blink or Better Agent's forced blink timer.
     idle-motion:
       title: Idle animation
       no-motion: No animation available
@@ -231,7 +231,7 @@ pages:
     connections:
       tab: Connected accounts
       title: Connected accounts
-      description: Sign in to AIRI through these providers. Unlink to revoke access, then link again to switch to a different account.
+      description: Sign in to Better Agent through these providers. Unlink to revoke access, then link again to switch to a different account.
       status:
         linked: Linked
         notLinked: Not linked
@@ -248,7 +248,7 @@ pages:
         listFailed: Could not load connected accounts.
         unlinkFailed: Could not unlink this account.
         linkFailed: Could not start the link flow.
-        accountAlreadyLinkedToDifferentUser: Ce compte OAuth est déjà lié à un autre compte AIRI. Choisissez un autre compte fournisseur ou dissociez-le d'abord de l'autre compte AIRI.
+        accountAlreadyLinkedToDifferentUser: Ce compte OAuth est déjà lié à un autre compte Better Agent. Choisissez un autre compte fournisseur ou dissociez-le d'abord de l'autre compte Better Agent.
         oauthCallbackFailed: Impossible de connecter ce compte OAuth. Réessayez ou choisissez un autre compte fournisseur.
         lastAccount: This is your only sign-in method. Set a password first before unlinking it.
     security:
@@ -320,7 +320,7 @@ pages:
     delete: Supprimer
     delete_card: Supprimer la carte
     delete_confirmation: Êtes-vous sûr de vouloir supprimer cette carte ?
-    description: Utiliser les préréglages des cartes d'AIRI
+    description: Utiliser les préréglages des cartes d'Better Agent
     description_label: Description
     drop_here: Déposer pour téléverser
     create_card: Créer une nouvelle carte
@@ -390,7 +390,7 @@ pages:
       model: Parole / Modèle
       voice: Parole / Voix
     systemprompt: Prompt système
-    title: Carte AIRI
+    title: Carte Better Agent
     try_different_search: Essayez un autre terme de recherche
     export: Export
     exported: Card package exported
@@ -399,13 +399,13 @@ pages:
     import_missing_file: Card package is missing required files
     import_invalid_file: Card package file is invalid
     upload: Téléverser
-    upload_desc: Click or drag an AIRI card package to import
+    upload_desc: Click or drag an Better Agent card package to import
   memory:
     description: Endroit où les souvenirs sont stockés et organisés
     title: Mémoire
   data:
     title: Données
-    description: Gérer les données AIRI enregistrées, les exports et les réinitialisations
+    description: Gérer les données Better Agent enregistrées, les exports et les réinitialisations
     sections:
       chats:
         title: Sessions de chat
@@ -434,11 +434,11 @@ pages:
         delete: Supprimer toutes les données
       desktop-folder:
         title: Ouvrir le dossier app data
-        description: Ouvrez le dossier de données d'AIRI dans votre gestionnaire de fichiers.
+        description: Ouvrez le dossier de données d'Better Agent dans votre gestionnaire de fichiers.
         open: Ouvrir le dossier
       desktop:
         title: Réinitialiser les paramètres et états du bureau
-        description: Effacer les paramètres du bureau AIRI et l'état d'exécution.
+        description: Effacer les paramètres du bureau Better Agent et l'état d'exécution.
         center: Move desktop window to center
         reset: Réinitialiser les données du bureau
     confirmations:
@@ -535,7 +535,7 @@ pages:
           name: Nano Banana (Preview)
           description: Use Google AI Studio for image preview and reactions.
       card:
-        description: Configure how AIRI generates images and visual content.
+        description: Configure how Better Agent generates images and visual content.
         comfyui_empty: No ComfyUI workflows configured. Go to Settings → Providers → ComfyUI to upload a workflow template.
         exposed_fields: '{count} exposed fields'
         open_on_replicate: Open on Replicate
@@ -611,7 +611,7 @@ pages:
       description: Jouer à Factorio !
       title: Factorio
       enable: Activer l'intégration Factorio
-      enable-description: Autoriser AIRI à interagir avec le jeu Factorio
+      enable-description: Autoriser Better Agent à interagir avec le jeu Factorio
       server-address: Adresse du serveur
       server-address-description: L'adresse IP ou le nom d'hôte du serveur Factorio
       server-address-placeholder: Entrez l'adresse du serveur (ex. localhost ou 192.168.1.100)
@@ -678,7 +678,7 @@ pages:
       description: Chat et chat vocal via Discord
       title: Discord
       enable: Activer l'intégration Discord
-      enable-description: Autoriser AIRI à interagir via Discord
+      enable-description: Autoriser Better Agent à interagir via Discord
       token: Jeton du bot
       token-description: Votre jeton de bot Discord
       token-placeholder: Entrez votre jeton de bot Discord
@@ -717,7 +717,7 @@ pages:
             search_voices_results: '{count} voix trouvées sur {total}'
             unsupported_voice_warning_title: Aucune voix prise en charge
             unsupported_voice_warning_content: >-
-              Essayez un autre modèle ou fournisseur. Nous travaillons à prendre en charge toutes les voix pour ce modèle dès que possible. En cas d'urgence, n'hésitez pas à nous le signaler sur GitHub : https://github.com/moeru-ai/airi/issues.
+              Essayez un autre modèle ou fournisseur. Nous travaillons à prendre en charge toutes les voix pour ce modèle dès que possible. En cas d'urgence, n'hésitez pas à nous le signaler sur GitHub : https://github.com/moeru-ai/Better Agent/issues.
             show_less: Afficher moins
             show_more: Afficher plus
             title: Fournisseur
@@ -736,7 +736,7 @@ pages:
       description: Navigation et utilisation X / Twitter
       title: X / Twitter
       enable: Activer l'intégration X / Twitter
-      enable-description: Autoriser AIRI à interagir avec X / Twitter
+      enable-description: Autoriser Better Agent à interagir avec X / Twitter
       api-key: Clé API
       api-key-description: Votre clé API X / Twitter
       api-key-placeholder: Entrez votre clé API X / Twitter
@@ -752,16 +752,16 @@ pages:
       configured: X / Twitter est correctement configuré !
     web-search:
       title: Web Search
-      description: Let AIRI search the web for current information
+      description: Let Better Agent search the web for current information
       enable: Enable Web Search
-      enable-description: Allow AIRI to search the web during chat
+      enable-description: Allow Better Agent to search the web during chat
       api-key: Tavily API Key
       api-key-description: Web search is powered by Tavily. Get a free API key at tavily.com.
       api-key-placeholder: Enter your Tavily API key
       configured: Web search is ready to use!
     mcp-server:
       title: MCP servers
-      description: Configure MCP servers and bring their tools into AIRI.
+      description: Configure MCP servers and bring their tools into Better Agent.
       config-path: Config file
       runtime-title: État de l'exécution
       empty: No MCP servers yet — click "Add server" below to create one, or paste a config via "Edit JSON".
@@ -942,7 +942,7 @@ pages:
                   openai-compatible-check-connectivity:
                     label: Configuration supplémentaire requise pour Ollama
                     content: >-
-                      Nous sommes désolés que le test de connectivité pour Ollama ait échoué. Ne vous inquiétez pas, une configuration supplémentaire est nécessaire pour les instances Ollama. Vous devez définir explicitement <code>OLLAMA_HOST</code> lors du lancement de l'application ou du serveur CLI Ollama. Pour plus d'informations, consultez le <a href="https://airi.moeru.ai/docs/en/docs/manual/integrations/providers/chat/ollama">guide d'intégration Ollama</a>.
+                      Nous sommes désolés que le test de connectivité pour Ollama ait échoué. Ne vous inquiétez pas, une configuration supplémentaire est nécessaire pour les instances Ollama. Vous devez définir explicitement <code>OLLAMA_HOST</code> lors du lancement de l'application ou du serveur CLI Ollama. Pour plus d'informations, consultez le <a href="https://Better Agent.moeru.ai/docs/en/docs/manual/integrations/providers/chat/ollama">guide d'intégration Ollama</a>.
     common:
       continueAnyway: Continuer quand même
       goToModelSelection: Sélectionnez un Modèle
@@ -1005,7 +1005,7 @@ pages:
     helpinfo:
       title: Première fois ici ?
       description: >
-        AIRI nécessite qu’au moins un fournisseur {chat} soit configuré pour penser et se comporter correctement. On peut le considérer comme le cerveau des personnages vivant dans le système AIRI.
+        Better Agent nécessite qu’au moins un fournisseur {chat} soit configuré pour penser et se comporter correctement. On peut le considérer comme le cerveau des personnages vivant dans le système Better Agent.
     explained:
       chat: Fournisseurs de modèles de génération de texte, par ex. OpenRouter, OpenAI, Ollama.
       Speech: Fournisseurs de modèles de synthèse vocale, par ex. ElevenLabs, Azure Speech.
@@ -1116,7 +1116,7 @@ pages:
               placeholder: http://localhost:8188
           cors:
             title: CORS Block Detected
-            description: ComfyUI blocks requests from other applications by default. To allow AIRI to connect, you must start ComfyUI with the `--enable-cors-header "*"` flag.
+            description: ComfyUI blocks requests from other applications by default. To allow Better Agent to connect, you must start ComfyUI with the `--enable-cors-header "*"` flag.
             command: python main.py --enable-cors-header "*"
           workflows:
             title: Workflow Templates
@@ -1128,7 +1128,7 @@ pages:
             remove: Remove
             config_snippet: Artistry Config Snippet
             copy_json: Copy JSON
-            paste_hint: Paste this into your AIRI Card artistry config to override these nodes.
+            paste_hint: Paste this into your Better Agent Card artistry config to override these nodes.
           upload:
             prompt: Drop or select a workflow_api.json file
             invalid_json: Invalid JSON
@@ -1382,13 +1382,13 @@ pages:
         title: Web Speech API
       official:
         title: Fournisseur officiel
-        description: Fournisseur d'IA officiel par AIRI.
+        description: Fournisseur d'IA officiel par Better Agent.
         speech-title: Fournisseur vocal officiel
-        speech-description: Fournisseur texte-to-speech officiel par AIRI.
+        speech-description: Fournisseur texte-to-speech officiel par Better Agent.
         speech-streaming-title: Official Streaming Speech Provider
-        speech-streaming-description: Official low-latency text-to-speech provider by AIRI (bidirectional WebSocket).
+        speech-streaming-description: Official low-latency text-to-speech provider by Better Agent (bidirectional WebSocket).
         transcription-title: Fournisseur de transcription officiel
-        transcription-description: Fournisseur speech-to-text officiel par AIRI.
+        transcription-description: Fournisseur speech-to-text officiel par Better Agent.
       transcriptions:
         playground:
           title: Terrain de test de transcription
@@ -1406,7 +1406,7 @@ pages:
     server-hostname:
       label: Expose On Network
       description: >-
-        Choose whether the AIRI gateway only listens on this device or can be reached from your local network.
+        Choose whether the Better Agent gateway only listens on this device or can be reached from your local network.
       advanced-label: Bind Hostname
       advanced-description: >-
         Use a specific hostname or IP address when you need manual network binding.
@@ -1417,14 +1417,14 @@ pages:
     server-auth-token:
       label: Auth Token
       description: >-
-        Security token required by remote clients that connect to this gateway. When left empty, AIRI generates a new token automatically.
+        Security token required by remote clients that connect to this gateway. When left empty, Better Agent generates a new token automatically.
       placeholder: Auto-generate
     qr:
       title: Connect from Stage Pocket
       description: >-
         Scan this QR code from Stage Pocket to try all reachable local network addresses and save the first working one.
       refresh: Refresh
-      image-alt: AIRI server channel connection QR code
+      image-alt: Better Agent server channel connection QR code
       candidates: Candidate addresses
       token-hint: >-
         The QR code includes the auth token so Stage Pocket can authenticate after connecting. Do not share it publicly.
@@ -1434,7 +1434,7 @@ pages:
     qr-scan:
       title: Quick Connect
       description: Scan the QR code from Tamagotchi to quick connect
-      instructions: Point the camera at the AIRI connection QR code.
+      instructions: Point the camera at the Better Agent connection QR code.
       action: Scan
       success:
         title: Connected address saved
@@ -1517,8 +1517,8 @@ pages:
           presets:
             default:
               colors:
-                color-1: Vert AIRI
-              description: La couleur de thème verdâtre par défaut, offerte par AIRI !
+                color-1: Vert Better Agent
+              description: La couleur de thème verdâtre par défaut, offerte par Better Agent !
               title: Couleur par défaut
             morandi:
               colors:
@@ -1619,7 +1619,7 @@ sections:
 theme:
   title: Thème
   description: |
-    Changez le thème de base d’AIRI, mode clair ou mode sombre.
+    Changez le thème de base d’Better Agent, mode clair ou mode sombre.
 title: Paramètres
 voices: Voix
 vrm:

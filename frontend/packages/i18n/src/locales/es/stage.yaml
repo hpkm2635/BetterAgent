@@ -3,7 +3,7 @@ chat:
     retry: Reintentar
   message:
     character-name:
-      airi: AIRI
+      Better Agent: Better Agent
       core-system: Sistema Central
       you: Tu
   reasoning: Razonamiento

@@ -144,13 +144,16 @@ function handleSetupSkipped() {
     <Toaster />
   </ToasterRoot>
 
-  <!-- First Time Setup Dialog -->
+  <!-- First Time Setup Dialog — hidden in favor of the full-page /login screen.
+       Kept (not deleted) per product decision; the OnboardingDialog component
+       files remain intact in case this needs to be restored later.
   <OnboardingDialog
     v-model="showingSetup"
     :extra-steps="onboardingExtraSteps"
     @configured="handleSetupConfigured"
     @skipped="handleSetupSkipped"
   />
+  -->
 
   <PerformanceOverlay />
   <VisionPrivacyIndicator />

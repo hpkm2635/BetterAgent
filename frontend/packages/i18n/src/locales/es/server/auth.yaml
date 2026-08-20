@@ -1,17 +1,17 @@
 electronCallback:
   title:
     loading: Finalizando inicio de sesión
-    openingAiri: Abriendo AIRI
+    openingBetter Agent: Abriendo Better Agent
     signedIn: Has iniciado sesión
     signInFailed: Error al iniciar sesión
-    finishSignInInAiri: Terminar sesión en AIRI
-    openAiriToContinue: Abrir AIRI para continuar
+    finishSignInInBetter Agent: Terminar sesión en Better Agent
+    openBetter AgentToContinue: Abrir Better Agent para continuar
   message:
-    checkingResponse: Comprobando su respuesta de inicio de sesión y preparando el handoff para AIRI.
-    passingToAiri: Passing your sign-in back to AIRI now. This page should close in a moment.
-    syncedAndSafeToClose: Hemos notificado al cliente de AIRI del que firmó.
+    checkingResponse: Comprobando su respuesta de inicio de sesión y preparando el handoff para Better Agent.
+    passingToBetter Agent: Passing your sign-in back to Better Agent now. This page should close in a moment.
+    syncedAndSafeToClose: Hemos notificado al cliente de Better Agent del que firmó.
     invalidResponse: No pudimos utilizar esta respuesta de inicio de sesión.
-    loopbackUnreachable: El navegador no pudo acceder a AIRI a través del puerto de devolución de llamada local.
+    loopbackUnreachable: El navegador no pudo acceder a Better Agent a través del puerto de devolución de llamada local.
     tryOpenDirectly: Intentaremos abrir el handoff local directamente. Si esto todavía falla, utilice el botón de abajo.
     automaticHandoffFailed: El handoff automático no ha finalizado en esta sesión del navegador.
   label:
@@ -19,7 +19,7 @@ electronCallback:
     safeToClose: Es seguro cerrar la pestaña ahora.
     whyStillHere: '¿Por qué esta pestaña sigue aquí?'
   action:
-    openAiriManually: Abrir AIRI manualmente
+    openBetter AgentManually: Abrir Better Agent manualmente
   hint:
     closeTabManually: Algunos navegadores no permiten que esta página se cierre automáticamente. Puede cerrarla manualmente.
 signIn:
@@ -153,7 +153,7 @@ profile:
     setLinkSent: Revisa {email} para ver el enlace para establecer tu contraseña.
     setLinkFailed: No se pudo enviar el enlace de configuración de contraseña.
   linkedAccounts:
-    description: Inicia sesión en AIRI a través de estos proveedores. Desvinculate para revocar el acceso y vuelve a enlazar para cambiar a una cuenta diferente.
+    description: Inicia sesión en Better Agent a través de estos proveedores. Desvinculate para revocar el acceso y vuelve a enlazar para cambiar a una cuenta diferente.
     status:
       linked: Vinculado
       notLinked: No vinculado
@@ -195,6 +195,6 @@ webCallback:
     missingCodeOrState: Falta el código de autorización o estado
     missingFlowState: Falta el estado de flujo OIDC - por favor intente iniciar sesión de nuevo
     tokenExchangeFailed: Fallo en el cambio de token
-    finalizing: Finalizando autenticación con AIRI.
+    finalizing: Finalizando autenticación con Better Agent.
   action:
     tryAgain: Inténtalo de nuevo

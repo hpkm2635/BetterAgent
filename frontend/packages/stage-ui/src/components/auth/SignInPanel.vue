@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   pendingProvider?: OAuthProvider | null
   error?: string | null
 }>(), {
-  title: 'Sign in to AIRI',
+  title: 'Sign in to Better Agent',
   subtitle: 'Choose a provider to continue your authorization flow.',
   pendingProvider: null,
   error: null,

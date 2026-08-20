@@ -195,6 +195,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/login': RouteRecordInfo<
+      '/login',
+      '/login',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/settings/': RouteRecordInfo<
       '/settings/',
       '/settings',
@@ -936,6 +943,12 @@ declare module 'vue-router/auto-routes' {
     '../../packages/stage-pages/src/pages/devtools/websocket-inspector.vue': {
       routes:
         | '/devtools/websocket-inspector'
+      views:
+        | never
+    }
+    'src/pages/login.vue': {
+      routes:
+        | '/login'
       views:
         | never
     }

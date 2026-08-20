@@ -1,17 +1,17 @@
 electronCallback:
   title:
     loading: Đang hoàn thành đăng nhập
-    openingAiri: Đang mở AIRI
+    openingBetter Agent: Đang mở Better Agent
     signedIn: Bạn đã đăng nhập
     signInFailed: Đăng nhập thất bại
-    finishSignInInAiri: Hoàn tất đăng nhập vào AIRI
-    openAiriToContinue: Mở AIRI để tiếp tục
+    finishSignInInBetter Agent: Hoàn tất đăng nhập vào Better Agent
+    openBetter AgentToContinue: Mở Better Agent để tiếp tục
   message:
-    checkingResponse: Đang kiểm tra phản hồi đăng nhập của bạn và chuẩn bị chuyển giao cho AIRI.
-    passingToAiri: Đang chuyển thông tin đăng nhập của bạn cho AIRI. Trang này sẽ tự động đóng trong giây lát.
-    syncedAndSafeToClose: Chúng tôi đã thông báo cho ứng dụng AIRI bạn đã đăng nhập từ đó.
+    checkingResponse: Đang kiểm tra phản hồi đăng nhập của bạn và chuẩn bị chuyển giao cho Better Agent.
+    passingToBetter Agent: Đang chuyển thông tin đăng nhập của bạn cho Better Agent. Trang này sẽ tự động đóng trong giây lát.
+    syncedAndSafeToClose: Chúng tôi đã thông báo cho ứng dụng Better Agent bạn đã đăng nhập từ đó.
     invalidResponse: Chúng tôi không thể dùng phản hồi đăng nhập này.
-    loopbackUnreachable: Trình duyệt không thể kết nối đến AIRI thông qua cổng callback cục bộ.
+    loopbackUnreachable: Trình duyệt không thể kết nối đến Better Agent thông qua cổng callback cục bộ.
     tryOpenDirectly: We will try opening the local handoff directly. If that still fails, use the button below.
     automaticHandoffFailed: Automatic handoff did not finish in this browser session.
   label:
@@ -19,7 +19,7 @@ electronCallback:
     safeToClose: Bạn có thể đóng tab này rồi đó.
     whyStillHere: Tại sao tab này lại ở đây?
   action:
-    openAiriManually: Mở AIRI thủ công
+    openBetter AgentManually: Mở Better Agent thủ công
   hint:
     closeTabManually: Một số trình duyệt không cho phép trang này tự đóng. Bạn có thể đóng thủ công.
 signIn:
@@ -153,7 +153,7 @@ profile:
     setLinkSent: Kiểm tra {email} để thấy link đặt mật khẩu.
     setLinkFailed: Chúng tôi không thể gửi link thiết lập mật khẩu.
   linkedAccounts:
-    description: Đăng nhập AIRI thông qua các nhà cung cấp này. Hủy liên kết để thu hồi quyền truy cập, sau đó liên kết lại một lần nữa để chuyển sang tài khoản khác.
+    description: Đăng nhập Better Agent thông qua các nhà cung cấp này. Hủy liên kết để thu hồi quyền truy cập, sau đó liên kết lại một lần nữa để chuyển sang tài khoản khác.
     status:
       linked: Đã liên kết
       notLinked: Chưa được liên kết
@@ -195,6 +195,6 @@ webCallback:
     missingCodeOrState: Thiếu mã ủy quyền hoặc giá trị trạng thái
     missingFlowState: Thiếu giá trị trạng thái của luồng OIDC - hãy thử đăng nhập lại
     tokenExchangeFailed: Trao đổi token thất bại
-    finalizing: Đang hoàn tất quá trình xác thực với AIRI.
+    finalizing: Đang hoàn tất quá trình xác thực với Better Agent.
   action:
     tryAgain: Thử lại

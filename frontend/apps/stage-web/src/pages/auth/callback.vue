@@ -59,7 +59,7 @@ async function handleTryAgain() {
   <main :class="['min-h-screen', 'flex flex-col items-center justify-center', 'px-6 py-10', 'font-cuteen']">
     <div v-if="error" :class="['sm:max-w-md md:max-w-lg', 'flex w-full flex-col items-center']">
       <div :class="['mb-8 text-3xl font-bold']">
-        Project AIRI
+        Better Agent
       </div>
 
       <div

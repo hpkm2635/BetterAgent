@@ -1,17 +1,17 @@
 electronCallback:
   title:
     loading: Завершение авторизации
-    openingAiri: Открытие AIRI
+    openingBetter Agent: Открытие Better Agent
     signedIn: Вы вошли в систему
     signInFailed: Не удалось войти
-    finishSignInInAiri: Завершение входа в AIRI
-    openAiriToContinue: Откройте AIRI, чтобы продолжить
+    finishSignInInBetter Agent: Завершение входа в Better Agent
+    openBetter AgentToContinue: Откройте Better Agent, чтобы продолжить
   message:
-    checkingResponse: Проверка ответа на вход и подготовка передачи в AIRI.
-    passingToAiri: Передавайте данные для входа обратно в AIRI. Эта страница должна закрыться через мгновение.
-    syncedAndSafeToClose: Мы уведомили клиента AIRI, с которого вы зарегистрировались.
+    checkingResponse: Проверка ответа на вход и подготовка передачи в Better Agent.
+    passingToBetter Agent: Передавайте данные для входа обратно в Better Agent. Эта страница должна закрыться через мгновение.
+    syncedAndSafeToClose: Мы уведомили клиента Better Agent, с которого вы зарегистрировались.
     invalidResponse: Мы не смогли использовать ответ на вход.
-    loopbackUnreachable: Браузеру не удалось подключиться к AIRI через локальный порт обратного вызова.
+    loopbackUnreachable: Браузеру не удалось подключиться к Better Agent через локальный порт обратного вызова.
     tryOpenDirectly: Мы постараемся открыть локальную передачу напрямую. Если это не удалось, воспользуйтесь кнопкой ниже.
     automaticHandoffFailed: Автоматическая передача не завершилась в этой сессии браузера.
   label:
@@ -19,7 +19,7 @@ electronCallback:
     safeToClose: Закрыть эту вкладку теперь безопасно.
     whyStillHere: Почему эта вкладка всё ещё здесь?
   action:
-    openAiriManually: Открыть AIRI вручную
+    openBetter AgentManually: Открыть Better Agent вручную
   hint:
     closeTabManually: Некоторые браузеры не позволяют закрыть эту страницу автоматически. Вы можете закрыть ее вручную.
 signIn:
@@ -153,7 +153,7 @@ profile:
     setLinkSent: Проверьте {email} на наличие ссылки для установки пароля.
     setLinkFailed: Не удалось отправить ссылку для установки пароля.
   linkedAccounts:
-    description: Войдите в AIRI через этих поставщиков. Отмените связь, чтобы отозвать доступ, затем установите связь снова, чтобы переключиться на другую учетную запись.
+    description: Войдите в Better Agent через этих поставщиков. Отмените связь, чтобы отозвать доступ, затем установите связь снова, чтобы переключиться на другую учетную запись.
     status:
       linked: Связанно
       notLinked: Не привязано
@@ -195,6 +195,6 @@ webCallback:
     missingCodeOrState: Отсутствует код авторизации или состояние
     missingFlowState: Отсутствует состояние потока OIDC - попробуйте войти снова
     tokenExchangeFailed: Обмен токенов не удался
-    finalizing: Завершение аутентификации с AIRI.
+    finalizing: Завершение аутентификации с Better Agent.
   action:
     tryAgain: Попробовать снова
