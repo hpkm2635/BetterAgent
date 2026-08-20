@@ -472,7 +472,7 @@ class CognitiveEngine:
                     chat_id=payload.chat_id,
                     source_channel=fast_path_src_channel,
                     action_type="send_message",
-                    text_content="pong 喵~ 🏓 (BetterAgent 系统运行正常！)",
+                    text_content="pong 🏓 (BetterAgent 系统运行正常！)",
                     chat_action="typing",
                 )
             ]
@@ -480,12 +480,12 @@ class CognitiveEngine:
             history_len = len(payload.short_term_history)
             rag_count = len(payload.rag_facts)
             status_text = (
-                f"🐱 **BetterAgent 猫娘健康度指标**\n\n"
+                f"📊 **BetterAgent 健康度指标**\n\n"
                 f"• **系统状态**: 正常在线 🟢\n"
                 f"• **触发模式**: {payload.trigger_type or 'user_message'}\n"
                 f"• **短期记忆缓冲**: {history_len} 条\n"
                 f"• **RAG 检索事实数**: {rag_count} 条\n"
-                f"• **猫娘状态**: {payload.current_emotion or '正常'}\n"
+                f"• **当前状态**: {payload.current_emotion or '正常'}\n"
             )
             return [
                 ActionDecisionPayload(
@@ -500,11 +500,11 @@ class CognitiveEngine:
             ]
         elif cmd == "/help":
             help_text = (
-                "🐾 **BetterAgent 猫娘指令与交互说明** 🐾\n\n"
+                "📋 **BetterAgent 指令与交互说明** 📋\n\n"
                 "• `/ping` - 探针基础存活检测\n"
-                "• `/health` 或 `/status` - 查看猫娘系统健康度与情绪参数\n"
+                "• `/health` 或 `/status` - 查看系统健康度与情绪参数\n"
                 "• `/help` - 显示此帮助信息\n\n"
-                "💡 **日常互动**: 直接发文字聊天、求抱抱、夸奖猫娘，或者要求猫娘画图、发语音包喵~"
+                "💡 **日常互动**: 直接发文字聊天、求抱抱、夸奖我，或者让我画图、发语音包~"
             )
             return [
                 ActionDecisionPayload(

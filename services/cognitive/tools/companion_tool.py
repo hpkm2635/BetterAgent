@@ -75,7 +75,7 @@ class AddScheduleTool(BaseTool):
                         "schedule_id": data.get("schedule_id", ""),
                         "title": title.strip(),
                         "remind_at": remind_at.strip(),
-                        "message": f"成功为主人创建提醒事项：'{title}'（时间：{remind_at}）喵～"
+                        "message": f"成功为主人创建提醒事项：'{title}'（时间：{remind_at}）"
                     }
                 else:
                     return {"status": "failed", "error": f"Companion HTTP {resp.status_code}"}
@@ -122,7 +122,7 @@ class QueryScheduleTool(BaseTool):
                         "status": "success",
                         "total": len(schedules),
                         "schedules": schedules,
-                        "message": f"查询到 {len(schedules)} 条待办日程喵～" if schedules else "目前没有待办日程喵～"
+                        "message": f"查询到 {len(schedules)} 条待办日程" if schedules else "目前没有待办日程"
                     }
                 else:
                     return {"status": "failed", "error": f"Companion HTTP {resp.status_code}"}
@@ -168,7 +168,7 @@ class DeleteScheduleTool(BaseTool):
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.delete(endpoint)
                 if resp.status_code == 200:
-                    return {"status": "success", "message": f"成功删除日程 {schedule_id} 喵～"}
+                    return {"status": "success", "message": f"成功删除日程 {schedule_id}"}
                 else:
                     return {"status": "failed", "error": f"Schedule {schedule_id} not found."}
         except Exception as e:

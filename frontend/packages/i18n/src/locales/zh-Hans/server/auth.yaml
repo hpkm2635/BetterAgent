@@ -7,19 +7,19 @@ electronCallback:
     finishSignInInAiri: 登录完成
     openAiriToContinue: 打开AIRI以继续
   message:
-    checkingResponse: 正在检查鉴权是否有效，并准备将登录状态转交给 AIRI...
-    passingToAiri: 正在将登录状态转交至 AIRI 客户端。本页面即将自动关闭...
-    syncedAndSafeToClose: 我们已经通知 AIRI 客户端你登录成功啦～
+    checkingResponse: 正在检查鉴权是否有效，并准备将登录状态转交给 Better Agent...
+    passingToAiri: 正在将登录状态转交至 Better Agent 客户端。本页面即将自动关闭...
+    syncedAndSafeToClose: 我们已经通知 Better Agent 客户端你登录成功啦～
     invalidResponse: 我们暂时无法验证本次登录的有效性，要重新试试看吗？
-    loopbackUnreachable: 暂时无法通知 AIRI，原因是无法与本地的 AIRI 通信，要重启 AIRI 试试吗？
-    tryOpenDirectly: 我们正在尝试通知 AIRI 客户端登录结果，如果仍没有登录，试试看点击下方的按钮～
+    loopbackUnreachable: 暂时无法通知 Better Agent，原因是无法与本地的 Better Agent 通信，要重启 Better Agent 试试吗？
+    tryOpenDirectly: 我们正在尝试通知 Better Agent 客户端登录结果，如果仍没有登录，试试看点击下方的按钮～
     automaticHandoffFailed: 自动登录到本地客户端失败了，要重新试试吗？
   label:
     signIn: 登录
     safeToClose: 现在可以安全地关闭此标签页了。
     whyStillHere: 为什么这个标签页仍在这里？
   action:
-    openAiriManually: 手动打开 AIRI
+    openAiriManually: 手动打开 Better Agent
   hint:
     closeTabManually: 一些浏览器不允许自动关闭这个页面，你可以手动关掉它。
 signIn:
@@ -153,7 +153,7 @@ profile:
     setLinkSent: 请查看 {email} 收件箱中的密码设置链接。
     setLinkFailed: 无法发送密码设置链接。
   linkedAccounts:
-    description: 可通过这些服务登录 AIRI。取消关联会撤销访问权限，之后可关联其他账户。
+    description: 可通过这些服务登录 Better Agent。取消关联会撤销访问权限，之后可关联其他账户。
     status:
       linked: 已关联
       notLinked: 未关联

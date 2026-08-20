@@ -115,7 +115,7 @@ async def main():
                     generation_id=getattr(req, "generation_id", 1),
                     source_channel=getattr(req, "source_channel", "web") or "web",
                     action_type="send_message",
-                    text_content="呜……人家的大脑突然打了个瞌睡喵，主人能不能过一会儿再理我一次？",
+                    text_content="呜……人家的大脑突然打了个瞌睡，主人能不能过一会儿再理我一次？",
                     chat_action="typing",
                     is_final=True,
                 )

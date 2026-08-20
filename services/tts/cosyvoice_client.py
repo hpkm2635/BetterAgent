@@ -31,7 +31,7 @@ class CosyVoiceClient:
         except Exception:
             pass
 
-        self.voice = prompt_voice or persona_voice or get_config_val("tts.cosyvoice.voice", "catgirl_tsundere")
+        self.voice = prompt_voice or persona_voice or get_config_val("tts.cosyvoice.voice", "default")
         self.sample_rate = get_config_val("tts.cosyvoice.sample_rate", 24000)
 
     async def synthesize_stream(self, text: str, cancel_event: Optional[Any] = None) -> AsyncGenerator[Tuple[bytes, str], None]:

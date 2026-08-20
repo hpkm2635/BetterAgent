@@ -1,7 +1,7 @@
 # BetterAgent (虚拟数字人陪伴系统)
 
 > **全双工多模态数字人陪伴系统 (Full-Duplex Digital Human Companion System)**  
-> 采用 **Go Core (高性能控制核) + NATS (中枢消息总线) + Python Services (认知/记忆微服务) + Vue 3 / AIRI (Live2D/VRM 数字人前端)** 的异构微服务架构。
+> 采用 **Go Core (高性能控制核) + NATS (中枢消息总线) + Python Services (认知/记忆微服务) + Vue 3 / Better Agent (Live2D/VRM 数字人前端)** 的异构微服务架构。
 
 ---
 
