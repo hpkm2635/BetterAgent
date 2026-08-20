@@ -147,7 +147,7 @@ class OpenAIProvider(BaseLLMProvider):
                             fallback_text = (
                                 f"{content}\n"
                                 f"[系统提示: 用户提供了图片/视觉画面，但当前 LLM 节点 ('{self.model}') "
-                                f"不支持视觉输入。请礼貌告知对方你看不到图片具体内容喵~]"
+                                f"不支持视觉输入。请礼貌告知对方你看不到图片具体内容]"
                             ).strip()
                             openai_msgs.append({"role": "user", "content": fallback_text})
                             continue

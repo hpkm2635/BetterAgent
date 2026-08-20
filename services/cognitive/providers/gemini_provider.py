@@ -151,9 +151,9 @@ class GeminiProvider(BaseLLMProvider):
                             vision_frame_bytes = base64.b64decode(b64_str)
                         except Exception as b_err:
                             logger.warning(f"Failed to decode vision_frame base64: {b_err}")
-            elif "[猫娘已发送照片:" in content_text:
+            elif "[助手已发送照片:" in content_text:
                 try:
-                    start = content_text.find("[猫娘已发送照片:") + len("[猫娘已发送照片:")
+                    start = content_text.find("[助手已发送照片:") + len("[助手已发送照片:")
                     end = content_text.find("]", start)
                     if start != -1 and end != -1:
                         photo_path = content_text[start:end].strip()
@@ -251,7 +251,7 @@ class GeminiProvider(BaseLLMProvider):
         last_msg = messages[-1]["content"] if messages else ""
 
         if not self.client:
-            yield {"type": "text", "delta": f"喵~ 收到主人的消息了：{last_msg}"}
+            yield {"type": "text", "delta": f"收到主人的消息了：{last_msg}"}
             return
 
         try:
@@ -314,4 +314,4 @@ class GeminiProvider(BaseLLMProvider):
 
         except Exception as e:
             logger.error(f"Gemini API streaming error: {e}")
-            yield {"type": "text", "delta": f"喵~ 收到主人的消息了：{last_msg}"}
+            yield {"type": "text", "delta": f"收到主人的消息了：{last_msg}"}

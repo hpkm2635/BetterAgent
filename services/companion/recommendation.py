@@ -31,7 +31,7 @@ def get_recommendations(chat_id: int) -> List[str]:
         )
         study_count = cur.fetchone()["c"]
         if study_count == 0:
-            recommendations.append("今天还没聊过学习话题哦，要一起复习吗喵？")
+            recommendations.append("今天还没聊过学习话题哦，要一起复习吗？")
 
         # 策略 2：未来 24 小时内是否有日程快到期
         cur.execute(

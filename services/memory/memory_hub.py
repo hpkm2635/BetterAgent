@@ -76,7 +76,7 @@ class MemoryHub:
         decision = payload.action_decision
         content_parts = []
         if decision.action_type == "send_photo" and decision.photo_path:
-            content_parts.append(f"[猫娘已发送照片: {decision.photo_path}]")
+            content_parts.append(f"[助手已发送照片: {decision.photo_path}]")
 
         if decision.text_content:
             content_parts.append(decision.text_content)

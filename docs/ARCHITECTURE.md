@@ -551,7 +551,7 @@ classDiagram
 
 ---
 
-## 6. 多渠道适配器扩展规范与 AIRI 前端架构
+## 6. 多渠道适配器扩展规范与 Better Agent 前端架构
 
 ### 6.1 多渠道适配器扩展规范 (Multi-Channel Adapter Pattern)
 
@@ -599,7 +599,7 @@ classDiagram
 
 ---
 
-### 6.2 AIRI 前端数字人渲染与状态控制架构 (AIRI Frontend Pipeline)
+### 6.2 Better Agent 前端数字人渲染与状态控制架构 (Better Agent Frontend Pipeline)
 
 前端采用 Vue 3 + Vite + Pinia + UnoCSS 构筑（`frontend/apps/stage-web` 与 `@proj-airi/stage-ui`），实现了渲染层与网络状态解耦的响应式管道：
 

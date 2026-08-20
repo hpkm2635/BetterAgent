@@ -120,32 +120,32 @@ class SQLAgent:
 
     def _format_answer(self, template: str, rows: List[Dict[str, Any]],
                        question: str) -> str:
-        """把查询结果转成猫娘口吻的回答。"""
+        """把查询结果转成角色口吻的回答。"""
         if template == "sum_week":
             total = self._first(rows, "total")
-            return f"这周你一共和我聊了 {total} 次喵～"
+            return f"这周你一共和我聊了 {total} 次"
         if template == "sum_today":
             total = self._first(rows, "total")
-            return f"今天你已经和我聊了 {total} 次喵～"
+            return f"今天你已经和我聊了 {total} 次"
         if template == "sum_total":
             total = self._first(rows, "total")
-            return f"你一共和我聊了 {total} 次喵～"
+            return f"你一共和我聊了 {total} 次"
         if template == "proactive":
             total = self._first(rows, "total")
-            return f"我一共主动找过你 {total} 次喵～"
+            return f"我一共主动找过你 {total} 次"
         if template == "mood":
             if not rows:
-                return "最近还没有情绪记录喵～"
+                return "最近还没有情绪记录"
             r = rows[0]
             tag = r.get("emotion_tag") or "平静"
             score = r.get("mood_score")
-            return f"最近我的情绪标签是 {tag}（评分 {score}）喵～"
+            return f"最近我的情绪标签是 {tag}（评分 {score}）"
         if template == "topics":
             if not rows:
-                return "最近还没有话题记录喵～"
+                return "最近还没有话题记录"
             topics = [r.get("topic") for r in rows if r.get("topic")]
-            return "最近我们聊的话题有：" + "、".join(topics) + " 喵～"
-        return "收到，但这个问题我还没学会怎么查喵～"
+            return "最近我们聊的话题有：" + "、".join(topics) + " "
+        return "收到，但这个问题我还没学会怎么查"
 
     @staticmethod
     def _first(rows: List[Dict[str, Any]], key: str, default: int = 0) -> int:
