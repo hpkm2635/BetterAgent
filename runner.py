@@ -833,6 +833,16 @@ def main():
             timeout=10.0,
         )
 
+    # 8.5. Python Companion Tools Service (:8096)
+    companion_main = ROOT_DIR / "services" / "companion" / "main.py"
+    if companion_main.exists():
+        mgr.spawn_service("companion_service", [mgr.py_exe, "-u", "-m", "services.companion.main"])
+        wait_for_readiness(
+            lambda: is_port_open("127.0.0.1", 8096),
+            service_name="Python Companion Tools Service (:8096)",
+            timeout=10.0,
+        )
+
     # 9. Admin Frontend Vue Service (:8095)
     admin_frontend_dir = ROOT_DIR / "admin" / "frontend"
     if admin_frontend_dir.exists() and (admin_frontend_dir / "package.json").exists():

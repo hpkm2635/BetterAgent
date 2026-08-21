@@ -58,6 +58,7 @@ logs/
 temp/
 **/temp/
 services/campus_kb/data/
+data/
 *.db
 *.db-shm
 *.db-wal

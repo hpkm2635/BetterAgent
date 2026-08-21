@@ -1,11 +1,34 @@
 import logging
 import os
+import time
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from shared.schema.payloads import ReasoningRequestPayload
 from shared.persona_loader import PersonaLoader
 from shared.config_loader import get_config_val
 
 logger = logging.getLogger("prompt_builder")
+
+
+def log_raw_trace(category: str, chat_id: int, title: str, content: str):
+    """
+    Appends full un-truncated System Prompts and Raw LLM Responses to logs/raw_prompts_and_responses.log
+    """
+    try:
+        log_file = Path("logs") / "raw_prompts_and_responses.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = (
+            f"\n=======================================================\n"
+            f"[{timestamp}] [{category.upper()}] ChatID={chat_id} | {title}\n"
+            f"-------------------------------------------------------\n"
+            f"{content}\n"
+            f"=======================================================\n"
+        )
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception as e:
+        logger.warning(f"Failed to write raw trace log: {e}")
 
 
 def _load_sts2_agents_md() -> str:
@@ -103,6 +126,21 @@ class PromptBuilder:
                 "不要等待被提问，自然地开启或延续话题，语气要符合你现在的心情。"
                 "【约束】主动搭话只需发送文字聊天，请勿在此轮主动对话中自动调用图片生成工具。"
             )
+            # Inject active companion recommendations/care items if companion service is running
+            try:
+                import httpx
+                companion_url = get_config_val("infrastructure.companion_url", "http://127.0.0.1:8096")
+                resp = httpx.get(f"{companion_url}/api/companion/recommendations?chat_id={payload.chat_id}", timeout=1.5)
+                if resp.status_code == 200:
+                    recs = resp.json().get("recommendations", [])
+                    if recs:
+                        recs_text = "\n".join(f"- {r}" for r in recs)
+                        prompt_parts.append(
+                            f"[主动关怀与智能提醒推荐]:\n{recs_text}\n"
+                            "请在本次主动搭话中，自然地关怀主人，并适时提醒上述事项。"
+                        )
+            except Exception as e:
+                logger.debug(f"Failed to fetch companion recommendations for proactive turn: {e}")
 
         if payload.trigger_type == "game_turn":
             if _STS2_AGENTS_MD_CONTENT:
@@ -156,7 +194,10 @@ class PromptBuilder:
                     if desc:
                         prompt_parts.append(f"- 最新动作: {desc}")
 
-        return "\n".join(prompt_parts)
+        full_prompt = "\n".join(prompt_parts)
+        log_raw_trace("SYSTEM_PROMPT", payload.chat_id, f"Trigger: {payload.trigger_type}", full_prompt)
+        logger.info(f"🧠 [PromptBuilder] System Prompt Built for ChatID={payload.chat_id} ({len(full_prompt)} chars) -> logged to raw_prompts_and_responses.log")
+        return full_prompt
 
     @staticmethod
     def build_messages(

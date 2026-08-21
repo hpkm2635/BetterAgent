@@ -24,6 +24,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -144,9 +145,24 @@ def _read_persona(persona_id: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else {}
 
 
+def _get_active_persona_id() -> str:
+    if CONFIG_YAML_PATH.exists():
+        try:
+            with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+                cfg = _yaml_safe.load(f) or {}
+                if isinstance(cfg, dict):
+                    persona_cfg = cfg.get("persona", {})
+                    if isinstance(persona_cfg, dict) and persona_cfg.get("active"):
+                        return str(persona_cfg["active"])
+        except Exception:
+            pass
+    return "catgirl"
+
+
 @app.get("/api/admin/personas")
 def list_personas():
-    """列出所有人设，摘要字段（id/name/tts_provider/voice_id）。"""
+    """列出所有人设，摘要字段（id/name/tts_provider/voice_id/is_active）及当前生效人设。"""
+    active_id = _get_active_persona_id()
     personas = []
     if PERSONA_DIR.exists():
         for path in sorted(PERSONA_DIR.glob("*.yaml")):
@@ -158,15 +174,54 @@ def list_personas():
                 continue
             if not isinstance(data, dict):
                 continue
+            pid = data.get("id") or path.stem
             tts = data.get("tts")
             tts = tts if isinstance(tts, dict) else {}
             personas.append({
-                "id": data.get("id") or path.stem,
+                "id": pid,
                 "name": data.get("name"),
                 "tts_provider": tts.get("provider"),
                 "voice_id": tts.get("voice_id"),
+                "is_active": (pid == active_id),
             })
-    return {"personas": personas}
+    return {"personas": personas, "active_persona": active_id}
+
+
+@app.post("/api/admin/personas/{persona_id}/activate")
+async def activate_persona(persona_id: str):
+    """设置指定人设为当前全局生效人设（更新 config/config.yaml 的 persona.active）。"""
+    path = _persona_path(persona_id)
+    if path is None or not path.exists():
+        return _error(404, "not found")
+
+    try:
+        if CONFIG_YAML_PATH.exists():
+            with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+                doc = _yaml_rt.load(f)
+            if isinstance(doc, dict):
+                if "persona" not in doc or not isinstance(doc["persona"], dict):
+                    doc["persona"] = {}
+                doc["persona"]["active"] = persona_id
+
+                with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+                    _yaml_rt.dump(doc, f)
+    except Exception as exc:
+        logger.error(f"Failed to activate persona {persona_id}: {exc}")
+        return _error(500, "failed to activate persona")
+
+    # Broadcast config reloaded event over NATS
+    try:
+        import nats
+        nats_url = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+        nats_user = os.getenv("NATS_USER")
+        nats_pass = os.getenv("NATS_PASSWORD")
+        nc = await nats.connect(servers=[nats_url], user=nats_user, password=nats_pass, connect_timeout=1)
+        await nc.publish("agent.config.reloaded", b"{}")
+        await nc.close()
+    except Exception:
+        pass
+
+    return {"status": "ok", "active_persona": persona_id}
 
 
 @app.get("/api/admin/personas/{persona_id}")
@@ -175,6 +230,7 @@ def get_persona(persona_id: str):
     data = _read_persona(persona_id)
     if data is None:
         return _error(404, "not found")
+    data["is_active"] = (persona_id == _get_active_persona_id())
     return data
 
 
@@ -234,6 +290,68 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
     except Exception as exc:
         logger.error(f"Failed to update persona YAML {path}: {exc}")
         return _error(500, "failed to update persona")
+
+    return {"status": "ok", "id": persona_id}
+
+
+@app.post("/api/admin/personas")
+def create_persona(payload: Optional[Dict[str, Any]] = Body(None)):
+    """根据模板新建人设并生成 YAML 配置文件。"""
+    if not payload:
+        return _error(400, "empty body")
+
+    persona_id = str(payload.get("id", "")).strip().lower()
+    if not persona_id or not _VALID_PERSONA_ID.match(persona_id):
+        return _error(400, "Invalid persona id (only alphanumeric, _ and - allowed)")
+
+    path = _persona_path(persona_id)
+    if path and path.exists():
+        return _error(400, f"Persona '{persona_id}' already exists")
+
+    name = str(payload.get("name", persona_id))
+    appearance = str(payload.get("appearance", ""))
+    base_prompt = str(payload.get("base_prompt", f"你叫 {name}，是一个AI助手。"))
+    sleepy_prompt = str(payload.get("sleepy_prompt", f"你叫 {name}，现在有些犯困。"))
+    knowledge_scope = str(payload.get("knowledge_scope", "日常陪伴"))
+    forbidden_topics = str(payload.get("forbidden_topics", "违规及敏感话题"))
+
+    tts_provider = str(payload.get("tts_provider", "gpt_sovits"))
+    voice_id = str(payload.get("voice_id", f"{persona_id}_voice"))
+
+    doc = {
+        "id": persona_id,
+        "name": name,
+        "appearance": appearance,
+        "base_prompt": base_prompt,
+        "sleepy_prompt": sleepy_prompt,
+        "knowledge_scope": knowledge_scope,
+        "forbidden_topics": forbidden_topics,
+        "tts": {
+            "provider": tts_provider,
+            "voice_id": voice_id,
+        },
+    }
+
+    try:
+        PERSONA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_path = None
+        target_path = PERSONA_DIR / f"{persona_id}.yaml"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=PERSONA_DIR,
+            prefix=f".{persona_id}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp_path = Path(f.name)
+            _yaml_rt.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target_path)
+    except Exception as exc:
+        logger.error(f"Failed to create persona YAML: {exc}")
+        return _error(500, "failed to create persona")
 
     return {"status": "ok", "id": persona_id}
 
@@ -619,6 +737,212 @@ async def delete_schedule(schedule_id: str):
     return await _forward(
         COMPANION_URL, "companion", "DELETE", f"/api/schedule/{schedule_id}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2.7 系统配置与 API 密钥管理（BYOK 模式）
+# ---------------------------------------------------------------------------
+CONFIG_YAML_PATH = REPO_ROOT / "config" / "config.yaml"
+ENV_FILE_PATH = REPO_ROOT / ".env"
+
+PROVIDER_ENV_KEYS = {
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "qwen": "QWEN_API_KEY",
+    "claude": "CLAUDE_API_KEY",
+}
+
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 6:
+        return "***"
+    return f"{key[:6]}***{key[-4:]}"
+
+
+def _update_env_file(key_updates: Dict[str, str]) -> None:
+    lines = []
+    if ENV_FILE_PATH.exists():
+        lines = ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+
+    updated_keys = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in line:
+            k, _ = line.split("=", 1)
+            k = k.strip()
+            if k in key_updates:
+                new_lines.append(f"{k}={key_updates[k]}")
+                updated_keys.add(k)
+                continue
+        new_lines.append(line)
+
+    for k, v in key_updates.items():
+        if k not in updated_keys:
+            new_lines.append(f"{k}={v}")
+
+    ENV_FILE_PATH.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    for k, v in key_updates.items():
+        os.environ[k] = v
+
+
+@app.get("/api/admin/config")
+def get_admin_config():
+    cfg = {}
+    if CONFIG_YAML_PATH.exists():
+        try:
+            with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+                cfg = _yaml_safe.load(f) or {}
+        except Exception as e:
+            logger.warning(f"Failed to read config.yaml: {e}")
+
+    llm_cfg = cfg.get("llm", {}) if isinstance(cfg.get("llm"), dict) else {}
+    default_provider = llm_cfg.get("default_provider", "gemini")
+
+    providers = {}
+    for prov, env_key in PROVIDER_ENV_KEYS.items():
+        key_val = os.environ.get(env_key, "").strip()
+        prov_cfg = llm_cfg.get(prov, {}) if isinstance(llm_cfg.get(prov), dict) else {}
+        model_name = prov_cfg.get("model", "")
+        providers[prov] = {
+            "has_key": bool(key_val),
+            "key_masked": _mask_key(key_val),
+            "model": model_name,
+        }
+
+    tts_cfg = cfg.get("tools", {}).get("tts", {}) if isinstance(cfg.get("tools"), dict) else {}
+    tts_provider = tts_cfg.get("provider", "cosyvoice")
+
+    net_cfg = cfg.get("network", {}) if isinstance(cfg.get("network"), dict) else {}
+
+    return {
+        "default_provider": default_provider,
+        "providers": providers,
+        "tts_provider": tts_provider,
+        "network": {
+            "http_proxy": net_cfg.get("http_proxy", os.environ.get("HTTP_PROXY", "")),
+            "https_proxy": net_cfg.get("https_proxy", os.environ.get("HTTPS_PROXY", "")),
+        },
+    }
+
+
+@app.patch("/api/admin/config")
+async def patch_admin_config(payload: Optional[Dict[str, Any]] = Body(None)):
+    if not payload:
+        return _error(400, "empty body")
+
+    env_updates = {}
+    api_keys = payload.get("api_keys") or {}
+    if isinstance(api_keys, dict):
+        for prov, val in api_keys.items():
+            if prov in PROVIDER_ENV_KEYS and isinstance(val, str) and val.strip():
+                env_updates[PROVIDER_ENV_KEYS[prov]] = val.strip()
+
+    network = payload.get("network") or {}
+    if isinstance(network, dict):
+        if "http_proxy" in network:
+            env_updates["HTTP_PROXY"] = str(network["http_proxy"])
+        if "https_proxy" in network:
+            env_updates["HTTPS_PROXY"] = str(network["https_proxy"])
+
+    if env_updates:
+        _update_env_file(env_updates)
+
+    # Update config.yaml using round-trip YAML
+    try:
+        if CONFIG_YAML_PATH.exists():
+            with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+                doc = _yaml_rt.load(f)
+            if isinstance(doc, dict):
+                if "default_provider" in payload and isinstance(payload["default_provider"], str):
+                    if "llm" not in doc:
+                        doc["llm"] = {}
+                    doc["llm"]["default_provider"] = payload["default_provider"]
+
+                models = payload.get("models") or {}
+                if isinstance(models, dict):
+                    if "llm" not in doc:
+                        doc["llm"] = {}
+                    for prov, m_name in models.items():
+                        if isinstance(m_name, str) and m_name.strip():
+                            if prov not in doc["llm"]:
+                                doc["llm"][prov] = {}
+                            doc["llm"][prov]["model"] = m_name.strip()
+
+                if network and isinstance(network, dict):
+                    if "network" not in doc:
+                        doc["network"] = {}
+                    if "http_proxy" in network:
+                        doc["network"]["http_proxy"] = str(network["http_proxy"])
+                    if "https_proxy" in network:
+                        doc["network"]["https_proxy"] = str(network["https_proxy"])
+
+                with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+                    _yaml_rt.dump(doc, f)
+    except Exception as e:
+        logger.error(f"Failed to update config.yaml: {e}")
+
+    # Optionally publish NATS event
+    try:
+        import nats
+        nats_url = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+        nats_user = os.getenv("NATS_USER")
+        nats_pass = os.getenv("NATS_PASSWORD")
+        nc = await nats.connect(servers=[nats_url], user=nats_user, password=nats_pass, connect_timeout=1)
+        await nc.publish("agent.config.reloaded", b"{}")
+        await nc.close()
+    except Exception:
+        pass
+
+    return {"status": "ok", "reloaded": True}
+
+
+@app.post("/api/admin/config/test-key")
+async def test_api_key(payload: Optional[Dict[str, Any]] = Body(None)):
+    if not payload:
+        return _error(400, "empty body")
+
+    provider = payload.get("provider")
+    api_key = payload.get("api_key")
+    if not provider or not api_key:
+        return _error(400, "provider and api_key are required")
+
+    start_time = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+            if provider == "gemini":
+                url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                resp = await client.get(url)
+                latency = int((time.time() - start_time) * 1000)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("name", "").replace("models/", "") for m in data.get("models", [])][:10]
+                    return {"status": "ok", "latency_ms": latency, "available_models": models or ["gemini-3.1-flash-lite", "gemini-1.5-pro"]}
+                else:
+                    return JSONResponse(status_code=400, content={"status": "error", "error": f"{resp.status_code} Unauthorized: {resp.text[:100]}"})
+            elif provider in ("openai", "deepseek", "qwen"):
+                base_urls = {
+                    "openai": "https://api.openai.com/v1",
+                    "deepseek": "https://api.deepseek.com/v1",
+                    "qwen": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+                }
+                base_url = base_urls.get(provider, "https://api.openai.com/v1")
+                resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+                latency = int((time.time() - start_time) * 1000)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("id", "") for m in data.get("data", [])][:10]
+                    return {"status": "ok", "latency_ms": latency, "available_models": models}
+                else:
+                    return JSONResponse(status_code=400, content={"status": "error", "error": f"{resp.status_code} Error: {resp.text[:100]}"})
+            else:
+                latency = int((time.time() - start_time) * 1000)
+                return {"status": "ok", "latency_ms": latency, "available_models": ["custom-model"]}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"status": "error", "error": f"Connection failed: {str(exc)}"})
 
 
 # ---------------------------------------------------------------------------

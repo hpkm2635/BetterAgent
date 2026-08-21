@@ -13,8 +13,6 @@ import { useBackgroundThemeColor } from '@proj-airi/stage-layouts/composables/th
 import { useBackgroundStore } from '@proj-airi/stage-layouts/stores/background'
 import { HoloCoupon } from '@proj-airi/stage-ui/components'
 import { LiveCaptionOverlay, STS2Dashboard } from '@proj-airi/stage-ui/components/gadgets'
-import EmotionHUDWidget from '../components/EmotionHUDWidget.vue'
-import ScheduleHUDWidget from '../components/ScheduleHUDWidget.vue'
 import { ViewControlSlider, WidgetStage } from '@proj-airi/stage-ui/components/scenes'
 import { useAudioRecorder } from '@proj-airi/stage-ui/composables/audio/audio-recorder'
 import { useVAD } from '@proj-airi/stage-ui/stores/ai/models/vad'

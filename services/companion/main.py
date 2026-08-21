@@ -27,9 +27,9 @@ from services.companion.schedule_service import ScheduleService
 from services.companion.sql_agent import SQLAgent
 from services.companion.recommendation import get_recommendations
 
-logger = logging.getLogger("companion_service")
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Companion Tools Service", version="1.0.0")
+logger = logging.getLogger("companion_service")
 
 # 启动时自动建表
 init_db()
@@ -38,14 +38,24 @@ schedule_service = ScheduleService()
 sql_agent = SQLAgent()
 
 
-@app.on_event("startup")
-async def _startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     schedule_service.start()
-
-
-@app.on_event("shutdown")
-async def _shutdown():
+    yield
     schedule_service.shutdown()
+
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Companion Tools Service", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ─── 数据模型 ──────────────────────────────────────────────────────────────

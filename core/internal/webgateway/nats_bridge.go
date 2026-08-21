@@ -338,6 +338,10 @@ func (b *NatsBridge) speechBoundaryPayload(chatID int64) schema.SpeechBoundaryPa
 // mediaType/voiceTranscript are set only for the STT path (both zero-valued
 // for plain typed text).
 func (b *NatsBridge) publishInboundMessage(chatID int64, text string, mediaType string, voiceTranscript *string) {
+	if b.urgeEngine != nil {
+		b.urgeEngine.OnUserActivity()
+	}
+
 	// /game_start and /game_stop are intercepted here, before anything else
 	// touches NATS/CSM/the LLM -- deterministic, Go-side, and (for
 	// /game_stop specifically) works as a genuine emergency stop precisely

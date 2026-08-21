@@ -6,7 +6,7 @@ from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayloa
 from shared.config_loader import get_config_val
 from services.cognitive.providers.factory import ProviderFactory
 from services.cognitive.tool_registry import ToolRegistry
-from services.cognitive.prompt_builder import PromptBuilder
+from services.cognitive.prompt_builder import PromptBuilder, log_raw_trace
 from services.cognitive.tools.validation import is_safe_media_filename
 from services.cognitive.mcp.presenter_manager import PresenterSessionManager
 
@@ -712,8 +712,16 @@ class CognitiveEngine:
 
         thought, clean_text = parse_thought_and_clean_text(cleaned_raw_text)
 
-        if thought:
-            logger.info(f"CoT Inner Monologue for chat_id={payload.chat_id}:\n{thought}")
+        logger.info(
+            f"\n=======================================================\n"
+            f"📥 [CognitiveEngine] LLM Raw Response Parsed (ChatID={payload.chat_id}):\n"
+            f"-------------------------------------------------------\n"
+            f"• Raw Text Output : {raw_text!r}\n"
+            f"• CoT Thought     : {thought or '(None)'}\n"
+            f"• Clean User Text : {clean_text!r}\n"
+            f"• Tool Calls      : {tool_calls}\n"
+            f"======================================================="
+        )
 
         if clean_text:
             actions.append(
@@ -813,6 +821,7 @@ class CognitiveEngine:
 
                 pending_calls: List[Dict[str, Any]] = []
                 cancelled = False
+                round_raw_text = ""
 
                 async for event in stream_gen:
                     if cancel_event and cancel_event.is_set():
@@ -827,10 +836,13 @@ class CognitiveEngine:
                     if event.get("type") == "thinking_delta":
                         thinking_text = event.get("text", "")
                         if thinking_text:
+                            round_raw_text += f"<thought>{thinking_text}</thought>"
                             segmenter.push(f"<thought>{thinking_text}</thought>")
                         continue
 
-                    sentences = segmenter.push(event.get("delta", ""))
+                    delta_str = event.get("delta", "")
+                    round_raw_text += delta_str
+                    sentences = segmenter.push(delta_str)
                     for s in sentences:
                         sentence_str = s.strip()
                         if sentence_str:
@@ -848,6 +860,16 @@ class CognitiveEngine:
 
                 if cancelled:
                     return
+
+                thought, clean_text = parse_thought_and_clean_text(round_raw_text)
+                raw_summary = (
+                    f"• Raw Text Output : {round_raw_text!r}\n"
+                    f"• CoT Thought     : {thought or '(None)'}\n"
+                    f"• Clean User Text : {clean_text!r}\n"
+                    f"• Pending Tools   : {pending_calls}"
+                )
+                log_raw_trace("RAW_RESPONSE", payload.chat_id, f"Stream Round {round_idx+1}", raw_summary)
+                logger.info(f"📥 [CognitiveEngine Stream Round {round_idx+1}] Raw response parsed for ChatID={payload.chat_id} -> logged to raw_prompts_and_responses.log")
 
                 if not pending_calls:
                     break

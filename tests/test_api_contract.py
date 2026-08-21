@@ -147,6 +147,23 @@ class TestAdminPanel:
         assert "sessions" in body
         assert isinstance(body["sessions"], list)
 
+    def test_get_config_returns_shape(self):
+        r = requests.get(f"{ADMIN_BASE}/api/admin/config", timeout=5)
+        assert r.status_code == 200
+        body = r.json()
+        assert "default_provider" in body
+        assert "providers" in body
+        assert "network" in body
+
+    def test_patch_config_updates(self):
+        r = requests.patch(
+            f"{ADMIN_BASE}/api/admin/config",
+            json={"default_provider": "gemini"},
+            timeout=5,
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
 # ─── 陪伴工具 ─────────────────────────────────────────────────────────────────
 
 class TestCompanionTools:
