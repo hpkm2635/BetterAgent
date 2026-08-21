@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import collections
+import time
 from typing import List, Dict, Any, Optional
 from shared.config_loader import get_config_val
 
@@ -61,6 +62,9 @@ class ShortTermMemoryBuffer:
             "role": role,
             "content": content,
             "metadata": metadata or {},
+            # 顶层 timestamp：供 admin 会话查看器展示真实时间（prompt_builder
+            # 只取 role/content，不会把这个字段拼进提示词）。
+            "timestamp": time.time(),
         }
 
         # Always update local buffer for fast in-memory access

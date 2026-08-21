@@ -323,7 +323,7 @@ def _as_list(value: Any) -> list:
 def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     """Normalize a Redis user-profile value into the contract shape."""
     if isinstance(raw, str):
-        return {"user_id": user_id, "display_name": raw, "known_facts": [], "last_seen": None}
+        return {"user_id": user_id, "display_name": raw, "known_facts": [], "last_seen": None, "email": None}
     if not isinstance(raw, dict):
         raw = {}
 
@@ -339,6 +339,7 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
         "display_name": display_name,
         "known_facts": known_facts,
         "last_seen": raw.get("last_seen"),
+        "email": raw.get("email"),
     }
 
 
@@ -417,6 +418,7 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "display_name": u["display_name"] or f"用户{uid}",
             "known_facts": u["known_facts"],
             "last_seen": u["last_seen"],
+            "email": None,
             "deleted": u["deleted"],
         }
     for uid, p in redis_profiles.items():
@@ -426,6 +428,7 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "display_name": p["display_name"],
             "known_facts": p["known_facts"],
             "last_seen": p["last_seen"],
+            "email": p.get("email"),
             "deleted": prev["deleted"] if prev else False,
         }
     return merged
@@ -437,13 +440,19 @@ def _user_payload(rec: Dict[str, Any]) -> Dict[str, Any]:
         "display_name": rec["display_name"],
         "known_facts": rec["known_facts"],
         "last_seen": rec["last_seen"],
+        "email": rec.get("email"),
+        "deleted": bool(rec.get("deleted")),
     }
 
 
 @app.get("/api/admin/users")
-def list_users():
+def list_users(include_deleted: bool = Query(False)):
     records = _all_records()
-    users = [_user_payload(rec) for uid, rec in sorted(records.items()) if not rec["deleted"]]
+    users = [
+        _user_payload(rec)
+        for uid, rec in sorted(records.items())
+        if include_deleted or not rec["deleted"]
+    ]
     return {"users": users, "total": len(users)}
 
 
@@ -461,16 +470,26 @@ def delete_user(user_id: int):
     if rec is None or rec["deleted"]:
         return _error(404, "not found")
 
-    # 软删除：仅在 SQLite 打标记，绝不触碰 Redis 对话历史 key。
+    # 软删除：仅在 SQLite 打标记并快照当前画像，绝不触碰 Redis 对话历史 key。
+    # 快照让「恢复」后仍能展示原始 display_name / known_facts / last_seen。
     try:
         with _db_conn() as conn:
             conn.execute(
                 """
                 INSERT INTO admin_users (user_id, display_name, known_facts, last_seen, deleted)
-                VALUES (?, NULL, NULL, NULL, 1)
-                ON CONFLICT(user_id) DO UPDATE SET deleted = 1
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    known_facts = excluded.known_facts,
+                    last_seen = excluded.last_seen,
+                    deleted = 1
                 """,
-                (user_id,),
+                (
+                    user_id,
+                    rec.get("display_name"),
+                    json.dumps(rec.get("known_facts") or [], ensure_ascii=False),
+                    rec.get("last_seen"),
+                ),
             )
     except Exception as exc:
         logger.error(f"Failed to soft-delete user {user_id}: {exc}")
@@ -479,18 +498,36 @@ def delete_user(user_id: int):
     return {"status": "deleted", "user_id": user_id}
 
 
+@app.post("/api/admin/users/{user_id}/restore")
+def restore_user(user_id: int):
+    """恢复被软删除的用户（仅清除 SQLite 标记，Redis 数据从未被触碰）。"""
+    rec = _all_records().get(user_id)
+    if rec is None:
+        return _error(404, "not found")
+    if not rec["deleted"]:
+        return {"status": "ok", "user_id": user_id, "message": "user not deleted"}
+
+    try:
+        with _db_conn() as conn:
+            conn.execute("UPDATE admin_users SET deleted = 0 WHERE user_id = ?", (user_id,))
+    except Exception as exc:
+        logger.error(f"Failed to restore user {user_id}: {exc}")
+        return _error(500, "failed to restore user")
+
+    return {"status": "restored", "user_id": user_id}
+
+
 # ---------------------------------------------------------------------------
 # 2.3 会话记录 (Session) viewer -- 只读
 # ---------------------------------------------------------------------------
 def _format_session_message(msg: Dict[str, Any], index: int) -> Dict[str, Any]:
     meta = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
     timestamp = meta.get("timestamp", msg.get("timestamp"))
-    if timestamp is None:
-        timestamp = float(index)
-    try:
-        timestamp = float(timestamp)
-    except (TypeError, ValueError):
-        timestamp = float(index)
+    if timestamp is not None:
+        try:
+            timestamp = float(timestamp)
+        except (TypeError, ValueError):
+            timestamp = None
     return {
         "message_id": meta.get("message_id", msg.get("message_id", index)),
         "role": msg.get("role", "unknown"),
@@ -499,22 +536,78 @@ def _format_session_message(msg: Dict[str, Any], index: int) -> Dict[str, Any]:
     }
 
 
+def _session_overview(r: Any) -> List[Dict[str, Any]]:
+    """Scan all session keys and return one entry per user that has messages.
+
+    Redis 会话实际按 user_id 存（betteragent:short_term:{user_id}，兼容旧前缀
+    short_term:{user_id}）；同一 user_id 出现在多个前缀时取消息数更多者。
+    """
+    users: Dict[int, Dict[str, Any]] = {}
+    for template in SESSION_KEY_TEMPLATES:
+        prefix = template.split("{chat_id}", 1)[0]
+        try:
+            keys = list(r.scan_iter(f"{prefix}*", count=1000))
+        except Exception as exc:
+            logger.warning(f"Failed to scan session keys for '{prefix}*': {exc}")
+            continue
+        for key in keys:
+            try:
+                uid = int(key.rsplit(":", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            try:
+                count = r.llen(key)
+            except Exception as exc:
+                logger.warning(f"Failed to read session key {key}: {exc}")
+                continue
+            if count == 0:
+                continue
+            last_ts: Optional[float] = None
+            try:
+                last_raw = r.lrange(key, -1, -1)
+                if last_raw:
+                    last_msg = json.loads(last_raw[0])
+                    meta = last_msg.get("metadata") if isinstance(last_msg.get("metadata"), dict) else {}
+                    ts = meta.get("timestamp", last_msg.get("timestamp"))
+                    if ts is not None:
+                        last_ts = float(ts)
+            except Exception:
+                last_ts = None
+            prev = users.get(uid)
+            if prev is None or count > prev["message_count"]:
+                users[uid] = {"user_id": uid, "message_count": count, "last_timestamp": last_ts}
+    return sorted(users.values(), key=lambda u: u["message_count"], reverse=True)
+
+
 @app.get("/api/admin/sessions")
 def list_sessions(
-    chat_id: int = Query(...),
+    user_id: Optional[int] = Query(None),
+    chat_id: Optional[int] = Query(None),
     limit: int = Query(50),
     offset: int = Query(0),
 ):
+    """会话记录（只读）。
+
+    - 传 `user_id`（兼容旧参数 `chat_id`）：返回该用户的会话消息；
+    - 不传：返回所有有会话记录的用户概览（user_id / message_count / last_timestamp）。
+    Redis 不可用时安全返回空列表。
+    """
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
+    effective_id = user_id if user_id is not None else chat_id
+
     r = _get_redis()
     if r is None:
-        return {"sessions": [], "total": 0, "chat_id": chat_id}
+        return {"sessions": [], "total": 0, "user_id": effective_id}
+
+    if effective_id is None:
+        overview = _session_overview(r)
+        return {"users": overview, "total_users": len(overview), "user_id": None}
 
     items: list = []
     for template in SESSION_KEY_TEMPLATES:
-        key = template.format(chat_id=chat_id)
+        key = template.format(chat_id=effective_id)
         try:
             raw = r.lrange(key, 0, -1)
         except Exception as exc:
@@ -533,7 +626,7 @@ def list_sessions(
             break  # 命中第一个有数据的 key 即返回，避免重复叠加
 
     total = len(items)
-    return {"sessions": items[offset:offset + limit], "total": total, "chat_id": chat_id}
+    return {"sessions": items[offset:offset + limit], "total": total, "user_id": effective_id}
 
 
 # ---------------------------------------------------------------------------

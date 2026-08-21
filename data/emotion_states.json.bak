@@ -1,28 +1,54 @@
 {
+  "9000000003655597": {
+    "valence": 0.6391666666666677,
+    "arousal": 0.65,
+    "dominance": 0.5,
+    "energy": 0.9809166666666655,
+    "satiety": 0.6956666666666671,
+    "social_battery": 0.8621666666666664,
+    "affection_level": 50.6,
+    "current_mood_tag": "HAPPY",
+    "jealousy_level": 0,
+    "baseline_valence": 0.2,
+    "last_updated": "2026-08-21T21:20:50.2376418+08:00"
+  },
+  "9000000004025440": {
+    "valence": 0.5683333333333368,
+    "arousal": 0.5,
+    "dominance": 0.5,
+    "energy": 1,
+    "satiety": 0.6873333333333347,
+    "social_battery": 0.8863333333333326,
+    "affection_level": 50.5,
+    "current_mood_tag": "HAPPY",
+    "jealousy_level": 0,
+    "baseline_valence": 0.2,
+    "last_updated": "2026-08-21T21:20:50.2376418+08:00"
+  },
   "9000000008525811": {
-    "valence": 0.9854166666666683,
+    "valence": 0.9520833333333386,
     "arousal": 0.9999999999999999,
     "dominance": 0.5,
     "energy": 1,
-    "satiety": 0.9935000000000007,
-    "social_battery": 0.8033333333333329,
+    "satiety": 0.9801666666666689,
+    "social_battery": 0.8099999999999988,
     "affection_level": 53.8,
     "current_mood_tag": "HAPPY",
     "jealousy_level": 0,
     "baseline_valence": 0.2,
-    "last_updated": "2026-08-21T20:37:15.6627821+08:00"
+    "last_updated": "2026-08-21T21:20:50.2376418+08:00"
   },
   "9000000008734078": {
-    "valence": 0.5762500000000025,
+    "valence": 0.5429166666666728,
     "arousal": 0.7999999999999999,
     "dominance": 0.5,
     "energy": 1,
-    "satiety": 0.690500000000001,
-    "social_battery": 0.8447499999999994,
+    "satiety": 0.6771666666666691,
+    "social_battery": 0.8514166666666654,
     "affection_level": 51.2,
     "current_mood_tag": "JEALOUS",
-    "jealousy_level": 0.7558333333333324,
+    "jealousy_level": 0.6891666666666642,
     "baseline_valence": 0.2,
-    "last_updated": "2026-08-21T20:37:15.6627821+08:00"
+    "last_updated": "2026-08-21T21:20:50.2376418+08:00"
   }
 }
