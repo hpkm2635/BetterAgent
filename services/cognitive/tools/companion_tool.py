@@ -233,3 +233,51 @@ class QueryCompanionStatsTool(BaseTool):
         except Exception as e:
             logger.warning(f"Failed to query companion stats at {endpoint}: {e}")
             return {"status": "failed", "error": f"Companion connection failed ({e})."}
+
+
+class GetRecommendationsTool(BaseTool):
+    """
+    Cognitive tool for fetching rule-based recommendations from Companion service.
+    """
+
+    @property
+    def name(self) -> str:
+        return "get_recommendations"
+
+    @property
+    def description(self) -> str:
+        return (
+            "获取针对当前用户的学习/日程等陪伴推荐（如：今天还没聊学习话题、日程快到期提醒）。"
+            "当用户询问'有什么推荐/建议'或需要主动找话题时调用此工具。"
+        )
+
+    @property
+    def parameters_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "chat_id": {
+                    "type": "integer",
+                    "description": "当前对话 ID，默认 1001。"
+                }
+            }
+        }
+
+    async def execute(self, chat_id: int = 1001, **kwargs) -> Dict[str, Any]:
+        companion_url = get_config_val("infrastructure.companion_url", os.getenv("COMPANION_URL", "http://127.0.0.1:8096"))
+        endpoint = f"{companion_url.rstrip('/')}/api/companion/recommendations?chat_id={chat_id}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(endpoint)
+                if resp.status_code == 200:
+                    recommendations = resp.json().get("recommendations", [])
+                    return {
+                        "status": "success",
+                        "recommendations": recommendations,
+                        "message": "已获取推荐" if recommendations else "暂时没有推荐",
+                    }
+                else:
+                    return {"status": "failed", "error": f"Companion HTTP {resp.status_code}"}
+        except Exception as e:
+            logger.warning(f"Failed to get recommendations at {endpoint}: {e}")
+            return {"status": "failed", "error": f"Companion connection failed ({e})."}

@@ -65,9 +65,48 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
+const CHAT_ID_STORAGE_KEY = 'betteragent.web.chat_id'
+
+/**
+ * 稳定地解析 WebSocket 会话的 chat_id 子 id：优先复用 localStorage 里保存的值，
+ * 否则生成一个随机值并持久化。这样刷新页面后 chat_id 不变，日程/记忆能跨刷新
+ * 保持连续（否则每次刷新都换 id，右上角日程列表永远对不上旧数据）。
+ */
+function resolvePersistentChatId(): number {
+  let storage: Storage | null = null
+  try {
+    storage = typeof window !== 'undefined' ? window.localStorage : null
+  }
+  catch {
+    storage = null
+  }
+
+  if (storage) {
+    try {
+      const saved = storage.getItem(CHAT_ID_STORAGE_KEY)
+      if (saved) {
+        const parsed = Number(saved)
+        if (Number.isFinite(parsed) && parsed > 0)
+          return parsed
+      }
+    }
+    catch { /* ignore */ }
+  }
+
+  const fresh = Math.floor(1000000 + Math.random() * 9000000)
+  if (storage) {
+    try {
+      storage.setItem(CHAT_ID_STORAGE_KEY, String(fresh))
+    }
+    catch { /* ignore */ }
+  }
+  return fresh
+}
+
 export class BetterAgentWSBridge {
   private ws: WebSocket | null = null
   private url: string
+  private chatId: number
   private reconnectAttempts = 0
   private maxReconnectInterval = 5000
   private isIntentionalClose = false
@@ -81,9 +120,16 @@ export class BetterAgentWSBridge {
 
   constructor(serverUrl = 'ws://localhost:8080/ws') {
     if (!serverUrl.includes('chat_id=')) {
-      const defaultChatID = Math.floor(1000000 + Math.random() * 9000000)
+      const defaultChatID = resolvePersistentChatId()
       serverUrl += (serverUrl.includes('?') ? '&' : '?') + `chat_id=${defaultChatID}`
     }
+
+    // Resolve the sub-id actually used for this WS session. The Go core folds
+    // it into WebNamespaceOffset (see core/internal/idspace/idspace.go) to
+    // derive the real routing chat_id; the schedule feature reuses the same id
+    // so reminders are stored/delivered under the session's true identity.
+    const match = serverUrl.match(/[?&]chat_id=(\d+)/)
+    this.chatId = match ? Number(match[1]) : Math.floor(1000000 + Math.random() * 9000000)
 
     if (!serverUrl.includes('token=')) {
       const token = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BETTERAGENT_WS_TOKEN)
@@ -95,6 +141,14 @@ export class BetterAgentWSBridge {
     }
 
     this.url = serverUrl
+  }
+
+  /**
+   * The sub-id this WS session uses (without the Go-side WebNamespaceOffset).
+   * The schedule API needs the full id: WEB_NAMESPACE_OFFSET + getChatId().
+   */
+  public getChatId(): number {
+    return this.chatId
   }
 
   public connect(): void {

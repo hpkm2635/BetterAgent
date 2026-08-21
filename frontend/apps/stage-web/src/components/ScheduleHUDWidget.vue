@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ScheduleItem } from '@proj-airi/stage-ui/services/schedule-api'
-import { addSchedule, deleteSchedule, fetchSchedules } from '@proj-airi/stage-ui/services/schedule-api'
+import { addSchedule, deleteSchedule, fetchSchedules, WEB_NAMESPACE_OFFSET } from '@proj-airi/stage-ui/services/schedule-api'
+import { betterAgentWSBridge } from '@proj-airi/stage-ui/services/betteragent-ws'
 import { breakpointsTailwind, useBreakpoints, useResizeObserver, useScreenSafeArea } from '@vueuse/core'
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot } from 'reka-ui'
 import { DrawerContent, DrawerHandle, DrawerOverlay, DrawerPortal, DrawerRoot } from 'vaul-vue'
@@ -28,7 +29,9 @@ const formError = ref('')
 const activeChatId = computed(() => {
   if (typeof window === 'undefined')
     return 0
-  return Number(new URLSearchParams(window.location.search).get('chat_id') || 1001)
+  // 用 WebSocket 会话的真实 chat_id（WebNamespaceOffset + 子 id），
+  // 保证与认知层写入、Go Core 推送用的 chat_id 完全一致。
+  return WEB_NAMESPACE_OFFSET + betterAgentWSBridge.getChatId()
 })
 
 async function loadSchedules() {

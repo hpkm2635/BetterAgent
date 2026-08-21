@@ -34,6 +34,7 @@ try {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { 
         $_.CommandLine -like "*services.memory.main*" -or 
         $_.CommandLine -like "*services.cognitive.main*" -or 
+        $_.CommandLine -like "*services.companion.main*" -or 
         $_.CommandLine -like "*services.tts.main*" -or 
         $_.CommandLine -like "*runner.py*" -or 
         $_.CommandLine -like "*cmd/main.go*" -or 
