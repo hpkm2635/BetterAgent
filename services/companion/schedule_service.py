@@ -2,24 +2,30 @@
 
 职责：
   1. 提供日程的新增 / 查询 / 删除（持久化到 SQLite schedules 表）
-  2. 每个日程用 APScheduler 注册一个一次性定时任务，到期时
-     POST 到技术总监的 8097 内部端点（不直接操作 NATS）
+  2. 每个日程用 APScheduler 注册一个一次性定时任务，到期时把
+     ActionDecision 发布到 NATS 的 agent.action.{channel}.{chat_id}，
+     由 Go Core 的 WebGateway / GotdAdapter 推送到 Web 页面或 Telegram。
 """
+import asyncio
+import json
 import logging
+import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import requests
+import nats
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 
 from services.companion.database import get_connection
+from shared.subjects import action_decision_subject
 
 logger = logging.getLogger("companion_schedule")
 
-# 技术总监在 Go Core 侧监听的内部端口（约定值）
-_TRIGGER_URL = "http://127.0.0.1:8097/internal/trigger_reminder"
+# WebGateway 会话命名空间偏移（镜像 core/internal/idspace/idspace.go 的
+# WebNamespaceOffset）。chat_id >= 该值属于 Web 会话，否则为 Telegram 会话。
+_WEB_NAMESPACE_OFFSET = 9_000_000_000_000_000
 
 
 class ScheduleService:
@@ -71,6 +77,10 @@ class ScheduleService:
             if normalized.endswith("Z"):
                 normalized = normalized[:-1] + "+00:00"
             run_time = datetime.fromisoformat(normalized)
+            # 无时区的 naive 时间统一按 Asia/Shanghai(+08:00) 解释，与 APScheduler 的
+            # timezone 一致；否则过期判断和触发时刻会因机器本地时区不同而偏差数小时。
+            if run_time.tzinfo is None:
+                run_time = run_time.replace(tzinfo=timezone(timedelta(hours=8)))
         except ValueError:
             logger.warning(f"Invalid remind_at '{remind_at}', skip scheduling")
             return
@@ -86,26 +96,64 @@ class ScheduleService:
         )
 
     def _fire(self, schedule_id: str, title: str, note: str, chat_id: int) -> None:
-        """到期回调：先原子抢占，再 POST 到技术总监端点并标记完成。
+        """到期回调：先原子抢占，再推送提醒到目标会话并标记完成。
 
         多 Worker 模式下，同一 schedule_id 只会有一个实例抢占成功，
-        从而避免重复触发提醒。
+        从而避免重复触发提醒。提醒不再 POST 到不存在的 8097 内部端点，
+        而是直接发布到 NATS 的 agent.action.{channel}.{chat_id} 主题。
         """
         if not self._try_claim(schedule_id):
             logger.info(f"Reminder '{title}' already claimed by another worker, skip")
             return
 
-        payload = {"chat_id": chat_id, "title": title, "note": note}
+        chat_id = int(chat_id)
+        channel = "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram"
+        text = f"⏰ 主人，日程提醒来啦：{title}"
+        if note:
+            text += f"（{note}）"
+
+        payload = {
+            "chat_id": chat_id,
+            "generation_id": 0,  # 0 跳过 WebGateway 的陈旧 generation 过滤
+            "source_channel": channel,
+            "action_type": "send_message",
+            "text_content": text,
+            "is_final": True,
+        }
+
         try:
-            resp = requests.post(_TRIGGER_URL, json=payload, timeout=5)
-            logger.info(
-                f"Triggered reminder '{title}' for chat_id={chat_id} "
-                f"-> {resp.status_code}"
-            )
+            asyncio.run(self._publish_reminder_async(channel, chat_id, payload))
+            logger.info(f"Triggered reminder '{title}' for chat_id={chat_id} (channel={channel})")
         except Exception as e:
             logger.warning(f"Failed to trigger reminder '{title}': {e}")
         finally:
             self._mark_done(schedule_id)
+
+    async def _publish_reminder_async(self, channel: str, chat_id: int, payload: Dict[str, Any]) -> None:
+        """把提醒 ActionDecision 发布到 NATS 的 agent.action.{channel}.{chat_id}。
+
+        在 `_fire`（APScheduler 线程）里通过 asyncio.run 调用；提醒触发频率极低，
+        每次新建一条 NATS 连接即可，无需常驻连接。
+        """
+        nats_url = os.getenv("NATS_URL", "nats://127.0.0.1:4222")
+        nats_user = os.getenv("NATS_USER")
+        nats_password = os.getenv("NATS_PASSWORD")
+        if not nats_user or not nats_password:
+            raise RuntimeError("NATS_USER / NATS_PASSWORD not set; cannot deliver reminder")
+
+        nc = await nats.connect(nats_url, user=nats_user, password=nats_password)
+        try:
+            subject = action_decision_subject(channel, chat_id)
+            envelope = {
+                "id": str(uuid.uuid4()),
+                "subject": subject,
+                "source": "companion_service",
+                "payload": payload,
+            }
+            await nc.publish(subject, json.dumps(envelope).encode())
+            await nc.flush()
+        finally:
+            await nc.close()
 
     def _try_claim(self, schedule_id: str) -> bool:
         """原子抢占：仅当状态仍为 scheduled 时改成 firing。
@@ -157,7 +205,7 @@ class ScheduleService:
         return {"schedule_id": schedule_id, "status": "scheduled"}
 
     def list(self, chat_id: int) -> List[Dict[str, Any]]:
-        """查询某 chat_id 下所有日程。"""
+        """查询某 chat_id 下未到期的日程（已触发 / 已过期的不返回）。"""
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -167,7 +215,22 @@ class ScheduleService:
                 (chat_id,),
             )
             rows = cur.fetchall()
-            return [dict(r) for r in rows]
+            now = datetime.now(timezone(timedelta(hours=8)))
+            upcoming: List[Dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                # 只保留“未触发且未到期”的日程
+                if item.get("status") != "scheduled":
+                    continue
+                try:
+                    rt = datetime.fromisoformat((item.get("remind_at") or "").strip())
+                    if rt.tzinfo is None:
+                        rt = rt.replace(tzinfo=timezone(timedelta(hours=8)))
+                except (ValueError, TypeError):
+                    continue
+                if rt > now:
+                    upcoming.append(item)
+            return upcoming
         finally:
             conn.close()
 

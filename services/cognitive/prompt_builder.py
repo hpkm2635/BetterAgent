@@ -2,12 +2,17 @@ import logging
 import os
 import time
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from shared.schema.payloads import ReasoningRequestPayload
 from shared.persona_loader import PersonaLoader
 from shared.config_loader import get_config_val
 
 logger = logging.getLogger("prompt_builder")
+
+# Asia/Shanghai 固定 +08:00（无夏令时）。不能用 datetime.now()——机器本地时区可能
+# 不是 +08:00，会给模型一个错误的时间，导致相对时间换算整体偏移数小时。
+_CST = timezone(timedelta(hours=8))
 
 
 def log_raw_trace(category: str, chat_id: int, title: str, content: str):
@@ -106,6 +111,15 @@ class PromptBuilder:
             prompt_parts.append(payload.personality_description)
         if getattr(payload, "circadian_description", None):
             prompt_parts.append(payload.circadian_description)
+
+        # 让模型知道当前日期时间，才能把“半个小时后”“明天9点”这类相对时间
+        # 换算成 add_schedule 需要的绝对时间（节律描述只有 HH:MM，没有日期）。
+        # 仅对非游戏回合注入，避免干扰极速打牌解说的提示词。
+        if payload.trigger_type != "game_turn":
+            prompt_parts.append(
+                f"[当前时间] {datetime.now(_CST).strftime('%Y-%m-%d %H:%M:%S')}（Asia/Shanghai, UTC+08:00）。"
+                " 当用户要求设置闹钟/提醒/日程时，请把相对时间换算成绝对时间（格式 YYYY-MM-DD HH:MM:SS）。"
+            )
 
         if payload.trigger_type != "game_turn":
             prompt_parts.append(

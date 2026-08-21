@@ -12,8 +12,9 @@ Feature Branch: feat/companion-tools
   POST /api/companion/query                 NL2SQL 陪伴数据查询
   GET  /api/companion/recommendations       规则推荐
 
-本服务不 import 任何 NATS 库；提醒触发由 APScheduler 内部定时，
-POST 到技术总监的 http://127.0.0.1:8097/internal/trigger_reminder。
+本服务不直接 import 任何 NATS 库；提醒触发由 APScheduler 内部定时，
+到期时把 ActionDecision 发布到 NATS 的 agent.action.{channel}.{chat_id}，
+由 Go Core 推送到 Web 页面或 Telegram。
 """
 import logging
 import time
@@ -21,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 from services.companion.database import init_db, get_connection
 from services.companion.schedule_service import ScheduleService
@@ -28,6 +30,8 @@ from services.companion.sql_agent import SQLAgent
 from services.companion.recommendation import get_recommendations
 
 from contextlib import asynccontextmanager
+
+load_dotenv()
 
 logger = logging.getLogger("companion_service")
 

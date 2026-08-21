@@ -911,6 +911,12 @@ class CognitiveEngine:
                     tool = self.tool_registry.get_tool(tool_name)
 
                     if tool is not None:
+                        if tool_name in ("add_schedule", "query_schedule"):
+                            # 日程工具必须用真实的 chat_id（Go Core 已把它折叠进
+                            # WebNamespaceOffset），而不是模型猜的值——否则提醒会存到
+                            # 错误的 id 下，前端查不到、到期也推不到当前页面。
+                            tool_args = dict(tool_args)
+                            tool_args["chat_id"] = payload.chat_id
                         if tool_name == "presenter_mode":
                             tool_output = await tool.execute(**tool_args, chat_id=payload.chat_id)
                         else:
