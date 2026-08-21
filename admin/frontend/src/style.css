@@ -70,6 +70,31 @@ h1 {
 .pill-ok { color: var(--ok); }
 .pill-err { color: var(--danger); }
 
+/* 系统与 API 配置 (BYOK) 通用状态 pill：供 Provider 状态/测试结果显示使用 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+
+.select {
+  width: 100%;
+  cursor: pointer;
+}
+
+.provider-box {
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
 .tabs {
   display: flex;
   gap: 8px;

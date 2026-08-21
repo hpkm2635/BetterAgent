@@ -24,6 +24,7 @@ const tabs = [
   { key: 'sessions', label: '会话记录' },
   { key: 'schedules', label: '日程提醒' },
   { key: 'kb', label: '知识库' },
+  { key: 'config', label: '系统与 API 配置' },
 ]
 const activeTab = ref('personas')
 
@@ -80,6 +81,15 @@ const kbResults = ref([])
 const kbMsg = ref('')
 const ingestText = ref('')
 const ingestMsg = ref('')
+
+// ---- 系统与 API 配置 (BYOK) ------------------------------------------------
+const sysConfig = ref(null)          // GET /api/admin/config 原始响应
+const configMsg = ref('')
+const configSaving = ref(false)
+const defaultProvider = ref('')
+const httpProxy = ref('')
+const httpsProxy = ref('')
+const providers = ref([])            // { name, model, keySet, keyMasked, keyInput, testResult, testing }
 
 const loading = ref(false)
 const error = ref('')
@@ -299,6 +309,89 @@ async function kbIngest() {
   }
 }
 
+// ---- 系统与 API 配置 -------------------------------------------------------
+async function loadConfig() {
+  configMsg.value = ''
+  try {
+    const data = await api('/api/admin/config')
+    sysConfig.value = data
+    defaultProvider.value = data.default_provider || 'gemini'
+    httpProxy.value = data.network?.http_proxy || ''
+    httpsProxy.value = data.network?.https_proxy || ''
+    providers.value = (data.providers || []).map((p) => ({
+      name: p.name,
+      model: p.model || '',
+      keySet: !!p.key_set,
+      keyMasked: p.key_masked || null,
+      keyInput: '',
+      testResult: null,
+      testing: false,
+    }))
+  } catch (e) {
+    configMsg.value = `加载失败: ${e.message}`
+  }
+}
+
+async function saveConfig() {
+  configMsg.value = ''
+  configSaving.value = true
+  try {
+    const payload = {}
+    if (defaultProvider.value !== (sysConfig.value?.default_provider || 'gemini')) {
+      payload.default_provider = defaultProvider.value
+    }
+    const network = {}
+    if (httpProxy.value !== (sysConfig.value?.network?.http_proxy || '')) network.http_proxy = httpProxy.value
+    if (httpsProxy.value !== (sysConfig.value?.network?.https_proxy || '')) network.https_proxy = httpsProxy.value
+    if (Object.keys(network).length) payload.network = network
+
+    const provUpdates = {}
+    for (const p of providers.value) {
+      const orig = (sysConfig.value?.providers || []).find((x) => x.name === p.name) || {}
+      const update = {}
+      if (p.keyInput && p.keyInput.trim()) update.api_key = p.keyInput.trim()
+      if (p.model.trim() && p.model.trim() !== (orig.model || '')) update.model = p.model.trim()
+      if (Object.keys(update).length) provUpdates[p.name] = update
+    }
+    if (Object.keys(provUpdates).length) payload.providers = provUpdates
+
+    if (!Object.keys(payload).length) {
+      configMsg.value = '没有改动'
+      return
+    }
+    const res = await api('/api/admin/config', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+    configMsg.value = res.reloaded ? '已保存并触发全服务热刷新 ✓' : '已保存 ✓'
+    await loadConfig()
+  } catch (e) {
+    configMsg.value = `保存失败: ${e.message}`
+  } finally {
+    configSaving.value = false
+  }
+}
+
+async function testKey(name) {
+  const p = providers.value.find((x) => x.name === name)
+  if (!p) return
+  p.testing = true
+  p.testResult = null
+  try {
+    const body = { provider: name }
+    if (p.keyInput && p.keyInput.trim()) body.api_key = p.keyInput.trim()
+    const res = await api('/api/admin/config/test-key', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    p.testResult = res
+  } catch (e) {
+    p.testResult = { ok: false, error: e.message }
+  } finally {
+    p.testing = false
+  }
+}
+
 function switchTab(key) {
   activeTab.value = key
   error.value = ''
@@ -306,6 +399,7 @@ function switchTab(key) {
   if (key === 'users') loadUsers()
   if (key === 'sessions') loadSessions()
   if (key === 'schedules') loadSchedules()
+  if (key === 'config') loadConfig()
 }
 
 onMounted(() => {
@@ -321,7 +415,7 @@ onMounted(() => {
         <span class="logo">🐱</span>
         <div>
           <h1>BetterAgent 后台管理</h1>
-          <p class="subtitle">数字人角色 · 用户 · 会话 · 日程 · 知识库</p>
+          <p class="subtitle">数字人角色 · 用户 · 会话 · 日程 · 知识库 · 系统与 API 配置</p>
         </div>
       </div>
       <div class="health">
@@ -546,6 +640,61 @@ onMounted(() => {
           <textarea v-model="ingestText" class="textarea" rows="6" placeholder="每行一条文档正文"></textarea>
           <button class="btn btn-primary" @click="kbIngest">入库</button>
           <p v-if="ingestMsg" class="muted small">{{ ingestMsg }}</p>
+        </div>
+      </section>
+
+      <!-- 系统与 API 配置 -->
+      <section v-else-if="activeTab === 'config'" class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h2>默认 Provider 与网络代理</h2>
+            <button class="btn" @click="loadConfig">刷新</button>
+          </div>
+          <p v-if="configMsg" class="banner" :class="configMsg.startsWith('加载失败') || configMsg.startsWith('保存失败') ? 'banner-err' : 'banner-ok'">{{ configMsg }}</p>
+          <div class="field">
+            <label>默认 LLM Provider</label>
+            <select v-model="defaultProvider" class="input select">
+              <option v-for="p in providers" :key="p.name" :value="p.name">{{ p.name }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>HTTP 代理</label>
+            <input v-model="httpProxy" class="input" placeholder="如 http://127.0.0.1:7890（留空不使用）" />
+          </div>
+          <div class="field">
+            <label>HTTPS 代理</label>
+            <input v-model="httpsProxy" class="input" placeholder="如 http://127.0.0.1:7890（留空不使用）" />
+          </div>
+          <button class="btn btn-primary" :disabled="configSaving" @click="saveConfig">
+            {{ configSaving ? '保存中…' : '保存配置' }}
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Provider API Key</h2></div>
+          <p class="muted small" style="margin-top: -6px; margin-bottom: 12px;">
+            密钥仅保存在本机 <code>.env</code>，界面以脱敏形式展示；「测试」不会保存任何配置。
+          </p>
+          <div v-for="p in providers" :key="p.name" class="provider-box">
+            <div class="row">
+              <strong>{{ p.name }}</strong>
+              <span v-if="p.keySet" class="pill pill-ok">{{ p.keyMasked }}</span>
+              <span v-else class="pill pill-err">未设置</span>
+            </div>
+            <div class="row" style="margin-top: 8px;">
+              <input v-model="p.keyInput" type="password" class="input" placeholder="输入新 API Key（留空表示不修改）" />
+              <button class="btn" :disabled="p.testing" @click="testKey(p.name)">{{ p.testing ? '测试中…' : '测试' }}</button>
+            </div>
+            <div class="row" style="margin-top: 8px;">
+              <input v-model="p.model" class="input" placeholder="模型名（如 gemini-2.5-flash）" />
+            </div>
+            <div v-if="p.testResult" class="small" style="margin-top: 8px;">
+              <span v-if="p.testResult.ok" class="pill pill-ok">
+                ✓ {{ p.testResult.latency_ms }}ms · {{ (p.testResult.models || []).join(', ') || '可用' }}
+              </span>
+              <span v-else class="pill pill-err">✗ {{ p.testResult.error }}</span>
+            </div>
+          </div>
         </div>
       </section>
     </main>
