@@ -1020,13 +1020,20 @@ async def _probe_models(provider: str, api_key: str, proxy: Optional[str]) -> Li
             if isinstance(m, dict) and m.get("id")
         )
 
-    # qwen: OpenAI-compatible DashScope endpoint
+    # qwen: OpenAI-compatible endpoint. Probe the base_url configured in
+    # config.yaml -- the runtime may point at e.g. the Alibaba TokenPlan
+    # endpoint (token-plan.cn-beijing.maas.aliyuncs.com), whose keys are
+    # rejected by the standard DashScope host. Fall back to the standard
+    # endpoint only when no base_url is configured.
     headers = {"Authorization": f"Bearer {api_key}"}
+    cfg = _read_config(safe=True)
+    base = (
+        _get_dotted(cfg, "llm.qwen.base_url")
+        or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+    url = base.rstrip("/") + "/models"
     async with httpx.AsyncClient(**kwargs) as client:
-        resp = await client.get(
-            "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-            headers=headers,
-        )
+        resp = await client.get(url, headers=headers)
     _raise_http(resp)
     data = resp.json()
     return sorted(
