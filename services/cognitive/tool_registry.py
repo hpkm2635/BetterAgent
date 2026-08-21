@@ -10,6 +10,7 @@ from services.cognitive.tools.companion_tool import (
     QueryScheduleTool,
     DeleteScheduleTool,
     QueryCompanionStatsTool,
+    GetRecommendationsTool,
 )
 from services.cognitive.tools.sts2_http_client import Sts2HttpClient
 from services.cognitive.tools.sts2_action_tool import build_sts2_tools
@@ -29,6 +30,7 @@ class ToolRegistry:
         self.register(QueryScheduleTool())
         self.register(DeleteScheduleTool())
         self.register(QueryCompanionStatsTool())
+        self.register(GetRecommendationsTool())
         if presenter_manager is not None:
             self.register(PresenterControlTool(presenter_manager))
 

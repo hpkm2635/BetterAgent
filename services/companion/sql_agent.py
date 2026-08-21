@@ -7,7 +7,7 @@ chat_stats / mood_history / topic_log 三张表，只允许 SELECT。
 """
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.companion.database import get_connection
@@ -51,7 +51,7 @@ class SQLAgent:
 
         # 1. 本周聊了多少次 / 这周聊了多少次
         if ("这周" in q or "本周" in q) and ("聊" in q or "消息" in q or "次" in q):
-            monday = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+            monday = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=datetime.now(timezone(timedelta(hours=8))).weekday())).strftime("%Y-%m-%d")
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
                 "WHERE chat_id = ? AND date >= ?"
@@ -60,7 +60,7 @@ class SQLAgent:
 
         # 2. 今天聊了多少次
         if ("今天" in q or "今日" in q) and ("聊" in q or "消息" in q or "次" in q):
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
                 "WHERE chat_id = ? AND date = ?"

@@ -70,6 +70,7 @@ class StatPayload(BaseModel):
     mood_score: Optional[float] = None
     emotion_tag: Optional[str] = ""
     is_proactive: bool = False
+    topic: Optional[str] = None
 
 
 class ScheduleAddPayload(BaseModel):
@@ -126,6 +127,14 @@ def write_stat(payload: StatPayload):
                 "INSERT INTO mood_history (chat_id, ts, mood_score, emotion_tag) "
                 "VALUES (?, ?, ?, ?)",
                 (payload.chat_id, time.time(), payload.mood_score, payload.emotion_tag or ""),
+            )
+
+        # 写入 topic_log（若带了话题标签）
+        if payload.topic:
+            cur.execute(
+                "INSERT INTO topic_log (chat_id, ts, topic, source) "
+                "VALUES (?, ?, ?, 'assistant')",
+                (payload.chat_id, time.time(), payload.topic),
             )
 
         conn.commit()
