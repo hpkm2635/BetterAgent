@@ -60,6 +60,10 @@ uvicorn main:app --host 0.0.0.0 --port 8094
 | `ADMIN_SECRET_KEY` | 空 | Admin API 访问令牌（可选） |
 
 > 敏感值（如 `REDIS_PASSWORD`）从 `admin/backend/.env` 读取，不硬编码进代码。
+>
+> **BYOK 热刷新（2.7）**：PATCH `/api/admin/config` 发布 `agent.config.reloaded` 时，
+> NATS 连接凭据读取优先级为 —— 环境变量 > 仓库根 `.env`（`NATS_USER` / `NATS_PASSWORD`），
+> 连接地址为环境变量 `NATS_URL` > `config/config.yaml` 的 `infrastructure.nats_url`。
 
 ### 访问令牌（可选）
 
@@ -154,3 +158,19 @@ campus_kb 不可用时返回 `503 {"error": "campus_kb service unavailable"}`。
 日程数据由 companion 服务（:8096）持久化，并由其 APScheduler 负责到期触发；Admin 只做反向代理，
 **不直接写 SQLite**（直接写入会导致 APScheduler 感知不到新日程、提醒不会触发）。
 companion 不可用时返回 `503 {"error": "companion service unavailable"}`。
+
+### 2.7 系统配置与 API 密钥管理（BYOK 模式）
+
+| 方法 | 路径 | 说明 |
+| :--- | :--- | :--- |
+| GET | `/api/admin/config` | 读取默认 Provider、网络代理与各 Provider 脱敏 key 状态 |
+| PATCH | `/api/admin/config` | 更新 Provider key / model、默认 Provider、网络代理；写回根 `.env` 与 `config/config.yaml`，并发布 NATS `agent.config.reloaded` |
+| POST | `/api/admin/config/test-key` | 连通性测试：返回 HTTP 延迟与可用模型列表（不保存配置） |
+
+管理范围：`gemini` / `claude` / `qwen` 三个 LLM Provider（对应根 `.env` 的
+`GEMINI_API_KEY` / `CLAUDE_API_KEY` / `QWEN_API_KEY` 与 `config/config.yaml` 的 `llm.<name>.model`）。
+
+- 密钥仅保存在仓库根 `.env`，接口与前端均只返回脱敏形式（如 `AIzaSy***4x9`）。
+- `config/config.yaml` / `.env` 不存在时，PATCH 会自动从 `config.yaml.example` / `.env.example` 播种。
+- `agent.config.reloaded` 为全服务热刷新信号；消费端由技术总监在各服务内实现，Admin 只负责发布。
+- PATCH 发布失败不阻断配置落盘，响应 `reloaded` 字段反映发布是否成功。
