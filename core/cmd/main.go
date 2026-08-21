@@ -116,6 +116,13 @@ func main() {
 	// Start ClockEngine
 	clockEngine.Start(ctx)
 
+	// Initialize & Start EmotionDeltaHandler for NATS agent.emotion.delta updates
+	emotionDeltaHandler := engine.NewEmotionDeltaHandler(natsBus, clockEngine.GetEmotionStore(), logger)
+	if err := emotionDeltaHandler.Start(); err != nil {
+		logger.Error("Failed to start EmotionDeltaHandler", zap.Error(err))
+	}
+	webServer.SetEmotionStore(clockEngine.GetEmotionStore())
+
 	// Handle graceful shutdown signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

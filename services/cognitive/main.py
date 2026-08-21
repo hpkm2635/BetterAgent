@@ -10,9 +10,10 @@ from shared.subjects import (
     SUBJECT_VISION_FRAME,
     SUBJECT_STREAM_CANCEL_REQ,
     SUBJECT_USER_INTERRUPT,
+    SUBJECT_EMOTION_DELTA,
     action_decision_subject,
 )
-from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
+from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload, EmotionDeltaPayload
 from shared.logger import setup_logger
 from services.cognitive.cognitive_engine import CognitiveEngine
 
@@ -70,6 +71,17 @@ async def main():
                 if cancel_event.is_set():
                     logger.info(f"⚡ Stream loop stopped mid-reasoning for chat_id={req.chat_id}")
                     break
+
+                if isinstance(act, EmotionDeltaPayload):
+                    envelope = {
+                        "id": req.event_id,
+                        "subject": SUBJECT_EMOTION_DELTA,
+                        "source": "cognitive_service",
+                        "payload": act.model_dump(),
+                    }
+                    await nc.publish(SUBJECT_EMOTION_DELTA, json.dumps(envelope).encode())
+                    logger.info(f"Published agent.emotion.delta for chat_id={act.chat_id}: {act.model_dump()}")
+                    continue
 
                 subject = action_decision_subject(act.source_channel, act.chat_id)
                 envelope = {

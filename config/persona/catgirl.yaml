@@ -18,3 +18,12 @@ tts:
   provider: gpt_sovits
   text_lang: zh
   voice_id: catgirl_cute
+
+personality:
+  tsundere_level: 0.7
+  clinginess: 0.8
+  jealousy_threshold: 0.4
+  cat_nature: 0.6
+  neuroticism: 0.5
+  extraversion: 0.7
+

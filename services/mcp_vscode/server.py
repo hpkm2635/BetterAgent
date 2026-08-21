@@ -59,7 +59,21 @@ def _throttle_since(last_time: float) -> None:
 
 
 def _resolve_within_root(rel_or_abs_path: str) -> Optional[Path]:
-    return resolve_within_root(_workspace_root, rel_or_abs_path)
+    p_obj = Path(rel_or_abs_path)
+    if p_obj.is_file():
+        return p_obj.resolve()
+
+    ws_root = _workspace_root or Path.cwd()
+    res = resolve_within_root(ws_root, rel_or_abs_path)
+    if res and res.is_file():
+        return res
+
+    # Fallback to checking relative to ws_root or current working directory
+    rel_target = ws_root / rel_or_abs_path
+    if rel_target.is_file():
+        return rel_target.resolve()
+
+    return None
 
 
 @mcp.tool(structured_output=False)
@@ -86,7 +100,7 @@ def vscode_read_range(path: str, start_line: int, end_line: int) -> Dict[str, An
 
     slice_lines = all_lines[start_line - 1:end_line]
     return {
-        "path": resolved.relative_to(_workspace_root.resolve()).as_posix(),
+        "path": resolved.relative_to(_workspace_root.resolve()).as_posix() if (_workspace_root and resolved.is_relative_to(_workspace_root.resolve())) else resolved.as_posix(),
         "start_line": start_line,
         "end_line": min(end_line, len(all_lines)),
         "total_lines": len(all_lines),
@@ -273,7 +287,11 @@ def main() -> None:
     if args.root:
         _workspace_root = Path(args.root)
         if not _workspace_root.is_dir():
-            logger.warning(f"--root {args.root} is not a directory; file tools will fail closed until a valid root is set")
+            logger.warning(f"--root {args.root} is not a valid directory; falling back to current working directory: {Path.cwd()}")
+            _workspace_root = Path.cwd()
+    else:
+        _workspace_root = Path.cwd()
+
     _signal_path = Path(args.signal_path)
 
     mcp.run()

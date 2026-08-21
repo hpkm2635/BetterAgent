@@ -255,10 +255,89 @@ GET http://localhost:8094/health
 - [ ] `PATCH /api/admin/personas/catgirl` 修改 `name` 字段成功，YAML 文件实际更新
 - [ ] `PATCH /api/admin/personas/catgirl` 传入 `{"tts": {}}` 返回 400
 - [ ] `GET /api/admin/sessions?chat_id=0` 在无 Redis 时返回空列表，不崩溃
+- [ ] `GET /api/admin/config` 能返回脱敏的 API Key 列表与当前 LLM Provider 配置
+- [ ] `PATCH /api/admin/config` 修改默认 Provider / Key 正常生效并广播 `agent.config.reloaded`
 - [ ] Admin Web UI 在 `localhost:8095` 可访问首页（截图附 PR）
-- [ ] PR diff 不包含 `core/`、`shared/`、`runner.py`、`frontend/`、`config/config.yaml` 任何文件的修改
+- [ ] PR diff 不包含 `core/`、`shared/`、`runner.py`、`frontend/` 任何文件的修改（`admin/` 内部维护 `.env` 和 `config.yaml` 读写逻辑）
+
+### 2.7 系统配置与 API 密钥管理（BYOK 模式）
+
+Admin 后端作为端侧配置管理中枢，读取并安全更新 `config/config.yaml` 与 `.env` 文件中的配置项：
+
+#### 获取系统配置与 API 密钥状态（脱敏）
+```
+GET http://localhost:8094/api/admin/config
+→ 200
+{
+  "default_provider": "gemini",
+  "providers": {
+    "gemini": { "has_key": true, "key_masked": "AIzaSy***4x9", "model": "gemini-3.1-flash-lite" },
+    "openai": { "has_key": false, "key_masked": "", "model": "gpt-4o" },
+    "deepseek": { "has_key": false, "key_masked": "", "model": "deepseek-chat" },
+    "qwen": { "has_key": false, "key_masked": "", "model": "qwen3.6-flash" }
+  },
+  "tts_provider": "cosyvoice",
+  "network": { "http_proxy": "", "https_proxy": "" }
+}
+```
+
+#### 动态更新配置与 API 密钥
+```
+PATCH http://localhost:8094/api/admin/config
+Content-Type: application/json
+```
+
+**Request**:
+```json
+{
+  "default_provider": "gemini",
+  "api_keys": {
+    "gemini": "AIzaSyYourNewActualKeyHere"
+  },
+  "models": {
+    "gemini": "gemini-3.1-flash-lite"
+  }
+}
+```
+
+**Response 200**: `{ "status": "ok", "reloaded": true }`
+
+> **实现约束**：
+> 1. API 密钥写入 `.env` 文件，保持私有化存取；全局配置更新至 `config/config.yaml`。
+> 2. 更新成功后，通过 NATS 消息总线发布 `agent.config.reloaded` 事件通知全系统。
+
+#### API 密钥连通性测试
+```
+POST http://localhost:8094/api/admin/config/test-key
+Content-Type: application/json
+```
+
+**Request**:
+```json
+{
+  "provider": "gemini",
+  "api_key": "AIzaSyYourNewActualKeyHere"
+}
+```
+
+**Response 200**:
+```json
+{
+  "status": "ok",
+  "latency_ms": 142,
+  "available_models": ["gemini-3.1-flash-lite", "gemini-1.5-pro"]
+}
+```
+**Response 400/500**:
+```json
+{
+  "status": "error",
+  "error": "401 Unauthorized: Invalid API key"
+}
+```
 
 ---
+
 
 ## 接口契约三：陪伴工具服务（张劭哲）
 

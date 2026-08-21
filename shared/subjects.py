@@ -18,6 +18,7 @@ SUBJECT_USER_INTERRUPT = "agent.user.interrupt"
 SUBJECT_AUDIO_CHUNK = "agent.audio.chunk"
 SUBJECT_VISEME_DATA = "agent.viseme.data"
 SUBJECT_EMOTION_UPDATE = "agent.emotion.update"
+SUBJECT_EMOTION_DELTA = "agent.emotion.delta"
 SUBJECT_VISION_FRAME = "agent.vision.frame"
 
 # 7 Realtime Cancelable Streaming Subjects

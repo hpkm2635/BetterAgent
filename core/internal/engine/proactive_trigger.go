@@ -75,6 +75,8 @@ func PublishProactiveTurn(
 			GenerationID:           req.GenerationID,
 			InboundMessage:         nil,
 			CurrentEmotion:         req.EmotionDescription,
+			PersonalityDescription: req.PersonalityDescription,
+			CircadianDescription:   req.CircadianDescription,
 			TriggerType:            &triggerType,
 			SourceChannel:          sourceChannel,
 			ProactiveReason:        req.ProactiveReason,

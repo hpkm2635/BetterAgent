@@ -1,0 +1,28 @@
+{
+  "9000000008525811": {
+    "valence": 0.9975000000000003,
+    "arousal": 0.9999999999999999,
+    "dominance": 0.5,
+    "energy": 0.8985416666666662,
+    "satiety": 0.9983333333333335,
+    "social_battery": 0.8009166666666665,
+    "affection_level": 53.8,
+    "current_mood_tag": "HAPPY",
+    "jealousy_level": 0,
+    "baseline_valence": 0.2,
+    "last_updated": "2026-08-21T14:34:56.0526316+08:00"
+  },
+  "9000000008734078": {
+    "valence": 0.5883333333333345,
+    "arousal": 0.7999999999999999,
+    "dominance": 0.5,
+    "energy": 1,
+    "satiety": 0.6953333333333338,
+    "social_battery": 0.842333333333333,
+    "affection_level": 51.2,
+    "current_mood_tag": "JEALOUS",
+    "jealousy_level": 0.7799999999999996,
+    "baseline_valence": 0.2,
+    "last_updated": "2026-08-21T14:34:56.0526316+08:00"
+  }
+}

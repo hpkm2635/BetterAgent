@@ -87,27 +87,123 @@ def _slide_text(slide) -> Dict[str, Any]:
     return {"title": title, "body": "\n".join(body_parts), "notes": notes}
 
 
+def _reset_com_state() -> None:
+    global _app, _presentation, _slideshow_window
+    _app = None
+    _presentation = None
+    _slideshow_window = None
+
+
+def _ensure_fresh_com_app():
+    global _app
+    client = _get_com_client()
+    if _app is not None:
+        try:
+            _ = _app.Presentations.Count
+        except Exception:
+            _reset_com_state()
+
+    if _app is None:
+        try:
+            _app = client.GetActiveObject("PowerPoint.Application")
+        except Exception:
+            _app = client.Dispatch("PowerPoint.Application")
+    return _app
+
+
 @mcp.tool(structured_output=False)
 def ppt_open(path: str) -> Dict[str, Any]:
-    """Opens a PowerPoint deck from the active decks directory and starts the slide show."""
+    """Opens a PowerPoint deck from the active decks directory or attaches to an active presentation."""
     global _app, _presentation, _slideshow_window
 
-    if _decks_root is None:
-        return _error("no decks root configured; call presenter_mode(activate, ppt, root_path=...) first")
+    try:
+        app = _ensure_fresh_com_app()
 
-    resolved = _resolve_within_root(path)
+        # 1. Check if PowerPoint COM already has open presentations matching the path or name
+        if app is not None and getattr(app, "Presentations", None) and app.Presentations.Count > 0:
+            query_name = Path(path).stem.lower() if path else ""
+            for pres in app.Presentations:
+                try:
+                    pres_stem = Path(pres.Name).stem.lower()
+                    if not query_name or query_name in pres_stem or pres_stem in query_name:
+                        _presentation = pres
+                        try:
+                            _slideshow_window = _presentation.SlideShowSettings.Run()
+                        except Exception:
+                            _slideshow_window = getattr(_presentation, "SlideShowWindow", None)
+                        return {
+                            "status": "ok",
+                            "path": _presentation.Name,
+                            "slide_count": _presentation.Slides.Count,
+                            "message": f"成功连接至已打开的演示文稿：'{_presentation.Name}' 喵～"
+                        }
+                except Exception:
+                    continue
+    except Exception as com_err:
+        logger.debug(f"COM active check note: {com_err}")
+        _reset_com_state()
+
+    search_roots = []
+    if _decks_root is not None:
+        search_roots.append(_decks_root)
+    user_home = Path.home()
+    for user_dir in (user_home / "Desktop", user_home / "Downloads", user_home / "Documents"):
+        if user_dir.is_dir() and user_dir not in search_roots:
+            search_roots.append(user_dir)
+
+    resolved: Optional[Path] = None
+
+    # 2. Check if path is an explicit existing file path (absolute or relative)
+    p_obj = Path(path)
+    if p_obj.is_file():
+        resolved = p_obj
+    else:
+        for root in search_roots:
+            res = _resolve_within_root(root, path) if root == _decks_root else (root / path if (root / path).is_file() else None)
+            if res and res.is_file():
+                resolved = res
+                break
+            # Also try appending .pptx if omitted
+            if not path.lower().endswith(".pptx"):
+                res_pptx = root / f"{path}.pptx"
+                if res_pptx.is_file():
+                    resolved = res_pptx
+                    break
+
+    # 3. Recursive fuzzy match in user folders (e.g. Downloads/Telegram Desktop/第一组.pptx)
+    if resolved is None:
+        clean_stem = Path(path).stem.lower()
+        for root in search_roots:
+            try:
+                for match in root.rglob("*.pptx"):
+                    if clean_stem and (clean_stem in match.stem.lower() or match.stem.lower() in clean_stem):
+                        resolved = match
+                        break
+                if resolved is not None:
+                    break
+            except Exception:
+                continue
+
     if resolved is None or not resolved.is_file():
-        return _error(f"path outside decks root or not a file: {path}")
+        return _error(
+            f"找不到演示文稿 '{path}'。请确保文件放在项目目录、桌面(Desktop)或下载(Downloads)文件夹中，"
+            f"或先在 PowerPoint 中打开该文件喵～"
+        )
 
     try:
-        client = _get_com_client()
-        _app = client.Dispatch("PowerPoint.Application")
-        _presentation = _app.Presentations.Open(str(resolved), WithWindow=True)
-        _slideshow_window = _presentation.SlideShowSettings.Run()
+        app = _ensure_fresh_com_app()
+        app.Visible = True
+        _presentation = app.Presentations.Open(str(resolved.resolve()))
+        try:
+            _slideshow_window = _presentation.SlideShowSettings.Run()
+        except Exception:
+            _slideshow_window = getattr(_presentation, "SlideShowWindow", None)
     except Exception as e:
-        return _error(f"failed to open presentation: {e}")
+        _reset_com_state()
+        return _error(f"打开演示文稿失败: {e}")
 
-    return {"status": "ok", "path": str(resolved.relative_to(_decks_root.resolve())), "slide_count": _presentation.Slides.Count}
+    rel_name = resolved.name
+    return {"status": "ok", "path": rel_name, "slide_count": _presentation.Slides.Count}
 
 
 @mcp.tool(structured_output=False)
@@ -222,7 +318,10 @@ def main() -> None:
     if args.root:
         _decks_root = Path(args.root)
         if not _decks_root.is_dir():
-            logger.warning(f"--root {args.root} is not a directory; ppt_open will fail closed until a valid root is set")
+            logger.warning(f"--root {args.root} is not a valid directory; falling back to current working directory: {Path.cwd()}")
+            _decks_root = Path.cwd()
+    else:
+        _decks_root = Path.cwd()
 
     mcp.run()
 

@@ -75,9 +75,21 @@ class PromptBuilder:
             _SECURITY_PREAMBLE,
             "",
             base_prompt,
-            "",
-            payload.current_emotion,  # Contains emotion + personality + circadian description
         ]
+
+        if payload.current_emotion:
+            prompt_parts.append(payload.current_emotion)
+        if getattr(payload, "personality_description", None):
+            prompt_parts.append(payload.personality_description)
+        if getattr(payload, "circadian_description", None):
+            prompt_parts.append(payload.circadian_description)
+
+        if payload.trigger_type != "game_turn":
+            prompt_parts.append(
+                "[情绪更新元数据约束]: 如果本轮对话中主人的话语或互动让你的心情/好感度发生了明显变化（例如特别高兴、被安抚、难过、吃醋等），"
+                "请在回复内容的最末尾单列一行输出格式为 `[EMOTION_DELTA: d_valence=+0.1, d_arousal=0.0, d_affection=+0.5, is_jealous=false]` 的变化标签。"
+                "其中 d_valence 范围 [-0.3, +0.3]，d_affection 范围 [-2.0, +2.0]。如果情绪无变化则无需附带此标签。"
+            )
 
         if persona_data.get("knowledge_scope"):
             prompt_parts.append(f"[知识专业范围]: 你擅长并专注于回答关于【{persona_data['knowledge_scope']}】的相关知识与问题。")

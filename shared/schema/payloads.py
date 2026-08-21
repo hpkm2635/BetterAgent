@@ -70,12 +70,15 @@ class ReasoningRequestPayload(BasePayload):
     agent_self_events: List[Dict[str, Any]] = Field(default_factory=list)
     proactive_reason: Optional[str] = None
     current_emotion: str = "NEUTRAL"
+    personality_description: str = ""
+    circadian_description: str = ""
     mood_score: float = 1.0
     formatted_time_str: str = ""
     inbound_message: Optional[InboundMessagePayload] = None
     trigger_type: Optional[str] = None  # "user_message" | "proactive" | "tick" | "game_turn"
     source_channel: Optional[str] = None
     is_proactive_opportunity: bool = False
+
 
     @field_validator("short_term_history", mode="before")
     @classmethod
@@ -101,6 +104,14 @@ class ReasoningRequestPayload(BasePayload):
     @classmethod
     def val_self_events(cls, v):
         return v if v is not None else []
+
+
+class EmotionDeltaPayload(BasePayload):
+    chat_id: int
+    delta_valence: float = 0.0
+    delta_arousal: float = 0.0
+    delta_affection: float = 0.0
+    is_jealous: bool = False
 
 
 class ActionDecisionPayload(BasePayload):

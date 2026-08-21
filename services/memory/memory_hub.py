@@ -180,6 +180,8 @@ class MemoryHub:
             kb_facts=trimmed_kb_facts,
             agent_self_events=self_events,
             current_emotion=payload.emotion_description,
+            personality_description=payload.personality_description,
+            circadian_description=payload.circadian_description,
             inbound_message=payload.inbound_message,
             trigger_type=payload.trigger_type,
             source_channel=payload.source_channel,

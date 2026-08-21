@@ -302,9 +302,7 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 		zap.String("text", msg.Message),
 	)
 
-	// Update emotion state with basic positive/negative delta heuristic
-	dV, dA, dAff := a.personality.ModifySentimentDelta(0.05, 0.05, 0.5)
-	a.emotionalState.ApplySentimentDelta(dV, dA, dAff)
+	// Emotion state is now updated dynamically via agent.emotion.delta NATS events
 
 	// Cache AccessHash and Username from entities for MTProto input peer resolution
 	a.peerMu.Lock()

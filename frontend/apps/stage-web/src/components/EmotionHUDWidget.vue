@@ -47,6 +47,11 @@ const batteryPercent = computed(() => {
   const val = (emoState.value?.social_battery ?? 0.9) * 100
   return Math.max(0, Math.min(100, val))
 })
+
+const satietyPercent = computed(() => {
+  const val = (emoState.value?.satiety ?? 0.8) * 100
+  return Math.max(0, Math.min(100, val))
+})
 </script>
 
 <template>
@@ -91,8 +96,8 @@ const batteryPercent = computed(() => {
             </div>
           </div>
 
-          <!-- Energy & Social Battery -->
-          <div class="grid grid-cols-2 gap-4">
+          <!-- Energy, Satiety & Social Battery -->
+          <div class="grid grid-cols-3 gap-3">
             <!-- Energy -->
             <div class="flex flex-col gap-1.5">
               <div class="flex justify-between text-neutral-400 text-xs">
@@ -106,6 +111,23 @@ const batteryPercent = computed(() => {
                 <div
                   class="h-full rounded-full bg-amber-400 transition-all duration-500"
                   :style="{ width: `${energyPercent}%` }"
+                />
+              </div>
+            </div>
+
+            <!-- Satiety -->
+            <div class="flex flex-col gap-1.5">
+              <div class="flex justify-between text-neutral-400 text-xs">
+                <span class="flex items-center gap-1">
+                  <div class="i-solar:cup-hot-bold text-yellow-400" />
+                  饱腹度
+                </span>
+                <span class="font-mono text-yellow-400 font-semibold">{{ satietyPercent.toFixed(0) }}%</span>
+              </div>
+              <div class="h-2 w-full overflow-hidden rounded-full bg-neutral-800">
+                <div
+                  class="h-full rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 transition-all duration-500"
+                  :style="{ width: `${satietyPercent}%` }"
                 />
               </div>
             </div>
@@ -185,8 +207,8 @@ const batteryPercent = computed(() => {
               </div>
             </div>
 
-            <!-- Energy & Social Battery -->
-            <div class="grid grid-cols-2 gap-4">
+            <!-- Energy, Satiety & Social Battery -->
+            <div class="grid grid-cols-3 gap-3">
               <div class="flex flex-col gap-1.5">
                 <div class="flex justify-between text-neutral-400 text-xs">
                   <span class="flex items-center gap-1">
@@ -199,6 +221,22 @@ const batteryPercent = computed(() => {
                   <div
                     class="h-full rounded-full bg-amber-400 transition-all duration-500"
                     :style="{ width: `${energyPercent}%` }"
+                  />
+                </div>
+              </div>
+
+              <div class="flex flex-col gap-1.5">
+                <div class="flex justify-between text-neutral-400 text-xs">
+                  <span class="flex items-center gap-1">
+                    <div class="i-solar:cup-hot-bold text-yellow-400" />
+                    饱腹度
+                  </span>
+                  <span class="font-mono text-yellow-400 font-semibold">{{ satietyPercent.toFixed(0) }}%</span>
+                </div>
+                <div class="h-2 w-full overflow-hidden rounded-full bg-neutral-800">
+                  <div
+                    class="h-full rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 transition-all duration-500"
+                    :style="{ width: `${satietyPercent}%` }"
                   />
                 </div>
               </div>

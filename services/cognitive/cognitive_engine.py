@@ -2,7 +2,7 @@ import time
 import re
 import logging
 from typing import List, Dict, Any, Tuple, Optional
-from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
+from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload, EmotionDeltaPayload
 from shared.config_loader import get_config_val
 from services.cognitive.providers.factory import ProviderFactory
 from services.cognitive.tool_registry import ToolRegistry
@@ -83,6 +83,53 @@ def clean_action_descriptions(text: str) -> str:
     return cleaned.strip()
 
 
+def parse_emotion_delta_from_text(text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Parses [EMOTION_DELTA: ...] from text tail and returns (clean_text, delta_dict).
+    Example tag: [EMOTION_DELTA: d_valence=+0.1, d_arousal=0.0, d_affection=+0.5, is_jealous=false]
+    """
+    if not text:
+        return text, None
+
+    pattern = r"\[EMOTION_DELTA:\s*(.*?)\]"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return text, None
+
+    raw_delta_str = match.group(1)
+    clean_text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+    delta_data = {
+        "delta_valence": 0.0,
+        "delta_arousal": 0.0,
+        "delta_affection": 0.0,
+        "is_jealous": False,
+    }
+
+    pairs = re.findall(r"(d_valence|d_arousal|d_affection|valence|arousal|affection|is_jealous)\s*=\s*([^\s,]+)", raw_delta_str, re.IGNORECASE)
+    for k, v in pairs:
+        k_lower = k.lower()
+        if "valence" in k_lower:
+            try:
+                delta_data["delta_valence"] = float(v)
+            except ValueError:
+                pass
+        elif "arousal" in k_lower:
+            try:
+                delta_data["delta_arousal"] = float(v)
+            except ValueError:
+                pass
+        elif "affection" in k_lower:
+            try:
+                delta_data["delta_affection"] = float(v)
+            except ValueError:
+                pass
+        elif "jealous" in k_lower:
+            delta_data["is_jealous"] = v.lower() in ("true", "1", "yes")
+
+    return clean_text, delta_data
+
+
 class SentenceSegmenter:
     """
     Sentence-level punctuation segmenter with <think>/<thought> & JSON streaming barrier FSM.
@@ -94,12 +141,19 @@ class SentenceSegmenter:
     def __init__(self):
         self.buffer = ""
         self.in_thought = False
+        self.last_emotion_delta: Optional[Dict[str, Any]] = None
 
     def push(self, delta: str) -> List[str]:
         if not delta:
             return []
 
         self.buffer += delta
+
+        # Parse and strip emotion delta if fully closed in buffer
+        if "[EMOTION_DELTA:" in self.buffer.upper():
+            self.buffer, delta_data = parse_emotion_delta_from_text(self.buffer)
+            if delta_data:
+                self.last_emotion_delta = delta_data
 
         # 1. Thought / Think Tag Streaming Barrier FSM
         if "<think>" in self.buffer or "<thought>" in self.buffer:
@@ -133,6 +187,9 @@ class SentenceSegmenter:
             if open_p in self.buffer and close_p not in self.buffer:
                 idx = self.buffer.rfind(open_p)
                 tail = self.buffer[idx:]
+                # Special case for EMOTION_DELTA metadata tag: hold buffer until fully closed with ]
+                if "[EMOTION" in tail.upper():
+                    return True
                 if len(tail) > 20 or any(p in tail for p in ("。", "！", "？", "\n")):
                     return False
                 return True
@@ -191,6 +248,11 @@ class SentenceSegmenter:
         cleaned = re.sub(r"```(?:json)?[\s\S]*?```", "", cleaned)
         cleaned = re.sub(r"\{\s*\"[^\"]+\"[\s\S]*?\}", "", cleaned).strip()
         cleaned = re.sub(r"</?(?:thought|think)>", "", cleaned).strip()
+
+        cleaned, delta_data = parse_emotion_delta_from_text(cleaned)
+        if delta_data:
+            self.last_emotion_delta = delta_data
+
         cleaned = clean_action_descriptions(cleaned)
 
         self.buffer = ""
@@ -201,7 +263,7 @@ class CognitiveEngine:
 
     # Bounds the "call tool -> feed result back -> generate again" loop in
     # stream_reasoning_loop so a tool-happy model can't spin forever.
-    MAX_TOOL_ROUNDS = 4
+    MAX_TOOL_ROUNDS = int(get_config_val("llm.max_tool_rounds", 8))
 
     # Higher budget for trigger_type == "game_turn" -- a single combat turn
     # can legitimately need many sts2_play_card/sts2_end_turn round trips in
@@ -928,6 +990,17 @@ class CognitiveEngine:
                     text_content="",
                     chat_action="typing",
                     is_final=True,
+                )
+
+            if segmenter.last_emotion_delta:
+                yield EmotionDeltaPayload(
+                    event_id=payload.event_id,
+                    source_component="cognitive_engine",
+                    chat_id=payload.chat_id,
+                    delta_valence=segmenter.last_emotion_delta.get("delta_valence", 0.0),
+                    delta_arousal=segmenter.last_emotion_delta.get("delta_arousal", 0.0),
+                    delta_affection=segmenter.last_emotion_delta.get("delta_affection", 0.0),
+                    is_jealous=segmenter.last_emotion_delta.get("is_jealous", False),
                 )
         except Exception as err:
             logger.error(f"Error in stream_reasoning_loop: {err}", exc_info=True)

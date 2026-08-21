@@ -27,6 +27,7 @@ import ViewControls from '../Layouts/InteractiveArea/Actions/ViewControls.vue'
 import IndicatorMicVolume from '../Widgets/IndicatorMicVolume.vue'
 import ActionAbout from './InteractiveArea/Actions/About.vue'
 import ActionEmotion from './InteractiveArea/Actions/Emotion.vue'
+import ActionFeedTuna from './InteractiveArea/Actions/ActionFeedTuna.vue'
 import ActionSchedule from './InteractiveArea/Actions/Schedule.vue'
 
 import { useTranscriptions } from '../../composables/use-transcriptions'
@@ -207,6 +208,7 @@ onMounted(() => {
         <div flex="~ col" gap-1>
           <ActionSchedule />
           <ActionEmotion />
+          <ActionFeedTuna />
           <ActionAbout />
           <div flex="~ col" items-end gap-1>
             <button

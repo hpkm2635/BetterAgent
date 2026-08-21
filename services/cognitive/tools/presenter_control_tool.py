@@ -62,7 +62,9 @@ class PresenterControlTool(BaseTool):
             return {"status": "error", "message": "presenter_mode requires an active chat context"}
 
         if action == "activate":
-            message = await self._presenter_manager.activate(chat_id, target, root_path=root_path)
+            import os
+            resolved_root = root_path or os.getcwd()
+            message = await self._presenter_manager.activate(chat_id, target, root_path=resolved_root)
         elif action == "deactivate":
             message = await self._presenter_manager.deactivate(chat_id, target)
         else:

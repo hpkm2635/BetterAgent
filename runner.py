@@ -842,7 +842,7 @@ def main():
             wait_for_readiness(
                 lambda: is_port_open("127.0.0.1", 8095),
                 service_name="Admin Frontend Vue Service (:8095)",
-                timeout=15.0,
+                timeout=30.0,
             )
         else:
             print(" [!] NOTICE: 'npm' command not found in PATH. Skipping Admin Frontend Vue Service (:8095).")
@@ -856,7 +856,7 @@ def main():
             wait_for_readiness(
                 lambda: is_port_open("127.0.0.1", 5173),
                 service_name="Stage Web Frontend Vue Service (:5173)",
-                timeout=15.0,
+                timeout=30.0,
             )
         else:
             print(" [!] NOTICE: 'pnpm' / 'npm' command not found in PATH. Skipping Stage Web Frontend Vue Service (:5173).")
