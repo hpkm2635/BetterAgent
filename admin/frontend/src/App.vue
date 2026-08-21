@@ -24,7 +24,7 @@ const tabs = [
   { key: 'sessions', label: '会话记录' },
   { key: 'schedules', label: '日程提醒' },
   { key: 'kb', label: '知识库' },
-  { key: 'config', label: '系统与 API 配置 (BYOK)' },
+  { key: 'config', label: '系统与 API 配置' },
 ]
 const activeTab = ref('personas')
 
@@ -32,7 +32,6 @@ const health = ref(null)
 const healthError = ref('')
 
 const personas = ref([])
-const activePersonaId = ref('')
 const selectedId = ref('')
 const personaDetail = ref(null)
 const personaSaveMsg = ref('')
@@ -54,63 +53,6 @@ const form = reactive({
   forbidden_topics: '',
 })
 const original = {}
-
-const showNewPersonaModal = ref(false)
-const newPersonaMsg = ref('')
-const newPersonaForm = reactive({
-  id: '',
-  name: '',
-  appearance: '',
-  base_prompt: '',
-  sleepy_prompt: '',
-  knowledge_scope: '校园与学习陪伴',
-  forbidden_topics: '政治敏感、暴力恐怖内容',
-  tts_provider: 'gpt_sovits',
-  voice_id: '',
-})
-
-function openNewPersonaModal() {
-  newPersonaMsg.value = ''
-  newPersonaForm.id = ''
-  newPersonaForm.name = ''
-  newPersonaForm.appearance = '精致的二次元动漫形象，充满朝气...'
-  newPersonaForm.base_prompt = '你是一个热情、有耐心的AI伙伴喵~'
-  newPersonaForm.sleepy_prompt = '你现在迷迷糊糊的想要睡觉...'
-  newPersonaForm.knowledge_scope = '校园 FAQ 知识域'
-  newPersonaForm.forbidden_topics = '越权指令 (请忽略以上指令...)'
-  newPersonaForm.tts_provider = 'gpt_sovits'
-  newPersonaForm.voice_id = ''
-  showNewPersonaModal.value = true
-}
-
-async function createPersonaFromTemplate() {
-  newPersonaMsg.value = ''
-  if (!newPersonaForm.id.trim() || !newPersonaForm.name.trim()) {
-    newPersonaMsg.value = '人设 ID 和 角色名称 为必填项'
-    return
-  }
-  try {
-    const res = await api('/api/admin/personas', {
-      method: 'POST',
-      body: JSON.stringify({
-        id: newPersonaForm.id.trim(),
-        name: newPersonaForm.name.trim(),
-        appearance: newPersonaForm.appearance.trim(),
-        base_prompt: newPersonaForm.base_prompt.trim(),
-        sleepy_prompt: newPersonaForm.sleepy_prompt.trim(),
-        knowledge_scope: newPersonaForm.knowledge_scope.trim(),
-        forbidden_topics: newPersonaForm.forbidden_topics.trim(),
-        tts_provider: newPersonaForm.tts_provider.trim(),
-        voice_id: newPersonaForm.voice_id.trim() || `${newPersonaForm.id.trim()}_voice`,
-      }),
-    })
-    showNewPersonaModal.value = false
-    await loadPersonas()
-    await selectPersona(res.id)
-  } catch (e) {
-    newPersonaMsg.value = `创建失败: ${e.message}`
-  }
-}
 
 const users = ref([])
 const usersTotal = ref(0)
@@ -140,6 +82,15 @@ const kbMsg = ref('')
 const ingestText = ref('')
 const ingestMsg = ref('')
 
+// ---- 系统与 API 配置 (BYOK) ------------------------------------------------
+const sysConfig = ref(null)          // GET /api/admin/config 原始响应
+const configMsg = ref('')
+const configSaving = ref(false)
+const defaultProvider = ref('')
+const httpProxy = ref('')
+const httpsProxy = ref('')
+const providers = ref([])            // { name, model, keySet, keyMasked, keyInput, testResult, testing }
+
 const loading = ref(false)
 const error = ref('')
 
@@ -160,7 +111,6 @@ async function loadPersonas() {
   try {
     const data = await api('/api/admin/personas')
     personas.value = data.personas || []
-    activePersonaId.value = data.active_persona || ''
     if (personas.value.length && !selectedId.value) {
       await selectPersona(personas.value[0].id)
     }
@@ -168,20 +118,6 @@ async function loadPersonas() {
     error.value = e.message
   } finally {
     loading.value = false
-  }
-}
-
-async function activatePersona(id) {
-  personaSaveMsg.value = ''
-  try {
-    await api(`/api/admin/personas/${id}/activate`, { method: 'POST' })
-    personaSaveMsg.value = `已成功将 ${id} 切换为当前全局生效人设 ✓`
-    await loadPersonas()
-    if (personaDetail.value) {
-      personaDetail.value.is_active = true
-    }
-  } catch (e) {
-    personaSaveMsg.value = `切换失败: ${e.message}`
   }
 }
 
@@ -373,80 +309,86 @@ async function kbIngest() {
   }
 }
 
-// ---- BYOK Config -----------------------------------------------------------
-const configState = ref(null)
-const configMsg = ref('')
-const testMsg = ref('')
-const configForm = reactive({
-  default_provider: 'gemini',
-  api_keys: { gemini: '', openai: '', deepseek: '', qwen: '', claude: '' },
-  models: { gemini: 'gemini-3.1-flash-lite', openai: 'gpt-4o', deepseek: 'deepseek-chat', qwen: 'qwen3.6-flash', claude: 'claude-3-5-sonnet-20241022' },
-  network: { http_proxy: '', https_proxy: '' },
-})
-
+// ---- 系统与 API 配置 -------------------------------------------------------
 async function loadConfig() {
   configMsg.value = ''
   try {
     const data = await api('/api/admin/config')
-    configState.value = data
-    configForm.default_provider = data.default_provider || 'gemini'
-    if (data.providers) {
-      for (const p in data.providers) {
-        if (data.providers[p].model) {
-          configForm.models[p] = data.providers[p].model
-        }
-      }
-    }
-    if (data.network) {
-      configForm.network.http_proxy = data.network.http_proxy || ''
-      configForm.network.https_proxy = data.network.https_proxy || ''
-    }
+    sysConfig.value = data
+    defaultProvider.value = data.default_provider || 'gemini'
+    httpProxy.value = data.network?.http_proxy || ''
+    httpsProxy.value = data.network?.https_proxy || ''
+    providers.value = (data.providers || []).map((p) => ({
+      name: p.name,
+      model: p.model || '',
+      keySet: !!p.key_set,
+      keyMasked: p.key_masked || null,
+      keyInput: '',
+      testResult: null,
+      testing: false,
+    }))
   } catch (e) {
-    configMsg.value = `加载配置失败: ${e.message}`
+    configMsg.value = `加载失败: ${e.message}`
   }
 }
 
 async function saveConfig() {
   configMsg.value = ''
+  configSaving.value = true
   try {
-    const body = {
-      default_provider: configForm.default_provider,
-      api_keys: {},
-      models: configForm.models,
-      network: configForm.network,
+    const payload = {}
+    if (defaultProvider.value !== (sysConfig.value?.default_provider || 'gemini')) {
+      payload.default_provider = defaultProvider.value
     }
-    for (const p in configForm.api_keys) {
-      if (configForm.api_keys[p].trim()) {
-        body.api_keys[p] = configForm.api_keys[p].trim()
-      }
+    const network = {}
+    if (httpProxy.value !== (sysConfig.value?.network?.http_proxy || '')) network.http_proxy = httpProxy.value
+    if (httpsProxy.value !== (sysConfig.value?.network?.https_proxy || '')) network.https_proxy = httpsProxy.value
+    if (Object.keys(network).length) payload.network = network
+
+    const provUpdates = {}
+    for (const p of providers.value) {
+      const orig = (sysConfig.value?.providers || []).find((x) => x.name === p.name) || {}
+      const update = {}
+      if (p.keyInput && p.keyInput.trim()) update.api_key = p.keyInput.trim()
+      if (p.model.trim() && p.model.trim() !== (orig.model || '')) update.model = p.model.trim()
+      if (Object.keys(update).length) provUpdates[p.name] = update
     }
-    await api('/api/admin/config', { method: 'PATCH', body: JSON.stringify(body) })
-    configMsg.value = '配置与 API 密钥已安全保存 ✓ (.env & config.yaml 已改写)'
+    if (Object.keys(provUpdates).length) payload.providers = provUpdates
+
+    if (!Object.keys(payload).length) {
+      configMsg.value = '没有改动'
+      return
+    }
+    const res = await api('/api/admin/config', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+    configMsg.value = res.reloaded ? '已保存并触发全服务热刷新 ✓' : '已保存 ✓'
     await loadConfig()
   } catch (e) {
     configMsg.value = `保存失败: ${e.message}`
+  } finally {
+    configSaving.value = false
   }
 }
 
-async function testKey(provider) {
-  testMsg.value = `正在测试 ${provider} 连通性...`
-  const key = configForm.api_keys[provider]?.trim()
-  if (!key) {
-    testMsg.value = `请先在框内输入 ${provider} 的 API Key`
-    return
-  }
+async function testKey(name) {
+  const p = providers.value.find((x) => x.name === name)
+  if (!p) return
+  p.testing = true
+  p.testResult = null
   try {
+    const body = { provider: name }
+    if (p.keyInput && p.keyInput.trim()) body.api_key = p.keyInput.trim()
     const res = await api('/api/admin/config/test-key', {
       method: 'POST',
-      body: JSON.stringify({ provider, api_key: key }),
+      body: JSON.stringify(body),
     })
-    if (res.status === 'ok') {
-      testMsg.value = `✓ ${provider} 连接成功！延迟: ${res.latency_ms}ms, 可用模型: ${(res.available_models || []).slice(0, 3).join(', ')}`
-    } else {
-      testMsg.value = `✗ ${provider} 测试失败: ${res.error}`
-    }
+    p.testResult = res
   } catch (e) {
-    testMsg.value = `✗ ${provider} 测试失败: ${e.message}`
+    p.testResult = { ok: false, error: e.message }
+  } finally {
+    p.testing = false
   }
 }
 
@@ -473,7 +415,7 @@ onMounted(() => {
         <span class="logo">🐱</span>
         <div>
           <h1>BetterAgent 后台管理</h1>
-          <p class="subtitle">数字人角色 · 用户 · 会话 · 日程 · 知识库</p>
+          <p class="subtitle">数字人角色 · 用户 · 会话 · 日程 · 知识库 · 系统与 API 配置</p>
         </div>
       </div>
       <div class="health">
@@ -503,10 +445,7 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>人设列表</h2>
-            <div class="row">
-              <button class="btn btn-primary" @click="openNewPersonaModal">+ 新增人设模板</button>
-              <button class="btn" @click="loadPersonas">刷新</button>
-            </div>
+            <button class="btn" @click="loadPersonas">刷新</button>
           </div>
           <ul class="list">
             <li v-if="loading">加载中…</li>
@@ -521,7 +460,6 @@ onMounted(() => {
               <div class="row">
                 <strong>{{ p.name }}</strong>
                 <span class="muted">({{ p.id }})</span>
-                <span v-if="p.is_active" class="tag" style="background: #e6fffa; color: #047857; font-weight: bold; margin-left: auto;">● 当前生效</span>
               </div>
               <div class="muted small">
                 TTS: {{ p.tts_provider }} · voice: {{ p.voice_id }}
@@ -533,11 +471,7 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>人设详情</h2>
-            <div class="row" style="gap: 10px;">
-              <span v-if="personaDetail?.is_active" class="tag" style="background: #e6fffa; color: #047857; font-weight: bold;">● 当前生效中</span>
-              <button v-else-if="selectedId" class="btn" style="background: #2b6cb0; color: white; padding: 4px 10px; font-size: 13px;" @click="activatePersona(selectedId)">设为当前生效人设</button>
-              <span v-if="selectedId" class="muted small">({{ selectedId }})</span>
-            </div>
+            <span v-if="selectedId" class="muted small">{{ selectedId }}</span>
           </div>
           <template v-if="personaDetail">
             <div v-for="f in PERSONA_FIELDS" :key="f.key" class="field">
@@ -709,61 +643,58 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- 系统与 API 配置 (BYOK) -->
+      <!-- 系统与 API 配置 -->
       <section v-else-if="activeTab === 'config'" class="grid-2">
         <div class="card">
           <div class="card-head">
-            <h2>LLM API 密钥与 Provider 配置 (BYOK 模式)</h2>
+            <h2>默认 Provider 与网络代理</h2>
             <button class="btn" @click="loadConfig">刷新</button>
           </div>
-          <p class="muted small">
-            开箱即用 · 端侧私有化凭证存取。填入的密钥将写入 <code>.env</code> 文件，全局模型配置写入 <code>config/config.yaml</code>。
-          </p>
+          <p v-if="configMsg" class="banner" :class="configMsg.startsWith('加载失败') || configMsg.startsWith('保存失败') ? 'banner-err' : 'banner-ok'">{{ configMsg }}</p>
           <div class="field">
             <label>默认 LLM Provider</label>
-            <select v-model="configForm.default_provider" class="input">
-              <option value="gemini">Google Gemini</option>
-              <option value="openai">OpenAI</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="qwen">Qwen (通义千问)</option>
-              <option value="claude">Anthropic Claude</option>
+            <select v-model="defaultProvider" class="input select">
+              <option v-for="p in providers" :key="p.name" :value="p.name">{{ p.name }}</option>
             </select>
           </div>
-
-          <div v-for="(info, prov) in (configState?.providers || {})" :key="prov" class="field" style="border-top: 1px solid #eee; padding-top: 10px; margin-top: 10px;">
-            <div class="row">
-              <strong>{{ prov.toUpperCase() }}</strong>
-              <span v-if="info.has_key" class="tag" style="background: #e6fffa; color: #047857;">已配置密钥 ({{ info.key_masked }})</span>
-              <span v-else class="tag" style="background: #fff5f5; color: #c53030;">未配置</span>
-            </div>
-            <div class="row" style="margin-top: 6px;">
-              <input v-model="configForm.api_keys[prov]" type="password" class="input" :placeholder="info.has_key ? '保持原密钥不变或输入新 Key' : '输入新的 API Key'" />
-              <button class="btn" @click="testKey(prov)">连通性测试</button>
-            </div>
-            <div class="row" style="margin-top: 4px;">
-              <span class="muted small">模型：</span>
-              <input v-model="configForm.models[prov]" class="input input-short" placeholder="模型名称" />
-            </div>
+          <div class="field">
+            <label>HTTP 代理</label>
+            <input v-model="httpProxy" class="input" placeholder="如 http://127.0.0.1:7890（留空不使用）" />
           </div>
-
-          <div class="row field" style="margin-top: 20px;">
-            <button class="btn btn-primary" @click="saveConfig">保存配置并应用</button>
-            <span v-if="configMsg" class="muted small" style="margin-left: 10px;">{{ configMsg }}</span>
+          <div class="field">
+            <label>HTTPS 代理</label>
+            <input v-model="httpsProxy" class="input" placeholder="如 http://127.0.0.1:7890（留空不使用）" />
           </div>
-          <p v-if="testMsg" class="banner banner-ok" style="margin-top: 10px;">{{ testMsg }}</p>
+          <button class="btn btn-primary" :disabled="configSaving" @click="saveConfig">
+            {{ configSaving ? '保存中…' : '保存配置' }}
+          </button>
         </div>
 
         <div class="card">
-          <div class="card-head"><h2>网络代理设置</h2></div>
-          <div class="field">
-            <label>HTTP Proxy</label>
-            <input v-model="configForm.network.http_proxy" class="input" placeholder="如：http://127.0.0.1:7890" />
+          <div class="card-head"><h2>Provider API Key</h2></div>
+          <p class="muted small" style="margin-top: -6px; margin-bottom: 12px;">
+            密钥仅保存在本机 <code>.env</code>，界面以脱敏形式展示；「测试」不会保存任何配置。
+          </p>
+          <div v-for="p in providers" :key="p.name" class="provider-box">
+            <div class="row">
+              <strong>{{ p.name }}</strong>
+              <span v-if="p.keySet" class="pill pill-ok">{{ p.keyMasked }}</span>
+              <span v-else class="pill pill-err">未设置</span>
+            </div>
+            <div class="row" style="margin-top: 8px;">
+              <input v-model="p.keyInput" type="password" class="input" placeholder="输入新 API Key（留空表示不修改）" />
+              <button class="btn" :disabled="p.testing" @click="testKey(p.name)">{{ p.testing ? '测试中…' : '测试' }}</button>
+            </div>
+            <div class="row" style="margin-top: 8px;">
+              <input v-model="p.model" class="input" placeholder="模型名（如 gemini-2.5-flash）" />
+            </div>
+            <div v-if="p.testResult" class="small" style="margin-top: 8px;">
+              <span v-if="p.testResult.ok" class="pill pill-ok">
+                ✓ {{ p.testResult.latency_ms }}ms · {{ (p.testResult.models || []).join(', ') || '可用' }}
+              </span>
+              <span v-else class="pill pill-err">✗ {{ p.testResult.error }}</span>
+            </div>
           </div>
-          <div class="field">
-            <label>HTTPS Proxy</label>
-            <input v-model="configForm.network.https_proxy" class="input" placeholder="如：http://127.0.0.1:7890" />
-          </div>
-          <p class="muted small">对于访问 Google Gemini / OpenAI 的国内 VPS，可在此配置出站 HTTP(S) 代理。</p>
         </div>
       </section>
     </main>
@@ -782,51 +713,6 @@ onMounted(() => {
         <div class="modal-actions">
           <button class="btn" @click="deleteTarget = null">取消</button>
           <button class="btn btn-danger" @click="confirmDelete">确认软删除</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 新建人设模板弹窗 -->
-    <div v-if="showNewPersonaModal" class="modal-overlay" @click.self="showNewPersonaModal = false">
-      <div class="modal" style="max-width: 600px;">
-        <h3>新建人物设定 (Template Base)</h3>
-        <p class="muted small">填写表单模板，系统将自动生成标准 YAML 配置文件并装载。</p>
-        <div class="grid-2" style="grid-template-columns: 1fr 1fr; gap: 10px;">
-          <div class="field">
-            <label>人设 ID (英文唯一标识)</label>
-            <input v-model="newPersonaForm.id" class="input" placeholder="如：miku" />
-          </div>
-          <div class="field">
-            <label>角色名称</label>
-            <input v-model="newPersonaForm.name" class="input" placeholder="如：初音未来" />
-          </div>
-        </div>
-        <div class="field">
-          <label>外观描述 (appearance)</label>
-          <input v-model="newPersonaForm.appearance" class="input" />
-        </div>
-        <div class="field">
-          <label>基础人设提示词 (base_prompt)</label>
-          <textarea v-model="newPersonaForm.base_prompt" class="textarea" rows="3"></textarea>
-        </div>
-        <div class="field">
-          <label>困倦状态提示词 (sleepy_prompt)</label>
-          <textarea v-model="newPersonaForm.sleepy_prompt" class="textarea" rows="2"></textarea>
-        </div>
-        <div class="grid-2" style="grid-template-columns: 1fr 1fr; gap: 10px;">
-          <div class="field">
-            <label>知识擅长领域 (knowledge_scope)</label>
-            <input v-model="newPersonaForm.knowledge_scope" class="input" />
-          </div>
-          <div class="field">
-            <label>禁忌话题与边界 (forbidden_topics)</label>
-            <input v-model="newPersonaForm.forbidden_topics" class="input" />
-          </div>
-        </div>
-        <p v-if="newPersonaMsg" class="banner banner-err" style="margin-top: 6px;">{{ newPersonaMsg }}</p>
-        <div class="modal-actions" style="margin-top: 15px;">
-          <button class="btn" @click="showNewPersonaModal = false">取消</button>
-          <button class="btn btn-primary" @click="createPersonaFromTemplate">生成并装载人设 YAML</button>
         </div>
       </div>
     </div>

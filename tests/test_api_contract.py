@@ -147,22 +147,52 @@ class TestAdminPanel:
         assert "sessions" in body
         assert isinstance(body["sessions"], list)
 
-    def test_get_config_returns_shape(self):
+    # ─── 2.7 系统配置与 API 密钥管理（BYOK 模式）───
+
+    def test_get_config_shape(self):
         r = requests.get(f"{ADMIN_BASE}/api/admin/config", timeout=5)
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text
         body = r.json()
         assert "default_provider" in body
-        assert "providers" in body
         assert "network" in body
+        names = [p["name"] for p in body["providers"]]
+        assert "gemini" in names
+        assert "claude" in names
+        assert "qwen" in names
 
-    def test_patch_config_updates(self):
-        r = requests.patch(
-            f"{ADMIN_BASE}/api/admin/config",
-            json={"default_provider": "gemini"},
-            timeout=5,
-        )
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
+    def test_patch_config_default_provider_roundtrip(self):
+        # 备份原始 default_provider
+        original = requests.get(
+            f"{ADMIN_BASE}/api/admin/config", timeout=5).json()["default_provider"]
+        # 修改
+        r = requests.patch(f"{ADMIN_BASE}/api/admin/config",
+                           json={"default_provider": "claude"}, timeout=5)
+        assert r.status_code == 200, r.text
+        # 验证实际写入
+        updated = requests.get(
+            f"{ADMIN_BASE}/api/admin/config", timeout=5).json()["default_provider"]
+        assert updated == "claude"
+        # 恢复
+        requests.patch(f"{ADMIN_BASE}/api/admin/config",
+                       json={"default_provider": original}, timeout=5)
+
+    def test_patch_config_unknown_provider(self):
+        r = requests.patch(f"{ADMIN_BASE}/api/admin/config",
+                           json={"providers": {"evil": {"api_key": "x"}}}, timeout=5)
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    def test_patch_config_forbidden_field(self):
+        r = requests.patch(f"{ADMIN_BASE}/api/admin/config",
+                           json={"unknown_field": 1}, timeout=5)
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    def test_test_key_unknown_provider(self):
+        r = requests.post(f"{ADMIN_BASE}/api/admin/config/test-key",
+                          json={"provider": "evil", "api_key": "x"}, timeout=5)
+        assert r.status_code == 400
+        assert "error" in r.json()
 
 # ─── 陪伴工具 ─────────────────────────────────────────────────────────────────
 
