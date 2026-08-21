@@ -103,7 +103,7 @@ def init_db() -> None:
         cur.execute("SELECT COUNT(*) as count FROM user_profile_facts")
         if cur.fetchone()["count"] == 0:
             seed_facts = [
-                ("fact_101", 1001, 1, "identity", "用户称呼", "学弟"),
+                ("fact_101", 1001, 1, "identity", "用户称呼", "你"),
                 ("fact_102", 1001, 1, "identity", "校园身份", "计算机专业应届毕业生"),
                 ("fact_103", 1001, 1, "preference", "喜好游戏", "杀戮尖塔2、二次元手游"),
                 ("fact_104", 1001, 1, "preference", "常用工具", "AIRI 桌面虚拟主播、BetterAgent"),

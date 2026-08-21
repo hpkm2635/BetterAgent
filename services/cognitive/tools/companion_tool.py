@@ -75,7 +75,7 @@ class AddScheduleTool(BaseTool):
                         "schedule_id": data.get("schedule_id", ""),
                         "title": title.strip(),
                         "remind_at": remind_at.strip(),
-                        "message": f"成功为主人创建提醒事项：'{title}'（时间：{remind_at}）"
+                        "message": f"成功为用户创建提醒事项：'{title}'（时间：{remind_at}）"
                     }
                 else:
                     return {"status": "failed", "error": f"Companion HTTP {resp.status_code}"}

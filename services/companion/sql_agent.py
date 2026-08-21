@@ -120,7 +120,7 @@ class SQLAgent:
 
     def _format_answer(self, template: str, rows: List[Dict[str, Any]],
                        question: str) -> str:
-        """把查询结果转成角色口吻的回答。"""
+        """把查询结果转成自然语言回答。"""
         if template == "sum_week":
             total = self._first(rows, "total")
             return f"这周你一共和我聊了 {total} 次"
