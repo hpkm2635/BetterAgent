@@ -108,7 +108,7 @@ class ScheduleService:
 
         chat_id = int(chat_id)
         channel = "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram"
-        text = f"⏰ 主人，日程提醒来啦：{title}"
+        text = f"⏰ 日程提醒来啦：{title}"
         if note:
             text += f"（{note}）"
 
