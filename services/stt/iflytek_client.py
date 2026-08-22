@@ -12,6 +12,8 @@ import hmac
 import json
 import logging
 import time
+from datetime import datetime
+from time import mktime
 from typing import Any, AsyncGenerator, Dict, Optional
 from urllib.parse import urlencode, urlparse
 from wsgiref.handlers import format_date_time
@@ -36,7 +38,7 @@ class IFlytekSession:
         app_id: str,
         api_key: str,
         api_secret: str,
-        endpoint: str = "wss://iat-api.xfyun.cn/v2",
+        endpoint: str = "ws://iat.xf-yun.com/v1",
         sample_rate: int = 16000,
         language: str = "zh_cn",
         accent: str = "mandarin",
@@ -55,10 +57,10 @@ class IFlytekSession:
 
     def _create_url(self) -> str:
         """Build the authenticated WebSocket URL (HMAC-SHA256)."""
-        parsed = urlparse(self._endpoint)
-        host = parsed.hostname
-        path = parsed.path or "/"
-        date = format_date_time(time.mktime(time.gmtime()))
+        host = "iat.xf-yun.com"
+        path = "/v1"
+        # iFLYTEK demo uses local time (not GMT); keep aligned with official example.
+        date = format_date_time(mktime(datetime.now().timetuple()))
         signature_origin = f"host: {host}\ndate: {date}\nGET {path} HTTP/1.1"
         signature_sha = hmac.new(
             self._api_secret.encode("utf-8"),
