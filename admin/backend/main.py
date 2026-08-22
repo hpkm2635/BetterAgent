@@ -392,6 +392,7 @@ def _get_redis() -> Any:
             password=REDIS_PASSWORD or None,
             decode_responses=True,
             socket_connect_timeout=2,
+            protocol=2,
         )
         client.ping()
         _redis_client = client
