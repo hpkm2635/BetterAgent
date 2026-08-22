@@ -679,6 +679,21 @@ func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
 	}
 
 	transcript := p.Text
+
+	// Echo the recognized transcript back to the browser so the web client can
+	// render the user's spoken turn alongside the assistant's streaming reply.
+	// The browser never sees agent.inbound_message directly; without this frame
+	// the voice utterance produces a reply but no user message in the chat UI.
+	outBytes, _ := json.Marshal(WSMessage{
+		Type: "agent.stt_transcript",
+		Payload: marshalRaw(AgentSTTTranscriptPayload{
+			Text:    p.Text,
+			IsFinal: true,
+			ChatID:  p.ChatID,
+		}),
+	})
+	b.sessions.SendTextToChat(p.ChatID, outBytes)
+
 	b.publishInboundMessage(p.ChatID, p.Text, "voice", &transcript)
 }
 

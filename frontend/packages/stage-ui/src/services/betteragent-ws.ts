@@ -18,6 +18,7 @@ export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number
 export type EmotionCallback = (emotion: string, action?: string) => void
 export type AudioChunkCallback = (audioBase64: string, sampleRate: number, visemes?: Viseme[]) => void
 export type StateChangeCallback = (state: string, chatId?: number) => void
+export type STTTranscriptCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export interface GameStatePayload {
   floor: number
   hp: number
@@ -67,6 +68,7 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 export class BetterAgentWSBridge {
   private ws: WebSocket | null = null
   private url: string
+  private chatId: number | null = null
   private reconnectAttempts = 0
   private maxReconnectInterval = 5000
   private isIntentionalClose = false
@@ -75,6 +77,7 @@ export class BetterAgentWSBridge {
   private emotionListeners: Set<EmotionCallback> = new Set()
   private emotionStateListeners: Set<EmotionStateCallback> = new Set()
   private audioChunkListeners: Set<AudioChunkCallback> = new Set()
+  private sttTranscriptListeners: Set<STTTranscriptCallback> = new Set()
   private stateChangeListeners: Set<StateChangeCallback> = new Set()
   private gameStateListeners: Set<GameStateCallback> = new Set()
 
@@ -94,6 +97,20 @@ export class BetterAgentWSBridge {
     }
 
     this.url = serverUrl
+
+    try {
+      const parsedUrl = new URL(serverUrl)
+      const chatId = Number(parsedUrl.searchParams.get('chat_id'))
+      if (!Number.isNaN(chatId))
+        this.chatId = chatId
+    }
+    catch {
+      this.chatId = null
+    }
+  }
+
+  public getChatId(): number | null {
+    return this.chatId
   }
 
   public connect(): void {
@@ -170,6 +187,12 @@ export class BetterAgentWSBridge {
           break
 
         case 'agent.audio_chunk':
+          break
+
+        case 'agent.stt_transcript':
+          if (msg.payload?.text) {
+            this.sttTranscriptListeners.forEach(cb => cb(msg.payload.text, !!msg.payload.is_final, msg.payload.chat_id))
+          }
           break
 
         case 'agent.state_change':
@@ -256,6 +279,11 @@ export class BetterAgentWSBridge {
   public onAudioChunk(cb: AudioChunkCallback): () => void {
     this.audioChunkListeners.add(cb)
     return () => this.audioChunkListeners.delete(cb)
+  }
+
+  public onSTTTranscript(cb: STTTranscriptCallback): () => void {
+    this.sttTranscriptListeners.add(cb)
+    return () => this.sttTranscriptListeners.delete(cb)
   }
 
   public onStateChange(cb: StateChangeCallback): () => void {

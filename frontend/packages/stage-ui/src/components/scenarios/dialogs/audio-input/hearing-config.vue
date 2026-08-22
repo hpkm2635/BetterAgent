@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Callout, FieldCheckbox, FieldCombobox } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import { useAudioAnalyzer } from '../../../../composables'
 import { useSettingsAudioDevice } from '../../../../stores'
@@ -12,12 +12,18 @@ const props = withDefaults(defineProps<{
   granted: false,
 })
 
+const emit = defineEmits<{
+  'toggle-transcription': []
+}>()
+
 const deviceStore = useSettingsAudioDevice()
 const { askPermission } = deviceStore
 const { audioInputs, enabled, permissionGranted, selectedAudioInput } = storeToRefs(deviceStore)
 const { volumeLevel } = useAudioAnalyzer()
 
 const autoSend = defineModel<boolean | undefined>('autoSend')
+const requestingPermission = ref(false)
+const permissionError = ref('')
 const hasAutoSendControl = computed(() => autoSend.value !== undefined)
 const autoSendEnabled = computed({
   get: () => autoSend.value ?? false,
@@ -49,13 +55,85 @@ const ringEnabledClass = computed(() => enabled.value
   : 'bg-neutral-300/20 dark:bg-neutral-700/20',
 )
 
-function toggleHearingEnabled() {
-  if (enabled.value)
-    return enabled.value = false
-  if (selectedAudioInput.value !== '' && permissionGranted.value)
-    return enabled.value = true
-  if (!permissionGranted.value)
-    return askPermission().then(() => { enabled.value = permissionGranted.value })
+function microphoneDeniedMessage(error: unknown): string {
+  const name = error instanceof DOMException ? error.name : 'Error'
+  if (typeof window !== 'undefined' && window.self !== window.top)
+    return 'Microphone is blocked inside this embedded preview. Open http://localhost:5173 in a new browser tab and try again.'
+  if (typeof window !== 'undefined' && window.isSecureContext === false)
+    return 'Microphone requires a secure context. Open http://localhost:5173 (or use HTTPS) and try again.'
+  if (name === 'NotFoundError' || name === 'OverconstrainedError')
+    return 'No microphone device was found. Connect a microphone and try again.'
+  return `Microphone access was denied (${name}). Enable it in your browser site settings and try again.`
+}
+
+async function toggleHearingEnabled() {
+  if (enabled.value) {
+    enabled.value = false
+    emit('toggle-transcription')
+    return
+  }
+
+  if (selectedAudioInput.value !== '' && permissionGranted.value) {
+    enabled.value = true
+    emit('toggle-transcription')
+    return
+  }
+
+  if (!permissionGranted.value) {
+    const ok = await ensureMicrophonePermission()
+    if (ok) {
+      enabled.value = true
+      emit('toggle-transcription')
+    }
+  }
+}
+
+async function ensureMicrophonePermission() {
+  if (requestingPermission.value)
+    return permissionGranted.value || audioInputs.value.length > 0
+  requestingPermission.value = true
+  permissionError.value = ''
+
+  try {
+    await askPermission()
+  }
+  catch {
+    // Fall through to the direct getUserMedia fallback below.
+  }
+
+  if (!permissionGranted.value && audioInputs.value.length === 0) {
+    const mediaDevices = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
+    if (mediaDevices?.getUserMedia) {
+      try {
+        const stream = await mediaDevices.getUserMedia({ audio: true })
+        stream.getTracks().forEach(track => track.stop())
+        await askPermission()
+      }
+      catch (error) {
+        permissionError.value = microphoneDeniedMessage(error)
+      }
+    }
+    else {
+      permissionError.value = 'Microphone requires a secure context. Open http://localhost:5173 (or use HTTPS) and try again.'
+    }
+  }
+
+  if (permissionGranted.value || audioInputs.value.length > 0)
+    permissionError.value = ''
+
+  requestingPermission.value = false
+  return permissionGranted.value || audioInputs.value.length > 0
+}
+
+async function requestMicrophonePermission() {
+  if (requestingPermission.value)
+    return
+  try {
+    await ensureMicrophonePermission()
+  }
+  finally {
+    requestingPermission.value = false
+  }
 }
 </script>
 
@@ -123,6 +201,15 @@ function toggleHearingEnabled() {
         placeholder="Select microphone"
         layout="vertical"
       />
+      <button
+        v-if="audioInputs.length === 0"
+        class="mt-2 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-700 outline-none transition-colors hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700"
+        :disabled="requestingPermission"
+        @click="requestMicrophonePermission"
+      >
+        {{ requestingPermission ? 'Requesting access…' : 'Grant microphone access' }}
+      </button>
+      <p v-if="permissionError" class="mt-2 text-sm text-red-500">{{ permissionError }}</p>
     </div>
   </div>
 </template>

@@ -230,6 +230,41 @@ GET http://localhost:8094/api/admin/sessions?chat_id={chat_id}&limit=50&offset=0
 
 > Redis 不可用时应返回 `{ "sessions": [], "total": 0 }`，不崩溃。
 
+### 2.3b 会话概览（供历史会话页面枚举）
+
+```http
+GET http://localhost:8094/api/admin/sessions/overview
+→ 200
+{
+  "sessions": [
+    {
+      "chat_id": 123456,
+      "message_count": 42,
+      "last_timestamp": 1723456789.0,
+      "preview": "最近一条消息的前 120 字"
+    }
+  ],
+  "total": 1
+}
+```
+
+> 扫描 Redis `short_term:*` / `betteragent:short_term:*` 两个前缀，按最近消息时间倒序返回。
+
+### 2.3c 记忆管理（短期 / 长期 / 画像）
+
+```http
+GET    http://localhost:8094/api/admin/memory/short-term?user_id={user_id}&limit=50&offset=0
+DELETE http://localhost:8094/api/admin/memory/short-term?user_id={user_id}
+GET    http://localhost:8094/api/admin/memory/long-term?user_id={user_id}&query={text}&limit=50&offset=0
+DELETE http://localhost:8094/api/admin/memory/long-term/{point_id}
+GET    http://localhost:8094/api/admin/memory/profile?user_id={user_id}
+PUT    http://localhost:8094/api/admin/memory/profile/{user_id}
+```
+
+- 短期记忆读 Redis `betteragent:short_term:{user_id}`，`DELETE` 同时清理 consolidate cursor。
+- 长期记忆读 Qdrant collection `betteragent_memories`（`QDRANT_URL` / `QDRANT_COLLECTION` 可覆盖），按 `user_id` 过滤；Qdrant 不可用时返回空列表。
+- `PUT /memory/profile/{user_id}` 接受 `{ "display_name": "...", "known_facts": ["..."] }`，写入 Redis 画像 hash 的 `preferred_name` / `known_facts` / `likes`，保证 admin 页面与 memory 服务的提示词读取一致。
+
 ### 2.4 知识库管理（代理，不重复实现逻辑）
 
 Admin 后端作为反向代理，透传至 `campus_kb` 服务：

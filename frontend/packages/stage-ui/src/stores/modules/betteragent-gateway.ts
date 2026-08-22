@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { betterAgentWSBridge } from '../../services/betteragent-ws'
 import { useChatStreamStore } from '../chat/stream-store'
+import { useChatSessionStore } from '../chat/session-store'
 import { useSTS2GameStateStore } from './sts2-game-state'
 
 import type { EmotionalStatePayload } from '../../services/betteragent-ws'
@@ -17,6 +18,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const emotionalState = ref<EmotionalStatePayload | null>(null)
 
   const streamStore = useChatStreamStore()
+  const chatSession = useChatSessionStore()
   const sts2GameState = useSTS2GameStateStore()
 
   let streamingWatchdog: ReturnType<typeof setTimeout> | null = null
@@ -55,6 +57,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   function getResolvedChatId(): number | null {
     if (currentChatId.value)
       return currentChatId.value
+
+    const bridgeChatId = betterAgentWSBridge.getChatId()
+    if (bridgeChatId) {
+      currentChatId.value = bridgeChatId
+      return bridgeChatId
+    }
 
     if (typeof window !== 'undefined') {
       const urlParams = new URLSearchParams(window.location.search)
@@ -156,6 +164,22 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     unsubs.push(betterAgentWSBridge.onGameState((state) => {
       sts2GameState.updateState(state)
     }))
+
+    // 6. STT transcripts -- show the user's recognized voice input as a
+    // normal user message so a spoken turn reads like a typed one.
+    unsubs.push(betterAgentWSBridge.onSTTTranscript((text, isFinal, chatId) => {
+      if (!isFinal || !isChatMatch(chatId) || !text.trim())
+        return
+
+      const sessionId = chatSession.activeSessionId
+      if (!sessionId)
+        return
+
+      chatSession.appendSessionMessage(sessionId, {
+        role: 'user',
+        content: text.trim(),
+      })
+    }))
   }
 
   return {
@@ -168,5 +192,6 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     lastAction,
     emotionalState,
     initialize,
+    getResolvedChatId,
   }
 })
