@@ -111,6 +111,33 @@ def _ensure_fresh_com_app():
     return _app
 
 
+PP_SHOW_TYPE_WINDOW = 2  # ppShowTypeWindow (Browsed by an individual / windowed)
+
+
+def _start_slideshow(presentation):
+    """Starts slideshow in windowed mode and docks it to the right 65% of the screen."""
+    try:
+        presentation.SlideShowSettings.ShowType = PP_SHOW_TYPE_WINDOW
+        slideshow_window = presentation.SlideShowSettings.Run()
+        try:
+            import win32api
+
+            screen_w = win32api.GetSystemMetrics(0)
+            screen_h = win32api.GetSystemMetrics(1)
+            # Dock to right 65% of screen (leaving left 35% for web catgirl window)
+            slideshow_window.Left = int(screen_w * 0.35)
+            slideshow_window.Top = 0
+            slideshow_window.Width = int(screen_w * 0.65)
+            slideshow_window.Height = screen_h
+        except Exception as win_err:
+            logger.debug(f"Window positioning note: {win_err}")
+
+        return slideshow_window
+    except Exception as e:
+        logger.warning(f"Failed to start windowed slideshow: {e}")
+        return getattr(presentation, "SlideShowWindow", None)
+
+
 @mcp.tool(structured_output=False)
 def ppt_open(path: str) -> Dict[str, Any]:
     """Opens a PowerPoint deck from the active decks directory or attaches to an active presentation."""
@@ -127,10 +154,7 @@ def ppt_open(path: str) -> Dict[str, Any]:
                     pres_stem = Path(pres.Name).stem.lower()
                     if not query_name or query_name in pres_stem or pres_stem in query_name:
                         _presentation = pres
-                        try:
-                            _slideshow_window = _presentation.SlideShowSettings.Run()
-                        except Exception:
-                            _slideshow_window = getattr(_presentation, "SlideShowWindow", None)
+                        _slideshow_window = _start_slideshow(_presentation)
                         return {
                             "status": "ok",
                             "path": _presentation.Name,
@@ -194,10 +218,7 @@ def ppt_open(path: str) -> Dict[str, Any]:
         app = _ensure_fresh_com_app()
         app.Visible = True
         _presentation = app.Presentations.Open(str(resolved.resolve()))
-        try:
-            _slideshow_window = _presentation.SlideShowSettings.Run()
-        except Exception:
-            _slideshow_window = getattr(_presentation, "SlideShowWindow", None)
+        _slideshow_window = _start_slideshow(_presentation)
     except Exception as e:
         _reset_com_state()
         return _error(f"打开演示文稿失败: {e}")

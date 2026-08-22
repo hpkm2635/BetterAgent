@@ -430,6 +430,7 @@ classDiagram
         +String text_delta
         +String audio_base64
         +List~Dict~ visemes
+        +bool is_sentence_start
     }
 
     class STTTranscriptPayload {

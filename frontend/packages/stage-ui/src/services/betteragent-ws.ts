@@ -253,7 +253,7 @@ export class BetterAgentWSBridge {
 
     const rawAudio = buf.slice(20)
     const base64Audio = uint8ArrayToBase64(new Uint8Array(rawAudio))
-    this.audioChunkListeners.forEach(cb => cb(base64Audio, 24000))
+    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000))
   }
 
   public sendUserText(text: string, chatId?: number): void {

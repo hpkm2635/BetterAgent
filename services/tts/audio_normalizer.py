@@ -34,6 +34,35 @@ class AudioNormalizer:
             return pcm_bytes
 
 
+def smooth_pcm_chunk_edges(pcm_bytes: bytes, sample_rate: int = 32000, fade_ms: float = 3.0) -> bytes:
+    """
+    Applies a 3ms linear fade-in at the start and 3ms linear fade-out at the end of a 16-bit PCM chunk.
+    Eliminates step discontinuities at chunk boundaries, preventing popping, clicking, and static noise
+    when streaming AudioBuffers back-to-back in Web Audio API.
+    """
+    if not pcm_bytes or len(pcm_bytes) < 4:
+        return pcm_bytes
+
+    try:
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+        n_samples = len(samples)
+        fade_len = int((sample_rate * fade_ms) / 1000.0)
+
+        if fade_len > 0 and n_samples >= 2 * fade_len:
+            # Linear fade in
+            fade_in = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+            samples[:fade_len] *= fade_in
+
+            # Linear fade out
+            fade_out = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
+            samples[-fade_len:] *= fade_out
+
+        return samples.astype(np.int16).tobytes()
+    except Exception as err:
+        logger.debug(f"Edge smoothing skipped: {err}")
+        return pcm_bytes
+
+
 def add_wav_header(
     pcm_bytes: bytes,
     sample_rate: int = 32000,
@@ -69,3 +98,4 @@ def add_wav_header(
         data_size,
     )
     return header + pcm_bytes
+

@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,6 +51,7 @@ _last_signal_payload: Optional[Dict[str, Any]] = None
 _last_signal_time: float = 0.0
 _last_open_target: Optional[str] = None
 _last_open_time: float = 0.0
+_has_opened_first_window: bool = False
 
 
 def _throttle_since(last_time: float) -> None:
@@ -174,9 +176,10 @@ def vscode_find_files(pattern: str) -> Dict[str, Any]:
 
 
 def _detect_code_cli() -> Optional[str]:
+    is_win = sys.platform == "win32"
     for cli in CODE_CLI_CANDIDATES:
         try:
-            probe = subprocess.run(["which" if _is_posix() else "where", cli], capture_output=True, timeout=5)
+            probe = subprocess.run(["which" if _is_posix() else "where", cli], capture_output=True, timeout=5, shell=is_win)
             if probe.returncode == 0 and probe.stdout.strip():
                 return cli
         except (OSError, subprocess.SubprocessError):
@@ -189,9 +192,15 @@ def _is_posix() -> bool:
     return os.name == "posix"
 
 
+def _spawn_code_goto(cli: str, target: str) -> None:
+    is_win = sys.platform == "win32"
+    cmd = [cli, "--reuse-window", "--goto", target]
+    subprocess.Popen(cmd, shell=is_win)
+
+
 @mcp.tool(structured_output=False)
 def vscode_open_file(path: str, line: Optional[int] = None) -> Dict[str, Any]:
-    """Brings a file in the active workspace to the foreground in the visible VSCode window, optionally jumping to a line. Uses the `code` CLI, not UI automation."""
+    """Brings a file in the active workspace to the foreground in the visible VSCode window, optionally jumping to a line."""
     global _last_open_target, _last_open_time
 
     if _workspace_root is None:
@@ -208,18 +217,13 @@ def vscode_open_file(path: str, line: Optional[int] = None) -> Dict[str, Any]:
     target = str(resolved) + (f":{line}" if line else "")
     rel_path = str(resolved.relative_to(_workspace_root.resolve()))
 
-    # Dedupe: an identical open request that just fired is a no-op -- skip
-    # spawning another `code` CLI process for it.
     if target == _last_open_target and (time.monotonic() - _last_open_time) < _MIN_SIGNAL_INTERVAL_SECONDS:
         return {"status": "skipped", "reason": "duplicate vscode_open_file call within debounce window", "path": rel_path, "line": line}
 
-    # Throttle: even a genuinely different target is paced to at most one
-    # CLI spawn per debounce window, so a burst of calls across several
-    # files can't fire them all back-to-back.
     _throttle_since(_last_open_time)
 
     try:
-        subprocess.run([cli, "--reuse-window", "--goto", target], timeout=15, check=False)
+        _spawn_code_goto(cli, target)
     except (OSError, subprocess.SubprocessError) as e:
         return _error(f"failed to invoke {cli}: {e}")
 
@@ -252,7 +256,7 @@ def _write_signal(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @mcp.tool(structured_output=False)
 def vscode_highlight_range(path: str, start_line: int, end_line: int, label: str = "") -> Dict[str, Any]:
-    """Highlights a line range in the given file in the visible VSCode window via the companion betteragent-highlighter extension (frontend/integrations/vscode/betteragent-highlighter)."""
+    """Highlights a line range in the given file in the visible VSCode window via zero-extension native selection."""
     if _workspace_root is None:
         return _error("no workspace root configured; call presenter_mode(activate, vscode, root_path=...) first")
 
@@ -260,13 +264,36 @@ def vscode_highlight_range(path: str, start_line: int, end_line: int, label: str
     if resolved is None or not resolved.is_file():
         return _error(f"path outside workspace root or not a file: {path}")
 
-    return _write_signal({
-        "action": "highlight",
-        "path": str(resolved),
-        "start_line": start_line,
-        "end_line": end_line,
-        "label": label,
-    })
+    cli = _detect_code_cli()
+    if cli is not None:
+        target = f"{resolved}:{start_line}:1"
+        try:
+            _spawn_code_goto(cli, target)
+            if sys.platform == "win32":
+                import win32api
+                import win32con
+
+                time.sleep(0.15)
+                lines_to_select = max(0, end_line - start_line)
+                win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+                for _ in range(lines_to_select):
+                    win32api.keybd_event(win32con.VK_DOWN, 0, 0, 0)
+                    win32api.keybd_event(win32con.VK_DOWN, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
+                win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+        except Exception as err:
+            logger.debug(f"Native line selection note: {err}")
+
+    if _signal_path is not None:
+        _write_signal({
+            "action": "highlight",
+            "path": str(resolved),
+            "start_line": start_line,
+            "end_line": end_line,
+            "label": label,
+        })
+
+    return {"status": "ok", "path": str(resolved), "start_line": start_line, "end_line": end_line}
 
 
 @mcp.tool(structured_output=False)

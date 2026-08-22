@@ -69,10 +69,10 @@ class GPTSoVITSClient:
             "top_k": 15,
             "top_p": 1.0,
             "temperature": 0.7,
-            "text_split_method": "cut0",
+            "text_split_method": "cut5",
             "batch_size": 1,
             "speed_factor": 1.0,
-            "streaming_mode": True,
+            "streaming_mode": 1,
             "media_type": "raw",
         }
 
@@ -84,26 +84,19 @@ class GPTSoVITSClient:
                 async with session.post(self.endpoint, json=payload) as resp:
                     if resp.status == 200:
                         pcm_buffer = bytearray()
+                        min_chunk_bytes = 12800  # ~200ms of 32kHz 16-bit mono PCM (6400 samples)
                         try:
                             async for chunk in resp.content.iter_chunked(4096):
                                 if cancel_event and cancel_event.is_set():
                                     break
                                 if chunk:
                                     pcm_buffer.extend(chunk)
-                                    usable_bytes = (len(pcm_buffer) // 2) * 2
-                                    if usable_bytes > 0:
+                                    if len(pcm_buffer) >= min_chunk_bytes:
+                                        usable_bytes = (len(pcm_buffer) // 2) * 2
                                         frame_bytes = bytes(pcm_buffer[:usable_bytes])
                                         pcm_buffer = pcm_buffer[usable_bytes:]
-                                        wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
-                                        yield (wav_chunk, "wav")
+                                        yield (frame_bytes, "pcm")
                         except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as spe:
-                            # This is the signature of GPT-SoVITS's G2P frontend
-                            # throwing mid-synthesis (see text_lang comment above) --
-                            # the server aborts the chunked response early and
-                            # everything after this point in the sentence is lost.
-                            # Was logged at debug (invisible in *_stderr.log by
-                            # default), which is why this failure mode went
-                            # unnoticed until a full audio review caught it.
                             logger.warning(
                                 f"GPT-SoVITS HTTP stream for chat text {text[:30]!r}... ended early ({spe}); "
                                 "rest of this sentence's audio was not synthesized."
@@ -112,48 +105,60 @@ class GPTSoVITSClient:
                         if pcm_buffer and len(pcm_buffer) >= 2:
                             usable_bytes = (len(pcm_buffer) // 2) * 2
                             frame_bytes = bytes(pcm_buffer[:usable_bytes])
-                            wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
-                            yield (wav_chunk, "wav")
+                            pcm_buffer.clear()
+                            yield (frame_bytes, "pcm")
                         return
         except ModuleNotFoundError:
-            # Fallback to standard library urllib.request
+            # Fallback to standard library urllib.request with async queue for true chunk-by-chunk streaming
             try:
-                def _stream_sync():
-                    req = urllib.request.Request(
-                        self.endpoint,
-                        data=json.dumps(payload).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
-                    )
-                    chunks = []
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        while True:
-                            chunk = resp.read(4096)
-                            if not chunk:
-                                break
-                            chunks.append(chunk)
-                    return chunks
+                loop = asyncio.get_running_loop()
+                chunk_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
 
-                raw_chunks = await asyncio.to_thread(_stream_sync)
+                def _stream_reader():
+                    try:
+                        req = urllib.request.Request(
+                            self.endpoint,
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                        )
+                        with urllib.request.urlopen(req, timeout=15) as resp:
+                            while True:
+                                if cancel_event and cancel_event.is_set():
+                                    break
+                                chunk = resp.read(4096)
+                                if not chunk:
+                                    break
+                                loop.call_soon_threadsafe(chunk_queue.put_nowait, chunk)
+                    except Exception as err:
+                        logger.warning(f"GPT-SoVITS urllib stream reader encountered error: {err}")
+                    finally:
+                        loop.call_soon_threadsafe(chunk_queue.put_nowait, None)
+
+                asyncio.create_task(asyncio.to_thread(_stream_reader))
+
                 pcm_buffer = bytearray()
-                for chunk in raw_chunks:
+                min_chunk_bytes = 12800  # ~200ms of 32kHz 16-bit mono PCM (6400 samples)
+                while True:
+                    chunk = await chunk_queue.get()
+                    if chunk is None:
+                        break
                     if cancel_event and cancel_event.is_set():
                         break
                     pcm_buffer.extend(chunk)
-                    usable_bytes = (len(pcm_buffer) // 2) * 2
-                    if usable_bytes > 0:
+                    if len(pcm_buffer) >= min_chunk_bytes:
+                        usable_bytes = (len(pcm_buffer) // 2) * 2
                         frame_bytes = bytes(pcm_buffer[:usable_bytes])
                         pcm_buffer = pcm_buffer[usable_bytes:]
-                        wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
-                        yield (wav_chunk, "wav")
+                        yield (frame_bytes, "pcm")
 
                 if pcm_buffer and len(pcm_buffer) >= 2:
                     usable_bytes = (len(pcm_buffer) // 2) * 2
                     frame_bytes = bytes(pcm_buffer[:usable_bytes])
-                    wav_chunk = add_wav_header(frame_bytes, sample_rate=self.sample_rate)
-                    yield (wav_chunk, "wav")
+                    pcm_buffer.clear()
+                    yield (frame_bytes, "pcm")
                 return
             except Exception as err:
-                logger.warning(f"GPT-SoVITS urllib request failed: {err}")
+                logger.error(f"Error in urllib fallback streaming: {err}")
         except Exception as err:
             logger.warning(f"GPT-SoVITS API endpoint ({self.endpoint}) unreachable ({err}).")
 

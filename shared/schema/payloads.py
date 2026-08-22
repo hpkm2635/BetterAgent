@@ -162,9 +162,10 @@ class StreamChunkPayload(BasePayload):
     source_channel: str = "web"
     text_delta: Optional[str] = None
     audio_base64: Optional[str] = None
-    sample_rate: Optional[int] = 24000
+    sample_rate: Optional[int] = 32000
     format: Optional[str] = "pcm"
     visemes: Optional[List[Dict[str, Any]]] = None
+    is_sentence_start: bool = False
 
 
 StreamAudioChunkPayload = StreamChunkPayload

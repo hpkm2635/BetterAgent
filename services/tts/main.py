@@ -19,7 +19,7 @@ from shared.logger import setup_logger
 from shared.text_utils import clean_tts_text
 from services.tts.cosyvoice_client import CosyVoiceClient
 from services.tts.viseme_generator import text_to_visemes
-from services.tts.audio_normalizer import add_wav_header
+from services.tts.audio_normalizer import add_wav_header, smooth_pcm_chunk_edges
 
 load_dotenv()
 logger = setup_logger("tts_service")
@@ -120,28 +120,30 @@ async def main():
                 raw_pcm = audio_bytes[44:] if (fmt == "wav" and len(audio_bytes) > 44 and audio_bytes[:4] == b"RIFF") else audio_bytes
                 accumulated_pcm.extend(raw_pcm)
 
-                # Estimate audio duration dynamically based on client sample rate (16-bit mono = sample_rate * 2 bytes/sec)
                 bytes_per_sec = float(getattr(client, "sample_rate", 32000) * 2)
-                duration_sec = len(audio_bytes) / bytes_per_sec if fmt == "pcm" else 1.0
+                duration_sec = len(raw_pcm) / bytes_per_sec
                 visemes = text_to_visemes(text, duration_sec)
 
                 # Wrap raw PCM chunks with 44-byte standard RIFF WAV header for browser AudioContext compatibility
                 sample_rate = getattr(client, "sample_rate", 32000)
-                out_bytes = audio_bytes
-                out_format = fmt
-                if fmt == "pcm":
-                    out_bytes = add_wav_header(audio_bytes, sample_rate=sample_rate)
-                    out_format = "wav"
+                smoothed_pcm = smooth_pcm_chunk_edges(raw_pcm, sample_rate=sample_rate, fade_ms=3.0)
+                out_bytes = add_wav_header(smoothed_pcm, sample_rate=sample_rate)
+                out_format = "wav"
 
                 audio_b64 = base64.b64encode(out_bytes).decode("utf-8")
+                text_delta = text if chunk_idx == 0 else ""
+                is_sentence_start = (chunk_idx == 0)
                 chunk_payload = StreamAudioChunkPayload(
                     event_id=act.event_id,
                     source_component="tts_service",
                     chat_id=chat_id,
+                    generation_id=gen_id,
                     audio_base64=audio_b64,
                     sample_rate=sample_rate,
                     format=out_format,
                     visemes=visemes,
+                    text_delta=text_delta,
+                    is_sentence_start=is_sentence_start,
                 )
 
                 envelope = {
