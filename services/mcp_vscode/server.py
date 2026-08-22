@@ -16,6 +16,7 @@ import logging
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -155,6 +156,16 @@ def vscode_search(query: str, path: str = "") -> Dict[str, Any]:
     }
 
 
+def _match_glob(rel_path: str, file_name: str, pattern: str) -> bool:
+    if fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(file_name, pattern):
+        return True
+    if pattern.startswith("**/"):
+        sub_pat = pattern[3:]
+        if fnmatch.fnmatch(rel_path, sub_pat) or fnmatch.fnmatch(file_name, sub_pat):
+            return True
+    return False
+
+
 @mcp.tool(structured_output=False)
 def vscode_find_files(pattern: str) -> Dict[str, Any]:
     """Finds files under the workspace root by glob pattern (like Claude Code's Glob tool, e.g. '**/*.py'). Capped to 200 results."""
@@ -166,7 +177,7 @@ def vscode_find_files(pattern: str) -> Dict[str, Any]:
     truncated = False
     for file_path in iter_files(root_resolved, max_files=20000):
         rel = file_path.relative_to(root_resolved).as_posix()
-        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(file_path.name, pattern):
+        if _match_glob(rel, file_path.name, pattern):
             found.append(rel)
             if len(found) >= MAX_FIND_RESULTS:
                 truncated = True
@@ -192,15 +203,61 @@ def _is_posix() -> bool:
     return os.name == "posix"
 
 
+def _dock_ide_window_to_right() -> None:
+    """Finds active IDE window (Antigravity/VSCode/Cursor) on Windows, restores, brings to foreground, and docks to right 65% of screen."""
+    if sys.platform != "win32":
+        return
+
+    try:
+        import time
+        import win32api
+        import win32con
+        import win32gui
+
+        time.sleep(0.3)
+        screen_w = win32api.GetSystemMetrics(0)
+        screen_h = win32api.GetSystemMetrics(1)
+        target_x = int(screen_w * 0.35)
+        target_w = int(screen_w * 0.65)
+
+        ide_keywords = ("antigravity", "visual studio code", "cursor", "code")
+
+        def _enum_win_callback(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd).lower()
+            if any(k in title for k in ide_keywords):
+                try:
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    win32gui.SetWindowPos(
+                        hwnd,
+                        win32con.HWND_TOP,
+                        target_x,
+                        0,
+                        target_w,
+                        screen_h,
+                        win32con.SWP_SHOWWINDOW,
+                    )
+                    win32gui.SetForegroundWindow(hwnd)
+                except Exception as win_err:
+                    logger.debug(f"Win32 docking call note: {win_err}")
+
+        win32gui.EnumWindows(_enum_win_callback, None)
+    except Exception as e:
+        logger.debug(f"Win32 dock IDE window failed: {e}")
+
+
 def _spawn_code_goto(cli: str, target: str) -> None:
     is_win = sys.platform == "win32"
     cmd = [cli, "--reuse-window", "--goto", target]
     subprocess.Popen(cmd, shell=is_win)
+    if is_win:
+        threading.Thread(target=_dock_ide_window_to_right, daemon=True).start()
 
 
 @mcp.tool(structured_output=False)
 def vscode_open_file(path: str, line: Optional[int] = None) -> Dict[str, Any]:
-    """Brings a file in the active workspace to the foreground in the visible VSCode window, optionally jumping to a line."""
+    """Opens and brings a file in the active workspace to the foreground as an active editor tab in the visible VSCode / IDE window on the user's desktop, optionally jumping to a line. Call this tool whenever the user asks to open, show, or display a file or code in VS Code on screen."""
     global _last_open_target, _last_open_time
 
     if _workspace_root is None:
