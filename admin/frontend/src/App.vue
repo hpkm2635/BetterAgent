@@ -58,10 +58,12 @@ const users = ref([])
 const usersTotal = ref(0)
 const deleteTarget = ref(null) // 待软删除的用户对象
 const userMsg = ref('')
+const showDeletedUsers = ref(false)
 
-const chatId = ref(0)
+const userId = ref('')
 const sessions = ref([])
 const sessionsTotal = ref(0)
+const sessionUsers = ref([])   // 有会话记录的用户概览
 
 const schedChatId = ref(1001)
 const schedules = ref([])
@@ -228,9 +230,21 @@ async function handleCreatePersona() {
 async function loadUsers() {
   error.value = ''
   try {
-    const data = await api('/api/admin/users')
+    const q = showDeletedUsers.value ? '?include_deleted=true' : ''
+    const data = await api(`/api/admin/users${q}`)
     users.value = data.users || []
     usersTotal.value = data.total ?? users.value.length
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function restoreUser(u) {
+  userMsg.value = ''
+  try {
+    await api(`/api/admin/users/${u.user_id}/restore`, { method: 'POST' })
+    userMsg.value = `用户 ${u.user_id}（${u.display_name}）已恢复`
+    await loadUsers()
   } catch (e) {
     error.value = e.message
   }
@@ -259,15 +273,35 @@ async function confirmDelete() {
 async function loadSessions() {
   error.value = ''
   try {
-    const data = await api(`/api/admin/sessions?chat_id=${encodeURIComponent(chatId.value)}&limit=50&offset=0`)
-    sessions.value = data.sessions || []
-    sessionsTotal.value = data.total ?? 0
-    if (data.chat_id) {
-      chatId.value = data.chat_id
+    const params = new URLSearchParams({ limit: '50', offset: '0' })
+    const hasId = userId.value !== '' && userId.value !== null && userId.value !== undefined
+    if (hasId) params.set('user_id', String(userId.value))
+    const data = await api(`/api/admin/sessions?${params.toString()}`)
+    if (data.users) {
+      // 概览模式：未传 user_id 时后端返回有会话记录的用户列表
+      sessionUsers.value = data.users || []
+      sessions.value = []
+      sessionsTotal.value = 0
+    } else {
+      sessionUsers.value = []
+      sessions.value = data.sessions || []
+      sessionsTotal.value = data.total ?? 0
     }
   } catch (e) {
     error.value = e.message
   }
+}
+
+function viewSessionUser(uid) {
+  userId.value = uid
+  loadSessions()
+}
+
+function formatTime(ts) {
+  const t = Number(ts)
+  if (!Number.isFinite(t)) return String(ts ?? '')
+  const d = new Date(t * 1000)
+  return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString()
 }
 
 // ---- Schedules ------------------------------------------------------------
@@ -571,7 +605,12 @@ onMounted(() => {
       <section v-else-if="activeTab === 'users'" class="card">
         <div class="card-head">
           <h2>用户列表 <span class="muted small">(共 {{ usersTotal }} 人)</span></h2>
-          <button class="btn" @click="loadUsers">刷新</button>
+          <div class="row">
+            <label class="muted small">
+              <input v-model="showDeletedUsers" type="checkbox" @change="loadUsers" /> 显示已删除
+            </label>
+            <button class="btn" @click="loadUsers">刷新</button>
+          </div>
         </div>
         <p v-if="userMsg" class="banner banner-ok">{{ userMsg }}</p>
         <table class="table">
@@ -580,13 +619,14 @@ onMounted(() => {
               <th>user_id</th>
               <th>display_name</th>
               <th>known_facts</th>
+              <th>email</th>
               <th>last_seen</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="!users.length">
-              <td colspan="5" class="muted">暂无数据</td>
+              <td colspan="6" class="muted">暂无数据</td>
             </tr>
             <tr v-for="u in users" :key="u.user_id">
               <td>{{ u.user_id }}</td>
@@ -594,9 +634,11 @@ onMounted(() => {
               <td>
                 <span v-for="(f, i) in u.known_facts" :key="i" class="tag">{{ f }}</span>
               </td>
+              <td class="muted">{{ u.email ?? '—' }}</td>
               <td class="muted">{{ u.last_seen ?? '—' }}</td>
               <td>
-                <button class="btn btn-danger" @click="askDelete(u)">软删除</button>
+                <button v-if="u.deleted" class="btn" @click="restoreUser(u)">恢复</button>
+                <button v-else class="btn btn-danger" @click="askDelete(u)">软删除</button>
               </td>
             </tr>
           </tbody>
@@ -606,22 +648,57 @@ onMounted(() => {
       <!-- 会话记录 -->
       <section v-else-if="activeTab === 'sessions'" class="card">
         <div class="card-head">
-          <h2>会话记录 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
+          <h2>会话记录</h2>
           <div class="row">
-            <input v-model.number="chatId" type="number" class="input input-short" placeholder="chat_id" />
+            <button v-if="userId" class="btn" @click="userId = ''; loadSessions()">返回概览</button>
+            <input
+              v-model.number="userId"
+              type="number"
+              class="input input-short"
+              placeholder="user_id"
+              @keyup.enter="loadSessions"
+            />
             <button class="btn btn-primary" @click="loadSessions">查询</button>
           </div>
         </div>
-        <ul class="list">
-          <li v-if="!sessions.length" class="muted">暂无会话记录</li>
-          <li v-for="s in sessions" :key="s.message_id" class="list-item">
-            <div class="row">
-              <span class="role" :class="s.role">{{ s.role }}</span>
-              <span class="muted small">#{{ s.message_id }} · {{ s.timestamp }}</span>
-            </div>
-            <div class="bubble">{{ s.content }}</div>
-          </li>
-        </ul>
+
+        <!-- 概览：有会话记录的用户 -->
+        <template v-if="!userId && sessionUsers.length">
+          <h3 class="muted small" style="margin-bottom: 8px;">有会话记录的用户 ({{ sessionUsers.length }})</h3>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>user_id</th>
+                <th>消息数</th>
+                <th>最后消息时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="su in sessionUsers" :key="su.user_id">
+                <td>{{ su.user_id }}</td>
+                <td>{{ su.message_count }}</td>
+                <td class="muted">{{ su.last_timestamp ? formatTime(su.last_timestamp) : '—' }}</td>
+                <td><button class="btn" @click="viewSessionUser(su.user_id)">查看会话</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+
+        <!-- 详情：某用户的会话消息 -->
+        <template v-else>
+          <h3 class="muted small" style="margin-bottom: 8px;">共 {{ sessionsTotal }} 条消息</h3>
+          <ul class="list">
+            <li v-if="!sessions.length" class="muted">暂无会话记录</li>
+            <li v-for="s in sessions" :key="s.message_id" class="list-item">
+              <div class="row">
+                <span class="role" :class="s.role">{{ s.role }}</span>
+                <span class="muted small">#{{ s.message_id }} · {{ s.timestamp ? formatTime(s.timestamp) : '未知时间' }}</span>
+              </div>
+              <div class="bubble">{{ s.content }}</div>
+            </li>
+          </ul>
+        </template>
       </section>
 
       <!-- 日程提醒 -->

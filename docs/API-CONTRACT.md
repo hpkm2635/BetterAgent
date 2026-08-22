@@ -188,12 +188,13 @@ Content-Type: application/json
 
 > **实现约束**：使用 `ruamel.yaml` 原地更新 YAML，保留注释和字段顺序；禁止用 `yaml.dump` 覆盖整个文件。
 
-### 2.2 用户管理（只读 + 软删除）
+### 2.2 用户管理（只读 + 软删除 + 恢复）
 
 ```
-GET    http://localhost:8094/api/admin/users
+GET    http://localhost:8094/api/admin/users[?include_deleted=true]
 GET    http://localhost:8094/api/admin/users/{user_id}
 DELETE http://localhost:8094/api/admin/users/{user_id}
+POST   http://localhost:8094/api/admin/users/{user_id}/restore
 ```
 
 **GET /users Response 200**:
@@ -204,31 +205,52 @@ DELETE http://localhost:8094/api/admin/users/{user_id}
       "user_id": 123456789,
       "display_name": "小明",
       "known_facts": ["喜欢打游戏", "大三学生"],
-      "last_seen": "2026-08-17T10:00:00Z"
+      "last_seen": "2026-08-17T10:00:00Z",
+      "email": "xiao@example.com",
+      "deleted": false
     }
   ],
   "total": 1
 }
 ```
 
-> **实现约束**：数据来源为 Redis 用户画像 key（`user_profile:{user_id}`）或独立 SQLite 表。
-> **绝对禁止**修改 Redis 中的对话历史 key（`short_term:{chat_id}`）。
+- `include_deleted=true` 时返回全部用户（含被软删除者）；默认只返回未删除用户。
+- `POST /users/{user_id}/restore`：恢复被软删除的用户（仅清除 SQLite 软删除标记，不触碰 Redis）。
+
+> **实现约束**：数据来源为 Redis 用户画像 key（`betteragent:profile:{user_id}` / 兼容旧前缀 `user_profile:{user_id}`）或独立 SQLite 表。
+> **绝对禁止**修改 Redis 中的对话历史 key（`short_term:{user_id}`）。
 
 ### 2.3 会话记录查看（只读）
 
 ```
-GET http://localhost:8094/api/admin/sessions?chat_id={chat_id}&limit=50&offset=0
+GET http://localhost:8094/api/admin/sessions?user_id={user_id}&limit=50&offset=0
 → 200
 {
   "sessions": [
     { "message_id": 1, "role": "user", "content": "你好喵", "timestamp": 1723456789.0 }
   ],
   "total": 100,
-  "chat_id": 123456
+  "user_id": 123456
 }
 ```
 
+不传 `user_id` 时返回**有会话记录的用户概览**（Redis 会话按 `user_id` 存储）：
+
+```
+GET http://localhost:8094/api/admin/sessions
+→ 200
+{
+  "users": [
+    { "user_id": 123456, "message_count": 20, "last_timestamp": 1723456789.0 }
+  ],
+  "total_users": 1,
+  "user_id": null
+}
+```
+
+> 兼容旧参数 `chat_id`（等价于 `user_id`），契约测试 `?chat_id=0` 仍返回空列表不崩溃。
 > Redis 不可用时应返回 `{ "sessions": [], "total": 0 }`，不崩溃。
+> `timestamp` 缺失（旧数据）时返回 `null`。
 
 ### 2.4 知识库管理（代理，不重复实现逻辑）
 
