@@ -870,8 +870,10 @@ def get_long_term_memory(
     try:
         storage_user_id = _to_web_chat_id(user_id)
         with httpx.Client(timeout=5.0, trust_env=False) as client:
+            headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
             resp = client.post(
                 f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
+                headers=headers,
                 json={
                     "filter": {"must": [{"key": "user_id", "match": {"value": int(storage_user_id)}}]},
                     "limit": limit,
@@ -908,8 +910,10 @@ def get_long_term_memory(
 def delete_long_term_memory(point_id: str):
     try:
         with httpx.Client(timeout=5.0, trust_env=False) as client:
+            headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
             resp = client.post(
                 f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/delete",
+                headers=headers,
                 json={"points": [point_id]},
             )
             if resp.status_code == 200:
@@ -944,7 +948,8 @@ def update_memory_profile(user_id: int, payload: MemoryProfileUpdatePayload):
     if r is None:
         return _error(503, "redis unavailable")
 
-    key = f"betteragent:profile:{user_id}"
+    storage_user_id = _to_web_chat_id(user_id)
+    key = f"betteragent:profile:{storage_user_id}"
     try:
         if payload.display_name is not None:
             r.hset(key, "preferred_name", payload.display_name)

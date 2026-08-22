@@ -27,6 +27,7 @@ const longTerm = ref<LongTermMemory[]>([])
 const longTermQuery = ref('')
 const loading = ref(false)
 const message = ref('')
+const saveStatus = ref<'idle' | 'success' | 'error'>('idle')
 
 async function refreshProfile() {
   profile.value = await getMemoryProfile(userId.value)
@@ -58,6 +59,7 @@ async function refreshAll() {
 
 async function saveProfile() {
   message.value = ''
+  saveStatus.value = 'idle'
   const facts = factsText.value
     .split('\n')
     .map(item => item.trim())
@@ -69,9 +71,11 @@ async function saveProfile() {
   if (updated) {
     profile.value = updated
     message.value = '画像已保存'
+    saveStatus.value = 'success'
   }
   else {
     message.value = '保存画像失败'
+    saveStatus.value = 'error'
   }
 }
 
@@ -112,7 +116,9 @@ onMounted(refreshAll)
       未获取到当前会话 ID，请先在首页进入聊天。
     </div>
 
-    <p v-if="message" class="text-sm text-neutral-500">{{ message }}</p>
+    <div v-if="message" class="rounded-lg px-3 py-2 text-sm" :class="saveStatus === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : saveStatus === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'">
+      {{ message }}
+    </div>
 
     <div class="rounded-xl border border-neutral-200/60 bg-white/70 p-4 shadow-sm dark:border-neutral-800/60 dark:bg-neutral-900/60">
       <div class="text-lg font-medium">用户画像</div>
