@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>AIRI</string>
+	<string>Better Agent</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -25,9 +25,9 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>AIRI needs access to your local network to connect to your Tamagotchi host.</string>
+	<string>Better Agent needs access to your local network to connect to your Tamagotchi host.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>AIRI uses the camera to scan Tamagotchi connection QR codes.</string>
+	<string>Better Agent uses the camera to scan Tamagotchi connection QR codes.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

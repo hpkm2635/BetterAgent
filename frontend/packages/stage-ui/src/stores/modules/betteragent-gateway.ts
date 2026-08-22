@@ -16,6 +16,8 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const lastEmotion = ref('')
   const lastAction = ref('')
   const emotionalState = ref<EmotionalStatePayload | null>(null)
+  const scheduleDialogOpen = ref(false)
+  const emotionDialogOpen = ref(false)
 
   const streamStore = useChatStreamStore()
   const chatSession = useChatSessionStore()
@@ -191,6 +193,8 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     lastEmotion,
     lastAction,
     emotionalState,
+    scheduleDialogOpen,
+    emotionDialogOpen,
     initialize,
     getResolvedChatId,
   }

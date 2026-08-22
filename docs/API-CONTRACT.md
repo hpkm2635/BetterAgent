@@ -290,10 +290,218 @@ GET http://localhost:8094/health
 - [ ] `PATCH /api/admin/personas/catgirl` 修改 `name` 字段成功，YAML 文件实际更新
 - [ ] `PATCH /api/admin/personas/catgirl` 传入 `{"tts": {}}` 返回 400
 - [ ] `GET /api/admin/sessions?chat_id=0` 在无 Redis 时返回空列表，不崩溃
+- [ ] `GET /api/admin/config` 能返回脱敏的 API Key 列表与当前 LLM Provider 配置
+- [ ] `PATCH /api/admin/config` 修改默认 Provider / Key 正常生效并广播 `agent.config.reloaded`
 - [ ] Admin Web UI 在 `localhost:8095` 可访问首页（截图附 PR）
-- [ ] PR diff 不包含 `core/`、`shared/`、`runner.py`、`frontend/`、`config/config.yaml` 任何文件的修改
+- [ ] PR diff 不包含 `core/`、`shared/`、`runner.py`、`frontend/` 任何文件的修改（`admin/` 内部维护 `.env` 和 `config.yaml` 读写逻辑）
+
+### 2.7 系统配置与 API 密钥管理（BYOK 模式）
+
+Admin 后端作为端侧配置管理中枢，读取并安全更新 `config/config.yaml` 与 `.env` 文件中的配置项：
+
+#### 获取系统配置与 API 密钥状态（脱敏）
+```
+GET http://localhost:8094/api/admin/config
+→ 200
+{
+  "default_provider": "gemini",
+  "providers": {
+    "gemini": { "has_key": true, "key_masked": "AIzaSy***4x9", "model": "gemini-3.1-flash-lite" },
+    "openai": { "has_key": false, "key_masked": "", "model": "gpt-4o" },
+    "deepseek": { "has_key": false, "key_masked": "", "model": "deepseek-chat" },
+    "qwen": { "has_key": false, "key_masked": "", "model": "qwen3.6-flash" }
+  },
+  "tts_provider": "cosyvoice",
+  "network": { "http_proxy": "", "https_proxy": "" }
+}
+```
+
+#### 动态更新配置与 API 密钥
+```
+PATCH http://localhost:8094/api/admin/config
+Content-Type: application/json
+```
+
+**Request**:
+```json
+{
+  "default_provider": "gemini",
+  "api_keys": {
+    "gemini": "AIzaSyYourNewActualKeyHere"
+  },
+  "models": {
+    "gemini": "gemini-3.1-flash-lite"
+  }
+}
+```
+
+**Response 200**: `{ "status": "ok", "reloaded": true }`
+
+> **实现约束**：
+> 1. API 密钥写入 `.env` 文件，保持私有化存取；全局配置更新至 `config/config.yaml`。
+> 2. 更新成功后，通过 NATS 消息总线发布 `agent.config.reloaded` 事件通知全系统。
+
+#### API 密钥连通性测试
+```
+POST http://localhost:8094/api/admin/config/test-key
+Content-Type: application/json
+```
+
+**Request**:
+```json
+{
+  "provider": "gemini",
+  "api_key": "AIzaSyYourNewActualKeyHere"
+}
+```
+
+**Response 200**:
+```json
+{
+  "status": "ok",
+  "latency_ms": 142,
+  "available_models": ["gemini-3.1-flash-lite", "gemini-1.5-pro"]
+}
+```
+**Response 400/500**:
+```json
+{
+  "status": "error",
+  "error": "401 Unauthorized: Invalid API key"
+}
+```
+
+### 2.7 系统配置与 API 密钥管理（BYOK 模式）
+
+> **BYOK（Bring Your Own Key）**：用户无需直接修改仓库根目录 `config/config.yaml`
+> 或 `.env`，统一在 Admin 控制台完成 API Key 填写、默认 Provider 切换、连通性测试
+> 与配置修改。`.env` 与 `config/config.yaml` 的读写逻辑**仅封装在 `admin/` 内部**，
+> 不破坏其它微服务边界。
+
+**管理范围**：`gemini`、`claude`、`qwen` 三个 LLM Provider，对应根 `.env` 的
+`GEMINI_API_KEY` / `CLAUDE_API_KEY` / `QWEN_API_KEY` 与 `config/config.yaml` 的
+`llm.<provider>.model`。`cosyvoice`（TTS）及 openai/deepseek/ollama/vllm 不在面板管理范围。
+
+#### 读取系统配置（脱敏）
+
+```
+GET http://localhost:8094/api/admin/config
+```
+
+**Response 200**:
+```json
+{
+  "default_provider": "gemini",
+  "network": { "http_proxy": "", "https_proxy": "" },
+  "providers": [
+    { "name": "gemini", "model": "gemini-2.5-flash", "key_masked": "AIzaSy***4x9", "key_set": true },
+    { "name": "claude", "model": "claude-3-5-sonnet-20241022", "key_masked": "sk-ant***xyz", "key_set": true },
+    { "name": "qwen", "model": null, "key_masked": null, "key_set": false }
+  ]
+}
+```
+
+| 字段 | 说明 |
+| :--- | :--- |
+| `default_provider` | 当前默认 LLM Provider（`llm.default_provider`，默认 `gemini`） |
+| `network.http_proxy` / `network.https_proxy` | 网络代理（来自 `config/config.yaml`） |
+| `providers[].name` | Provider 名（`gemini` / `claude` / `qwen`） |
+| `providers[].model` | 该 Provider 当前模型（`llm.<name>.model`，未配置时为 `null`） |
+| `providers[].key_masked` | API Key 脱敏（首 6 尾 3，如 `AIzaSy***4x9`）；未设置或占位符为 `null` |
+| `providers[].key_set` | 该 Provider 是否已配置有效 API Key |
+
+#### 更新系统配置
+
+```
+PATCH http://localhost:8094/api/admin/config
+Content-Type: application/json
+```
+
+**Request**:
+```json
+{
+  "default_provider": "claude",
+  "network": { "http_proxy": "http://127.0.0.1:7890", "https_proxy": "http://127.0.0.1:7890" },
+  "providers": {
+    "gemini": { "api_key": "AIza...", "model": "gemini-2.5-pro" },
+    "claude": { "model": "claude-3-5-sonnet-20241022" }
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `default_provider` | string（可选） | 切换默认 Provider，必须是 `gemini`/`claude`/`qwen` |
+| `network` | object（可选） | `http_proxy` / `https_proxy` 网络代理 |
+| `providers` | object（可选） | key 为 Provider 名，value 为 `{ "api_key"?, "model"? }` |
+
+> `api_key` 传空字符串表示**清除**该 Provider 的 key；不传表示不修改。
+> `model` 仅在提供时更新。密钥写回仓库根 `.env`；模型 / 默认 Provider / 代理写入
+> `config/config.yaml`（ruamel 原地更新，保留注释与字段顺序；文件不存在时从
+> `config.yaml.example` 播种）。两者均在 `.gitignore`，不污染 PR diff。
+
+**Response 200**: `{ "status": "ok", "reloaded": true | false }`
+
+> `reloaded` 表示是否成功向 NATS 发布 `agent.config.reloaded`（全服务热刷新信号）。
+> 发布失败（NATS 未启动 / 凭据缺失）不阻断配置落盘，仅返回 `false`。
+
+**Response 400**: `{ "error": "Forbidden field: xxx" }`（白名单外字段 / 未知 Provider / 类型错误）
+
+#### 连通性测试
+
+```
+POST http://localhost:8094/api/admin/config/test-key
+Content-Type: application/json
+```
+
+**Request**:
+```json
+{ "provider": "gemini", "api_key": "AIza..." }
+```
+`api_key` 可省略：省略时使用 `.env` 中已存 key。**测试不保存任何配置。**
+
+**Response 200（成功）**:
+```json
+{ "provider": "gemini", "ok": true, "latency_ms": 320, "models": ["gemini-1.5-pro", "gemini-2.5-flash"] }
+```
+
+**Response 200（连通失败，HTTP 仍为 200 便于前端展示）**:
+```json
+{ "provider": "gemini", "ok": false, "latency_ms": 320, "error": "HTTP 400: API key not valid..." }
+```
+
+> 探测走各 Provider 公开 models REST 接口：
+> - gemini：`GET https://generativelanguage.googleapis.com/v1beta/models?key=...`
+> - claude：`GET https://api.anthropic.com/v1/models`（`x-api-key` + `anthropic-version: 2023-06-01`）
+> - qwen：DashScope OpenAI-compatible `GET https://dashscope.aliyuncs.com/compatible-mode/v1/models`（`Authorization: Bearer`）
+>
+> `latency_ms` 为本次探测耗时（毫秒）；`models` 为返回的可用模型列表（截断前 20）。
+> 网络代理自动读取 `config/config.yaml` 的 `network.*`。
+
+**Response 400**: `{ "error": "Unknown provider: evil" }`（Provider 不在管理范围内）
+
+#### 热刷新机制
+
+PATCH 成功后，Admin 后端向 NATS 发布 `agent.config.reloaded`，信封格式：
+
+```json
+{ "subject": "agent.config.reloaded", "source": "admin_backend", "payload": { "default_provider": "claude", "network": { "...": "..." }, "providers": { "gemini": { "api_key": "..." } } } }
+```
+
+> 消费端（cognitive / memory 等服务的 config cache 失效与 Provider 重建）由技术总监在
+> 各服务内实现；Admin 只负责**发布**，不订阅。若需触发 Agent 响应，通知技术总监添加
+> NATS 订阅点。
+
+### 2.7 PR 合并门控
+
+- [ ] `GET /api/admin/config` 返回 `default_provider` / `network` / `providers`，providers 含 `gemini`/`claude`/`qwen`
+- [ ] `PATCH /api/admin/config` 修改 `default_provider` 后 `GET` 能反映，且 `config/config.yaml` 实际更新
+- [ ] `PATCH /api/admin/config` 传入未知 Provider（如 `{"providers": {"evil": {}}}`）返回 400
+- [ ] `POST /api/admin/config/test-key` 传入未知 Provider 返回 400（不发起外网请求）
+- [ ] PR diff 不包含 `core/`、`shared/`、`runner.py`、`frontend/` 任何文件的修改
 
 ---
+
 
 ## 接口契约三：陪伴工具服务（张劭哲）
 
@@ -679,4 +887,4 @@ class TestCompanionTools:
 
 ---
 
-*最后更新：2026-08-17 | 维护者：褚裕禄*
+*最后更新：2026-08-21 | 维护者：褚裕禄*

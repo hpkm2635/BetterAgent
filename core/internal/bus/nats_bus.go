@@ -31,6 +31,7 @@ const (
 	SubjectAudioChunk       = "agent.audio.chunk"
 	SubjectVisemeData       = "agent.viseme.data"
 	SubjectEmotionUpdate    = "agent.emotion.update"
+	SubjectEmotionDelta     = "agent.emotion.delta"
 	SubjectVisionFrame      = "agent.vision.frame"
 
 	// 7 Realtime Cancelable Streaming Subjects

@@ -75,6 +75,12 @@ func NewServer(
 	}
 }
 
+func (s *Server) SetEmotionStore(store *emotion.EmotionalStateStore) {
+	if s.bridge != nil {
+		s.bridge.SetEmotionStore(store)
+	}
+}
+
 func (s *Server) Start() error {
 	if err := s.bridge.StartSubscriptions(); err != nil {
 		s.logger.Warn("WebGateway failed to start NATS subscriptions (bus might be offline)", zap.Error(err))

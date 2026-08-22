@@ -18,8 +18,8 @@ class ImageGenTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Generates an AI image, catgirl selfie, or POV scene photograph. MUST be called whenever the user "
-            "asks for a photo, selfie, picture, visual depiction of Camelia, or scenery in front of her."
+            "Generates an AI image, character selfie, or POV scene photograph. MUST be called whenever the user "
+            "asks for a photo, selfie, picture, visual depiction of the character, or scenery in front of her."
         )
 
     @property
@@ -34,7 +34,7 @@ class ImageGenTool(BaseTool):
                 "category": {
                     "type": "string",
                     "enum": ["selfie", "scenery", "general"],
-                    "description": "Image type: 'selfie' (catgirl character selfie/portrait), 'scenery' (POV scenery/room/environment in front of her), or 'general' (artwork/object).",
+                    "description": "Image type: 'selfie' (character selfie/portrait), 'scenery' (POV scenery/room/environment in front of her), or 'general' (artwork/object).",
                 },
                 "style": {
                     "type": "string",
@@ -51,13 +51,10 @@ class ImageGenTool(BaseTool):
         # Config-driven persona appearance and settings from active Persona YAML
         from shared.persona_loader import PersonaLoader
         persona_data = PersonaLoader.load_active_persona()
-        default_appearance = (
-            "a cute anime catgirl with long silver hair, amber golden eyes, fluffy cat ears and tail, "
-            "wearing a cozy oversized white hoodie with pink paw prints"
-        )
+        default_appearance = "a friendly anime-style character"
         appearance = persona_data.get("appearance", default_appearance)
         art_style = style or persona_data.get("art_style", "anime")
-        ref_dir = persona_data.get("reference_images_dir", "config/reference_images/catgirl")
+        ref_dir = persona_data.get("reference_images_dir", "config/reference_images")
 
         # Build category-specific prompt
         if category == "scenery":
@@ -68,9 +65,9 @@ class ImageGenTool(BaseTool):
         elif category == "general":
             full_prompt = f"Detailed {art_style} illustration of: {prompt}."
         else:
-            # Default to 'selfie' / catgirl portrait
+            # Default to 'selfie' / character portrait
             full_prompt = (
-                f"Detailed {art_style} selfie photograph of catgirl: {prompt}. "
+                f"Detailed {art_style} selfie photograph of the character: {prompt}. "
                 f"Character appearance details: {appearance}."
             )
 

@@ -17,8 +17,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   const authStore = useAuthStore()
 
   // Track if first-time setup has been completed or skipped
-  const hasCompletedSetup = useLocalStorage('onboarding/completed', false)
-  const hasSkippedSetup = useLocalStorage('onboarding/skipped', false)
+  const hasCompletedSetup = useLocalStorage('onboarding/completed', true)
+  const hasSkippedSetup = useLocalStorage('onboarding/skipped', true)
 
   // Track if we should show the setup dialog
   const showingSetup = ref(false)
@@ -42,15 +42,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     })
   })
 
-  // Check if first-time setup should be shown
-  const skipOnboardingPath = ['/auth/callback']
-  const needsOnboarding = computed(() =>
-    !authStore.isAuthenticated
-    && !authStore.token
-    && !hasSkippedSetup.value
-    && !hasCompletedSetup.value
-    && !skipOnboardingPath.includes(document.location.pathname),
-  )
+  // Check if first-time setup should be shown - disabled by default for BetterAgent
+  const needsOnboarding = computed(() => false)
 
   // Keep in-memory display flag aligned with persisted onboarding status
   // when setup is completed/skipped from another window (desktop multi-window case).

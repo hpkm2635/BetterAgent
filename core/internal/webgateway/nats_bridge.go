@@ -21,6 +21,7 @@ type NatsBridge struct {
 	sessions            *SessionManager
 	csm                 *engine.CentralStateMachine
 	emotionalState      *emotion.EmotionalState
+	emotionStore        *emotion.EmotionalStateStore
 	personality         *emotion.PersonalityProfile
 	circadian           *emotion.CircadianRhythmEvaluator
 	urgeEngine          *engine.UrgeEngine
@@ -52,6 +53,25 @@ func newNatsBridge(
 	}
 }
 
+func (b *NatsBridge) SetEmotionStore(store *emotion.EmotionalStateStore) {
+	b.emotionStore = store
+}
+
+func (b *NatsBridge) getEmotionalStateForChat(chatID int64) *emotion.EmotionalState {
+	if b.emotionStore != nil {
+		return b.emotionStore.GetOrCreate(chatID)
+	}
+	return b.emotionalState
+}
+
+func (b *NatsBridge) getMoodTagForChat(chatID int64) string {
+	st := b.getEmotionalStateForChat(chatID)
+	if st != nil {
+		return string(st.CurrentMoodTag)
+	}
+	return "NEUTRAL"
+}
+
 func (b *NatsBridge) StartSubscriptions() error {
 	// 1. Subscribe to Action Decisions from LLM / Cognitive Engine -- only
 	// the "web" channel's subjects, so Telegram-bound decisions are never
@@ -68,9 +88,12 @@ func (b *NatsBridge) StartSubscriptions() error {
 		b.handleAudioChunkMsg(msg)
 	})
 
-	// 3. Subscribe to Realtime Emotion Updates
+	// 3. Subscribe to Realtime Emotion Updates & Deltas
 	_, _ = b.bus.Subscribe(bus.SubjectEmotionUpdate, func(msg *nats.Msg) {
 		b.handleEmotionUpdateMsg(msg)
+	})
+	_, _ = b.bus.Subscribe(bus.SubjectEmotionDelta, func(msg *nats.Msg) {
+		b.handleEmotionDeltaMsg(msg)
 	})
 
 	// 4. Subscribe to STT Final Transcripts from services/stt -- treated
@@ -119,6 +142,18 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 	case "user.text":
 		var p UserTextMessagePayload
 		if err := json.Unmarshal(wsMsg.Payload, &p); err == nil && p.Text != "" {
+			if strings.Contains(p.Text, "[喂食金枪鱼]") || strings.HasPrefix(p.Text, "/feed") {
+				st := b.getEmotionalStateForChat(session.ChatID)
+				if st != nil {
+					st.ApplySatietyDelta(0.35)
+					st.ApplySentimentDelta(0.1, 0.1, 1.0)
+					outBytes, _ := json.Marshal(WSMessage{
+						Type:    "agent.emotion",
+						Payload: marshalRaw(b.buildAgentEmotionPayload(session.ChatID, string(st.CurrentMoodTag), "")),
+					})
+					b.sessions.SendTextToChat(session.ChatID, outBytes)
+				}
+			}
 			// chat_id is always pinned to the authenticated session, never
 			// taken from the message body -- otherwise a client could
 			// address (and read the memory of) an arbitrary chat_id per message.
@@ -303,6 +338,10 @@ func (b *NatsBridge) speechBoundaryPayload(chatID int64) schema.SpeechBoundaryPa
 // mediaType/voiceTranscript are set only for the STT path (both zero-valued
 // for plain typed text).
 func (b *NatsBridge) publishInboundMessage(chatID int64, text string, mediaType string, voiceTranscript *string) {
+	if b.urgeEngine != nil {
+		b.urgeEngine.OnUserActivity()
+	}
+
 	// /game_start and /game_stop are intercepted here, before anything else
 	// touches NATS/CSM/the LLM -- deterministic, Go-side, and (for
 	// /game_stop specifically) works as a genuine emergency stop precisely
@@ -365,14 +404,16 @@ func (b *NatsBridge) publishInboundMessage(chatID int64, text string, mediaType 
 		if err != nil {
 			b.logger.Warn("WebGateway EnrichContext timeout/fallback to direct ReasoningRequest publish", zap.Error(err))
 			fallbackReasoning := schema.ReasoningRequestPayload{
-				BasePayload:    schema.NewBasePayload("web_gateway"),
-				ChatID:         cID,
-				UserID:         cID,
-				GenerationID:   req.GenerationID,
-				InboundMessage: req.InboundMessage,
-				CurrentEmotion: req.EmotionDescription,
-				TriggerType:    &req.TriggerType,
-				SourceChannel:  "web",
+				BasePayload:            schema.NewBasePayload("web_gateway"),
+				ChatID:                 cID,
+				UserID:                 cID,
+				GenerationID:           req.GenerationID,
+				InboundMessage:         req.InboundMessage,
+				CurrentEmotion:         req.EmotionDescription,
+				PersonalityDescription: req.PersonalityDescription,
+				CircadianDescription:   req.CircadianDescription,
+				TriggerType:            &req.TriggerType,
+				SourceChannel:          "web",
 			}
 			if pubErr := b.bus.Publish(bus.SubjectReasoningRequest, "web_gateway", fallbackReasoning); pubErr != nil {
 				b.logger.Error("Failed to publish fallback ReasoningRequest to NATS", zap.Int64("chat_id", cID), zap.Error(pubErr))
@@ -503,8 +544,9 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 		outBytes, _ := json.Marshal(WSMessage{
 			Type: "agent.text_delta",
 			Payload: marshalRaw(AgentTextDeltaPayload{
-				Text:    *decision.TextContent,
-				IsFinal: decision.IsFinal,
+				Text:       *decision.TextContent,
+				EmotionTag: b.getMoodTagForChat(decision.ChatID),
+				IsFinal:    decision.IsFinal,
 			}),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)
@@ -551,9 +593,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 		}
 		outBytes, _ := json.Marshal(WSMessage{
 			Type: "agent.emotion",
-			Payload: marshalRaw(AgentEmotionPayload{
-				Emotion: emotionStr,
-			}),
+			Payload: marshalRaw(b.buildAgentEmotionPayload(decision.ChatID, emotionStr, "")),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)
 	}
@@ -561,13 +601,18 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 	// 1. Central State Machine Management for Stream Reasoning & Audio:
 	if b.csm != nil {
 		if !decision.IsFinal {
-			// Streaming in progress: Maintain STREAMING_TTS and extend watchdog
+			// Streaming in progress: Maintain STREAMING_TTS and extend watchdog (5s window)
 			b.csm.TransitionToChat(decision.ChatID, engine.StateStreamingTTS, "stream_reasoning_chunk")
-			b.csm.TouchWatchdogChat(decision.ChatID, 30*time.Second)
+			b.csm.TouchWatchdogChat(decision.ChatID, 5*time.Second)
 		} else {
 			// IsFinal == true: Text reasoning completed.
-			// Set 5-second smooth audio flush window instead of jumping immediately to IDLE
-			b.csm.TouchWatchdogChat(decision.ChatID, 5*time.Second)
+			if decision.TextContent == nil || *decision.TextContent == "" {
+				// Pure tool-only turn (no speech/text to flush): Transition immediately back to IDLE
+				b.csm.TransitionToChat(decision.ChatID, engine.StateIdle, "tool_only_turn_completed")
+			} else {
+				// Set 3-second smooth audio flush window instead of 30s timeout
+				b.csm.TouchWatchdogChat(decision.ChatID, 3*time.Second)
+			}
 			if b.urgeEngine != nil {
 				b.urgeEngine.OnTurnCompleted()
 			}
@@ -614,14 +659,15 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 			SampleRate:  p.SampleRate,
 			Format:      p.Format,
 			Visemes:     visemes,
+			EmotionTag:  b.getMoodTagForChat(p.ChatID),
 		}),
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 
-	// TouchWatchdog & Maintain STREAMING_TTS while audio chunks arrive
+	// TouchWatchdog & Maintain STREAMING_TTS while audio chunks arrive (5s sliding window)
 	if b.csm != nil {
 		b.csm.TransitionToChat(p.ChatID, engine.StateStreamingTTS, "audio_chunk_streaming")
-		b.csm.TouchWatchdogChat(p.ChatID, 30*time.Second)
+		b.csm.TouchWatchdogChat(p.ChatID, 5*time.Second)
 	}
 
 	// 2. High-Performance Zero-Copy Binary WebSocket Frame (0% Base64 Overhead)
@@ -631,20 +677,24 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	}
 }
 
-func (b *NatsBridge) buildAgentEmotionPayload(emotionStr string, action string) AgentEmotionPayload {
+func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, action string) AgentEmotionPayload {
 	payload := AgentEmotionPayload{
-		Emotion: emotionStr,
-		Action:  action,
+		Emotion:    emotionStr,
+		EmotionTag: b.getMoodTagForChat(chatID),
+		Action:     action,
 	}
-	if b.emotionalState != nil {
-		payload.Mood = string(b.emotionalState.CurrentMoodTag)
-		payload.Valence = b.emotionalState.Valence
-		payload.Arousal = b.emotionalState.Arousal
-		payload.Energy = b.emotionalState.Energy
-		payload.SocialBattery = b.emotionalState.SocialBattery
-		payload.Affection = b.emotionalState.AffectionLevel
-		payload.IsJealous = b.emotionalState.IsJealous
-		payload.Description = b.emotionalState.ToPromptDescription()
+	st := b.getEmotionalStateForChat(chatID)
+	if st != nil {
+		payload.Mood = string(st.CurrentMoodTag)
+		payload.EmotionTag = string(st.CurrentMoodTag)
+		payload.Valence = st.Valence
+		payload.Arousal = st.Arousal
+		payload.Energy = st.Energy
+		payload.Satiety = st.Satiety
+		payload.SocialBattery = st.GetSocialBattery()
+		payload.Affection = st.AffectionLevel
+		payload.IsJealous = st.IsJealous()
+		payload.Description = st.ToPromptDescription()
 	}
 	return payload
 }
@@ -660,7 +710,27 @@ func (b *NatsBridge) handleEmotionUpdateMsg(msg *nats.Msg) {
 	p := env.Payload
 	outBytes, _ := json.Marshal(WSMessage{
 		Type:    "agent.emotion",
-		Payload: marshalRaw(b.buildAgentEmotionPayload(p.Emotion, p.Action)),
+		Payload: marshalRaw(b.buildAgentEmotionPayload(p.ChatID, p.Emotion, p.Action)),
+	})
+	b.sessions.SendTextToChat(p.ChatID, outBytes)
+}
+
+func (b *NatsBridge) handleEmotionDeltaMsg(msg *nats.Msg) {
+	var env struct {
+		Payload schema.EmotionDeltaPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		return
+	}
+
+	p := env.Payload
+	if p.ChatID == 0 {
+		return
+	}
+
+	outBytes, _ := json.Marshal(WSMessage{
+		Type:    "agent.emotion",
+		Payload: marshalRaw(b.buildAgentEmotionPayload(p.ChatID, b.getMoodTagForChat(p.ChatID), "")),
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 }

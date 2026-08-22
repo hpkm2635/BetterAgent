@@ -3,12 +3,12 @@ package emotion
 import "fmt"
 
 type PersonalityProfile struct {
-	TsundereLevel     float64 // 0.0 - 1.0 (high = cold outside, warm inside)
-	Clinginess        float64 // 0.0 - 1.0 (high = wants attention)
-	JealousyThreshold float64 // 0.0 - 1.0 (low = jealous easily)
-	CatNature         float64 // 0.0 - 1.0 (high = aloof, fragmented)
-	Neuroticism       float64 // 0.0 - 1.0 (high = mood swings)
-	Extraversion      float64 // 0.0 - 1.0 (high = proactive)
+	TsundereLevel     float64 `json:"tsundere_level"`     // 0.0 - 1.0 (high = cold outside, warm inside)
+	Clinginess        float64 `json:"clinginess"`         // 0.0 - 1.0 (high = wants attention)
+	JealousyThreshold float64 `json:"jealousy_threshold"` // 0.0 - 1.0 (low = jealous easily)
+	CatNature         float64 `json:"cat_nature"`         // 0.0 - 1.0 (high = aloof, fragmented)
+	Neuroticism       float64 `json:"neuroticism"`         // 0.0 - 1.0 (high = mood swings)
+	Extraversion      float64 `json:"extraversion"`        // 0.0 - 1.0 (high = proactive)
 }
 
 func DefaultPersonality() *PersonalityProfile {
@@ -21,6 +21,37 @@ func DefaultPersonality() *PersonalityProfile {
 		Extraversion:      0.7,
 	}
 }
+
+func NewPersonalityFromConfig(cfg map[string]interface{}) *PersonalityProfile {
+	p := DefaultPersonality()
+	if cfg == nil {
+		return p
+	}
+	getFloat := func(key string, fallback float64) float64 {
+		if val, ok := cfg[key]; ok {
+			switch v := val.(type) {
+			case float64:
+				return v
+			case float32:
+				return float64(v)
+			case int:
+				return float64(v)
+			case int64:
+				return float64(v)
+			}
+		}
+		return fallback
+	}
+
+	p.TsundereLevel = getFloat("tsundere_level", p.TsundereLevel)
+	p.Clinginess = getFloat("clinginess", p.Clinginess)
+	p.JealousyThreshold = getFloat("jealousy_threshold", p.JealousyThreshold)
+	p.CatNature = getFloat("cat_nature", p.CatNature)
+	p.Neuroticism = getFloat("neuroticism", p.Neuroticism)
+	p.Extraversion = getFloat("extraversion", p.Extraversion)
+	return p
+}
+
 
 func (p *PersonalityProfile) ModifySentimentDelta(dV, dA, dAff float64) (float64, float64, float64) {
 	// Neuroticism amplifies negative deltas

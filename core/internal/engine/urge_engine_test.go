@@ -299,3 +299,59 @@ func TestResolveProactiveTarget_NoneWhenNothingActive(t *testing.T) {
 		t.Errorf("expected no target when nothing has been touched")
 	}
 }
+
+func TestUrgeEngine_UnrepliedBackoffDecreasesFrequency(t *testing.T) {
+	params := testUrgeParams()
+	params.BaseThreshold = 10.0
+	params.MinThreshold = 1.0
+	params.MaxThreshold = 100.0
+	params.AlphaBoredom = 10.0
+	params.CooldownDuration = 0
+	params.DeadZoneDuration = 0
+
+	u := NewUrgeEngine(params, zap.NewNop())
+	emo := neutralEmotion()
+	personality := emotion.DefaultPersonality()
+	now := time.Now()
+
+	// Boredom rate with default extraversion (0.5) is 0.8.
+	// At AlphaBoredom=10.0, per-second integrand is 8.0.
+	// 2 second tick accumulates 16.0, crossing BaseThreshold=10.0.
+	fire1, _ := u.EvaluateTick(now, 2*time.Second, emo, personality, false, StateIdle, 0)
+	if !fire1 {
+		t.Fatalf("expected 1st proactive turn to fire")
+	}
+	if u.ConsecutiveUnreplied() != 1 {
+		t.Errorf("expected consecutiveUnreplied=1, got %d", u.ConsecutiveUnreplied())
+	}
+
+	// Master does not reply. Second proactive turn threshold scaled up to 10 * 1.8 = 18.0!
+	// A 1.5 second tick (accumulates 12.0) should NOT fire because 12.0 < 18.0.
+	now = now.Add(2 * time.Second)
+	fire2_short, _ := u.EvaluateTick(now, 1500*time.Millisecond, emo, personality, false, StateIdle, 0)
+	if fire2_short {
+		t.Errorf("expected 2nd proactive turn to NOT fire at short interval due to backoff multiplier")
+	}
+
+	// 3 second tick (accumulates 24.0) should cross backoff threshold 18.0 and fire!
+	fire2, _ := u.EvaluateTick(now, 3*time.Second, emo, personality, false, StateIdle, 0)
+	if !fire2 {
+		t.Fatalf("expected 2nd proactive turn to fire after longer backoff interval")
+	}
+	if u.ConsecutiveUnreplied() != 2 {
+		t.Errorf("expected consecutiveUnreplied=2, got %d", u.ConsecutiveUnreplied())
+	}
+
+	// User responds!
+	u.OnUserActivity()
+	if u.ConsecutiveUnreplied() != 0 {
+		t.Errorf("expected consecutiveUnreplied=0 after user activity, got %d", u.ConsecutiveUnreplied())
+	}
+
+	// Next proactive turn returns to normal 10.0 threshold!
+	now = now.Add(3 * time.Second)
+	fireReset, _ := u.EvaluateTick(now, 2*time.Second, emo, personality, false, StateIdle, 0)
+	if !fireReset {
+		t.Fatalf("expected proactive turn to fire at normal threshold after user activity reset")
+	}
+}

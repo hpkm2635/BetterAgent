@@ -90,7 +90,7 @@ onMounted(async () => {
   cardStore.initialize()
 
   if (onboardingStore.needsOnboarding) {
-    onboardingStore.showingSetup = true
+    onboardingStore.showingSetup = false
   }
 
   await chatSessionStore.initialize()

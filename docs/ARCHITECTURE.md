@@ -299,7 +299,7 @@ stateDiagram-v2
 | **数字人流** | `agent.audio.chunk` / `agent.viseme.data` / `agent.tts.stream_chunk` | TTS 音频切片 / Viseme 口型 |
 | **流式控制** | `agent.stt.stream_chunk` / `agent.stt.stream_final` / `agent.tts.stream_end` | STT 转写流 / TTS 结束 |
 | **流式状态** | `agent.stream.cancel_ack` / `agent.stream.state_change` | 流式撤销确认 / 状态变更广播 |
-| **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` | 画面快照 / 情绪动作更新 |
+| **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` / `agent.emotion.delta` | 画面快照 / 情绪动作更新 / 动态情绪增量回传 (Cognitive -> Go) |
 | **人设与配置** | `agent.persona.update` | 人设热更新广播（YAML 磁盘同步 + PersonaLoader 内存缓存失效） |
 | **游戏感知** | `agent.game_event` | 外部游戏事件广播（稀有圣物、濒死、胜负结算等） |
 
@@ -407,8 +407,18 @@ classDiagram
         +Dict user_profile
         +List~String~ rag_facts
         +String current_emotion
+        +String personality_description
+        +String circadian_description
         +float mood_score
         +InboundMessagePayload inbound_message
+    }
+
+    class EmotionDeltaPayload {
+        +int64 chat_id
+        +float delta_valence
+        +float delta_arousal
+        +float delta_affection
+        +bool is_jealous
     }
 
     class StreamChunkPayload {
@@ -489,10 +499,21 @@ classDiagram
 
 ## 5. 猫娘“情感与生理”机制 (Affective Computing Engine)
 
-驻留在 Go Core 内部的极速心理与生理计算模型：
+驻留在 Go Core 内部的多 ChatID 隔离心理与生理计算模型，支持多路并发快照隔离与原子落盘自愈机制：
 
 ```mermaid
 classDiagram
+    class EmotionalStateStore {
+        -RWMutex mu
+        -Map~int64, EmotionalState~ states
+        -Map~int64, Time~ lastAccessed
+        +GetOrCreate(chat_id) EmotionalState
+        +Snapshot() Map~int64, EmotionalState~
+        +SaveToFileAtomic(filePath) error
+        +LoadFromFileWithRecovery(filePath) error
+        +PruneInactive(ttl) int
+    }
+
     class EmotionalState {
         -RWMutex mu
         +float Valence
@@ -503,12 +524,22 @@ classDiagram
         +float SocialBattery
         +float AffectionLevel
         +MoodEnum CurrentMoodTag
-        +bool IsJealous
+        +float JealousyLevel
         +float BaselineValence
         +Time LastUpdated
         +ApplySentimentDelta(delta_v, delta_a, delta_aff)
         +ApplyTimeDecay(elapsed_seconds)
+        +ApplySatietyDelta(delta_satiety)
+        +SetJealousy(level)
+        +IsJealous() bool
         +ToPromptDescription() String
+    }
+
+    class EmotionDeltaHandler {
+        -NatsBus bus
+        -EmotionalStateStore emotionStore
+        +Start() error
+        +HandleEmotionDelta(payload)
     }
 
     class PersonalityProfile {
@@ -518,6 +549,7 @@ classDiagram
         +float CatNature
         +float Neuroticism
         +float Extraversion
+        +NewPersonalityFromConfig(cfg)
         +ShouldTriggerJealousy(entities) bool
         +ToPromptDescription() String
     }
@@ -541,6 +573,8 @@ classDiagram
         +EvaluateTick(now, elapsed, emoState, personality, isSleepHours, targetState, unreadPressure) (bool, string)
     }
 
+    EmotionalStateStore "1" *-- "many" EmotionalState : 管理与持久化
+    EmotionDeltaHandler --> EmotionalStateStore : Clamp 钳位更新 (dValence ∈ [-0.3, +0.3], dAffection ∈ [-2.0, +2.0])
     CircadianRhythmEvaluator --> EmotionalState : 驱动昼夜衰减
     PersonalityProfile --> EmotionalState : 影响情感变化幅度
     PersonalityProfile --> UrgeEngine : Extraversion 影响枯燥累加速率
@@ -551,7 +585,7 @@ classDiagram
 
 ---
 
-## 6. 多渠道适配器扩展规范与 AIRI 前端架构
+## 6. 多渠道适配器扩展规范与 Better Agent 前端架构
 
 ### 6.1 多渠道适配器扩展规范 (Multi-Channel Adapter Pattern)
 
@@ -599,7 +633,7 @@ classDiagram
 
 ---
 
-### 6.2 AIRI 前端数字人渲染与状态控制架构 (AIRI Frontend Pipeline)
+### 6.2 Better Agent 前端数字人渲染与状态控制架构 (Better Agent Frontend Pipeline)
 
 前端采用 Vue 3 + Vite + Pinia + UnoCSS 构筑（`frontend/apps/stage-web` 与 `@proj-airi/stage-ui`），实现了渲染层与网络状态解耦的响应式管道：
 
@@ -655,6 +689,37 @@ STT 识别本身仍通过 `agent.inbound_message` 进入同一推理链路。
 | **Admin Backend** | `admin/backend/` | `:8094` (REST) | 谢自立 | B 端控制台：人设 YAML PATCH、用户画像、会话历史/概览、短期/长期记忆管理 |
 | **Admin Frontend** | `admin/frontend/` | `:8095` (Web Dev)| 谢自立 | Vue 3 + Element Plus 独立后台管理界面 |
 | **Companion Service** | `services/companion/` | `:8096` (HTTP) | 张劭哲 | SQLite 陪伴统计、APScheduler 日程提醒与 NL2SQL 查询 |
+
+### 7.1 Campus KB 校园知识库交互数据流 (Campus KB RAG Flow)
+
+猫娘（BetterAgent）与校园知识库 `services/campus_kb` 的交互采用**预注入 RAG 上下文**与**自主 Tool Calling**双通道机制：
+
+```mermaid
+sequenceDiagram
+    participant User as 用户消息
+    participant Mem as MemoryHub (:8090)
+    participant KB as Campus KB (:8093)
+    participant Cog as CognitiveEngine / LLM
+    
+    rect rgb(240, 248, 255)
+    note right of Mem: 通道 1: 预注入上下文 (Passive RAG)
+    User->>Mem: NATS (enrich_context_req)
+    Mem->>KB: HTTP POST /api/kb/search (query)
+    KB-->>Mem: 返回匹配知识条目 (kb_facts)
+    Mem->>Cog: NATS (reasoning_req + kb_facts)
+    Cog->>Cog: PromptBuilder 注入 [校园知识库] 到 System Prompt
+    end
+
+    rect rgb(255, 245, 238)
+    note right of Cog: 通道 2: 自主工具调用 (Autonomous Tool Calling)
+    Cog->>Cog: LLM 判断预注入上下文不足，触发 tool_call: search_campus_kb
+    Cog->>KB: CampusKBTool 发起 HTTP POST /api/kb/search
+    KB-->>Cog: 返回精确检索结果 (facts)
+    Cog->>Cog: LLM 结合 Tool Message 二次推理
+    end
+    
+    Cog-->>User: 生成包含猫娘口吻与校园知识的最终回复
+```
 
 ---
 

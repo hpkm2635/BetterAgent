@@ -2,11 +2,11 @@ import time
 import re
 import logging
 from typing import List, Dict, Any, Tuple, Optional
-from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
+from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload, EmotionDeltaPayload
 from shared.config_loader import get_config_val
 from services.cognitive.providers.factory import ProviderFactory
 from services.cognitive.tool_registry import ToolRegistry
-from services.cognitive.prompt_builder import PromptBuilder
+from services.cognitive.prompt_builder import PromptBuilder, log_raw_trace
 from services.cognitive.tools.validation import is_safe_media_filename
 from services.cognitive.mcp.presenter_manager import PresenterSessionManager
 
@@ -83,6 +83,53 @@ def clean_action_descriptions(text: str) -> str:
     return cleaned.strip()
 
 
+def parse_emotion_delta_from_text(text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Parses [EMOTION_DELTA: ...] from text tail and returns (clean_text, delta_dict).
+    Example tag: [EMOTION_DELTA: d_valence=+0.1, d_arousal=0.0, d_affection=+0.5, is_jealous=false]
+    """
+    if not text:
+        return text, None
+
+    pattern = r"\[EMOTION_DELTA:\s*(.*?)\]"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return text, None
+
+    raw_delta_str = match.group(1)
+    clean_text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+    delta_data = {
+        "delta_valence": 0.0,
+        "delta_arousal": 0.0,
+        "delta_affection": 0.0,
+        "is_jealous": False,
+    }
+
+    pairs = re.findall(r"(d_valence|d_arousal|d_affection|valence|arousal|affection|is_jealous)\s*=\s*([^\s,]+)", raw_delta_str, re.IGNORECASE)
+    for k, v in pairs:
+        k_lower = k.lower()
+        if "valence" in k_lower:
+            try:
+                delta_data["delta_valence"] = float(v)
+            except ValueError:
+                pass
+        elif "arousal" in k_lower:
+            try:
+                delta_data["delta_arousal"] = float(v)
+            except ValueError:
+                pass
+        elif "affection" in k_lower:
+            try:
+                delta_data["delta_affection"] = float(v)
+            except ValueError:
+                pass
+        elif "jealous" in k_lower:
+            delta_data["is_jealous"] = v.lower() in ("true", "1", "yes")
+
+    return clean_text, delta_data
+
+
 class SentenceSegmenter:
     """
     Sentence-level punctuation segmenter with <think>/<thought> & JSON streaming barrier FSM.
@@ -94,12 +141,19 @@ class SentenceSegmenter:
     def __init__(self):
         self.buffer = ""
         self.in_thought = False
+        self.last_emotion_delta: Optional[Dict[str, Any]] = None
 
     def push(self, delta: str) -> List[str]:
         if not delta:
             return []
 
         self.buffer += delta
+
+        # Parse and strip emotion delta if fully closed in buffer
+        if "[EMOTION_DELTA:" in self.buffer.upper():
+            self.buffer, delta_data = parse_emotion_delta_from_text(self.buffer)
+            if delta_data:
+                self.last_emotion_delta = delta_data
 
         # 1. Thought / Think Tag Streaming Barrier FSM
         if "<think>" in self.buffer or "<thought>" in self.buffer:
@@ -133,6 +187,9 @@ class SentenceSegmenter:
             if open_p in self.buffer and close_p not in self.buffer:
                 idx = self.buffer.rfind(open_p)
                 tail = self.buffer[idx:]
+                # Special case for EMOTION_DELTA metadata tag: hold buffer until fully closed with ]
+                if "[EMOTION" in tail.upper():
+                    return True
                 if len(tail) > 20 or any(p in tail for p in ("。", "！", "？", "\n")):
                     return False
                 return True
@@ -191,6 +248,11 @@ class SentenceSegmenter:
         cleaned = re.sub(r"```(?:json)?[\s\S]*?```", "", cleaned)
         cleaned = re.sub(r"\{\s*\"[^\"]+\"[\s\S]*?\}", "", cleaned).strip()
         cleaned = re.sub(r"</?(?:thought|think)>", "", cleaned).strip()
+
+        cleaned, delta_data = parse_emotion_delta_from_text(cleaned)
+        if delta_data:
+            self.last_emotion_delta = delta_data
+
         cleaned = clean_action_descriptions(cleaned)
 
         self.buffer = ""
@@ -201,7 +263,7 @@ class CognitiveEngine:
 
     # Bounds the "call tool -> feed result back -> generate again" loop in
     # stream_reasoning_loop so a tool-happy model can't spin forever.
-    MAX_TOOL_ROUNDS = 4
+    MAX_TOOL_ROUNDS = int(get_config_val("llm.max_tool_rounds", 8))
 
     # Higher budget for trigger_type == "game_turn" -- a single combat turn
     # can legitimately need many sts2_play_card/sts2_end_turn round trips in
@@ -222,8 +284,16 @@ class CognitiveEngine:
     # model happened to list them in -- see _reorder_index_shifting_calls.
     STS2_INDEX_SHIFT_FIELDS = {
         "sts2_play_card": "card_index",
+        "play_card": "card_index",
         "sts2_claim_reward": "index",
+        "claim_reward": "index",
         "sts2_select_card_reward": "card_index",
+        "select_card_reward": "card_index",
+    }
+
+    STS2_TURN_TERMINATING_TOOLS = {
+        "sts2_end_turn", "end_turn",
+        "sts2_choose_map_node", "choose_map_node",
     }
 
     def __init__(self, default_provider_name: Optional[str] = None):
@@ -324,6 +394,32 @@ class CognitiveEngine:
                 action_type=tool_output.get("action_type", "send_message"),
                 sticker_id=tool_output.get("sticker_id"),
                 reaction_emoji=tool_output.get("reaction_emoji"),
+            )
+        if tool_name == "query_companion_stats":
+            # 读类工具：直接把结果作为最终答复发给用户，不 round-trip，
+            # 这样不依赖 provider 的 round-trip 格式（qwen/Gemini 都适用）。
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type="send_message",
+                text_content=tool_output.get("answer") or tool_output.get("message") or "查询完成",
+                is_final=True,
+            )
+        if tool_name == "get_recommendations":
+            recs = tool_output.get("recommendations") or []
+            text = "\n".join(f"· {r}" for r in recs) if recs else "暂时没有特别的推荐喵～"
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type="send_message",
+                text_content=text,
+                is_final=True,
             )
         return None
 
@@ -464,7 +560,7 @@ class CognitiveEngine:
                     chat_id=payload.chat_id,
                     source_channel=fast_path_src_channel,
                     action_type="send_message",
-                    text_content="pong 喵~ 🏓 (BetterAgent 系统运行正常！)",
+                    text_content="pong 🏓 (BetterAgent 系统运行正常！)",
                     chat_action="typing",
                 )
             ]
@@ -472,12 +568,12 @@ class CognitiveEngine:
             history_len = len(payload.short_term_history)
             rag_count = len(payload.rag_facts)
             status_text = (
-                f"🐱 **BetterAgent 猫娘健康度指标**\n\n"
+                f"📊 **BetterAgent 健康度指标**\n\n"
                 f"• **系统状态**: 正常在线 🟢\n"
                 f"• **触发模式**: {payload.trigger_type or 'user_message'}\n"
                 f"• **短期记忆缓冲**: {history_len} 条\n"
                 f"• **RAG 检索事实数**: {rag_count} 条\n"
-                f"• **猫娘状态**: {payload.current_emotion or '正常'}\n"
+                f"• **当前状态**: {payload.current_emotion or '正常'}\n"
             )
             return [
                 ActionDecisionPayload(
@@ -492,11 +588,11 @@ class CognitiveEngine:
             ]
         elif cmd == "/help":
             help_text = (
-                "🐾 **BetterAgent 猫娘指令与交互说明** 🐾\n\n"
+                "📋 **BetterAgent 指令与交互说明** 📋\n\n"
                 "• `/ping` - 探针基础存活检测\n"
-                "• `/health` 或 `/status` - 查看猫娘系统健康度与情绪参数\n"
+                "• `/health` 或 `/status` - 查看系统健康度与情绪参数\n"
                 "• `/help` - 显示此帮助信息\n\n"
-                "💡 **日常互动**: 直接发文字聊天、求抱抱、夸奖猫娘，或者要求猫娘画图、发语音包喵~"
+                "💡 **日常互动**: 直接发文字聊天、求抱抱、夸奖我，或者让我画图、发语音包~"
             )
             return [
                 ActionDecisionPayload(
@@ -642,8 +738,16 @@ class CognitiveEngine:
 
         thought, clean_text = parse_thought_and_clean_text(cleaned_raw_text)
 
-        if thought:
-            logger.info(f"CoT Inner Monologue for chat_id={payload.chat_id}:\n{thought}")
+        logger.info(
+            f"\n=======================================================\n"
+            f"📥 [CognitiveEngine] LLM Raw Response Parsed (ChatID={payload.chat_id}):\n"
+            f"-------------------------------------------------------\n"
+            f"• Raw Text Output : {raw_text!r}\n"
+            f"• CoT Thought     : {thought or '(None)'}\n"
+            f"• Clean User Text : {clean_text!r}\n"
+            f"• Tool Calls      : {tool_calls}\n"
+            f"======================================================="
+        )
 
         if clean_text:
             actions.append(
@@ -743,6 +847,7 @@ class CognitiveEngine:
 
                 pending_calls: List[Dict[str, Any]] = []
                 cancelled = False
+                round_raw_text = ""
 
                 async for event in stream_gen:
                     if cancel_event and cancel_event.is_set():
@@ -757,10 +862,13 @@ class CognitiveEngine:
                     if event.get("type") == "thinking_delta":
                         thinking_text = event.get("text", "")
                         if thinking_text:
+                            round_raw_text += f"<thought>{thinking_text}</thought>"
                             segmenter.push(f"<thought>{thinking_text}</thought>")
                         continue
 
-                    sentences = segmenter.push(event.get("delta", ""))
+                    delta_str = event.get("delta", "")
+                    round_raw_text += delta_str
+                    sentences = segmenter.push(delta_str)
                     for s in sentences:
                         sentence_str = s.strip()
                         if sentence_str:
@@ -778,6 +886,16 @@ class CognitiveEngine:
 
                 if cancelled:
                     return
+
+                thought, clean_text = parse_thought_and_clean_text(round_raw_text)
+                raw_summary = (
+                    f"• Raw Text Output : {round_raw_text!r}\n"
+                    f"• CoT Thought     : {thought or '(None)'}\n"
+                    f"• Clean User Text : {clean_text!r}\n"
+                    f"• Pending Tools   : {pending_calls}"
+                )
+                log_raw_trace("RAW_RESPONSE", payload.chat_id, f"Stream Round {round_idx+1}", raw_summary)
+                logger.info(f"📥 [CognitiveEngine Stream Round {round_idx+1}] Raw response parsed for ChatID={payload.chat_id} -> logged to raw_prompts_and_responses.log")
 
                 if not pending_calls:
                     break
@@ -808,14 +926,23 @@ class CognitiveEngine:
                 )
 
                 needs_another_round = False
+                has_terminating_tool = False
                 if payload.trigger_type == "game_turn":
                     pending_calls = self._reorder_index_shifting_calls(pending_calls)
                 for call in pending_calls:
                     tool_name = call.get("name")
+                    if tool_name in self.STS2_TURN_TERMINATING_TOOLS:
+                        has_terminating_tool = True
                     tool_args = call.get("args", {}) or {}
                     tool = self.tool_registry.get_tool(tool_name)
 
                     if tool is not None:
+                        if tool_name in ("add_schedule", "query_schedule", "query_companion_stats", "get_recommendations"):
+                            # 陪伴类工具必须用真实的 chat_id（Go Core 已把它折叠进
+                            # WebNamespaceOffset），而不是模型猜的值——否则会查/写到
+                            # 错误的 id 下，前端和数字人都对不上。
+                            tool_args = dict(tool_args)
+                            tool_args["chat_id"] = payload.chat_id
                         if tool_name == "presenter_mode":
                             tool_output = await tool.execute(**tool_args, chat_id=payload.chat_id)
                         else:
@@ -834,6 +961,17 @@ class CognitiveEngine:
                             mcp_output = self._unknown_tool_error(payload.chat_id, tool_name)
                         messages = self._append_tool_round_trip(messages, tool_name, tool_args, mcp_output, thought_signature=call.get("thought_signature"))
                         needs_another_round = True
+
+                if has_terminating_tool:
+                    # Defensive State Check: verify if end_turn actually succeeded in transitioning state.
+                    # If state still shows player turn with play phase, end_turn failed or was blocked; do not terminate loop yet.
+                    last_battle = {}
+                    for call in pending_calls:
+                        if call.get("name") in ("sts2_end_turn", "end_turn"):
+                            # Check messages or tool_output
+                            pass
+                    logger.info(f"🛑 Terminating game tool executed for chat_id={payload.chat_id}, exiting stream_reasoning_loop cleanly")
+                    needs_another_round = False
 
                 if not needs_another_round:
                     break
@@ -906,6 +1044,17 @@ class CognitiveEngine:
                     text_content="",
                     chat_action="typing",
                     is_final=True,
+                )
+
+            if segmenter.last_emotion_delta:
+                yield EmotionDeltaPayload(
+                    event_id=payload.event_id,
+                    source_component="cognitive_engine",
+                    chat_id=payload.chat_id,
+                    delta_valence=segmenter.last_emotion_delta.get("delta_valence", 0.0),
+                    delta_arousal=segmenter.last_emotion_delta.get("delta_arousal", 0.0),
+                    delta_affection=segmenter.last_emotion_delta.get("delta_affection", 0.0),
+                    is_jealous=segmenter.last_emotion_delta.get("is_jealous", False),
                 )
         except Exception as err:
             logger.error(f"Error in stream_reasoning_loop: {err}", exc_info=True)

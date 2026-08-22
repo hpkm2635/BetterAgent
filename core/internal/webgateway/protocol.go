@@ -35,17 +35,20 @@ type UserVisionFramePayload struct {
 // Outbound Agent Messages (WebGateway -> Browser)
 
 type AgentTextDeltaPayload struct {
-	Text    string `json:"text"`
-	IsFinal bool   `json:"is_final,omitempty"` // true on the last sentence of a reasoning turn; see nats_bridge.go handleActionDecisionMsg
+	Text       string `json:"text"`
+	EmotionTag string `json:"emotion_tag,omitempty"` // "HAPPY" | "JEALOUS" | "SLEEPY" | "MOODY" | "NEUTRAL"
+	IsFinal    bool   `json:"is_final,omitempty"` // true on the last sentence of a reasoning turn; see nats_bridge.go handleActionDecisionMsg
 }
 
 type AgentEmotionPayload struct {
 	Emotion       string  `json:"emotion"`
+	EmotionTag    string  `json:"emotion_tag,omitempty"`
 	Action        string  `json:"action,omitempty"`
 	Mood          string  `json:"mood,omitempty"`
 	Valence       float64 `json:"valence,omitempty"`
 	Arousal       float64 `json:"arousal,omitempty"`
 	Energy        float64 `json:"energy,omitempty"`
+	Satiety       float64 `json:"satiety,omitempty"`
 	SocialBattery float64 `json:"social_battery,omitempty"`
 	Affection     float64 `json:"affection,omitempty"`
 	IsJealous     bool    `json:"is_jealous,omitempty"`
@@ -67,6 +70,7 @@ type AgentAudioChunkPayload struct {
 	SampleRate  int      `json:"sample_rate,omitempty"`
 	Format      string   `json:"format,omitempty"`
 	Visemes     []Viseme `json:"visemes,omitempty"`
+	EmotionTag  string   `json:"emotion_tag,omitempty"`
 }
 
 type Viseme struct {

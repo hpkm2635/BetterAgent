@@ -36,7 +36,7 @@ class CampusKBTool(BaseTool):
                 },
                 "category": {
                     "type": "string",
-                    "description": "可选的分类过滤（如 'library', 'canteen', 'exam', 'facility'）。"
+                    "description": "可选的分类过滤（如 'faq', 'schedule', 'resource', 'service'）。"
                 },
                 "top_k": {
                     "type": "integer",

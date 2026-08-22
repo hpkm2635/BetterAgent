@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"betteragent-core/internal/bus"
+	"betteragent-core/internal/engine"
 	"betteragent-core/internal/schema"
 )
 
@@ -123,6 +124,26 @@ func (s *Server) handleGameEvent(w http.ResponseWriter, r *http.Request) {
 			// only for observability/future consumers, so log and move on
 			// rather than failing the HTTP response over it.
 			s.logger.Error("Failed to publish GameEvent to NATS", zap.Error(err))
+		}
+
+		// Critical Game Events (death/victory): Instantly trigger proactive reaction
+		// without waiting for ClockEngine's 30s tick or being suppressed by cooldown.
+		if req.EventType == "death" || req.EventType == "victory" {
+			targetChatID := int64(0)
+			if s.autonomousPlayState != nil {
+				targetChatID = s.autonomousPlayState.TargetChatID()
+			}
+			if targetChatID == 0 && s.urgeEngine != nil {
+				targetChatID = s.urgeEngine.PrimaryChatID()
+			}
+			if targetChatID != 0 {
+				reason := req.Detail
+				if reason == "" {
+					reason = "run ended (" + req.EventType + ")"
+				}
+				engine.PublishProactiveTurn(s.bridge.bus, s.bridge.csm, s.bridge.emotionalState, s.bridge.personality, s.bridge.circadian, targetChatID, reason, s.logger)
+				s.logger.Info("🎮 Instant game over reaction triggered", zap.String("event_type", req.EventType), zap.Int64("chat_id", targetChatID), zap.String("reason", reason))
+			}
 		}
 	}
 

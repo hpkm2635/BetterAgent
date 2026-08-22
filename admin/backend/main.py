@@ -22,8 +22,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -149,6 +151,21 @@ def _read_persona(persona_id: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else {}
 
 
+def _get_active_persona_id() -> str:
+    config_path = REPO_ROOT / "config" / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                doc = _yaml_safe.load(f)
+            if isinstance(doc, dict):
+                persona_sec = doc.get("persona")
+                if isinstance(persona_sec, dict) and persona_sec.get("active"):
+                    return str(persona_sec["active"])
+        except Exception:
+            pass
+    return "catgirl"
+
+
 @app.get("/api/admin/personas")
 def list_personas():
     """列出所有人设，摘要字段（id/name/tts_provider/voice_id）。"""
@@ -239,6 +256,90 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
     except Exception as exc:
         logger.error(f"Failed to update persona YAML {path}: {exc}")
         return _error(500, "failed to update persona")
+
+    return {"status": "ok", "id": persona_id}
+
+
+@app.post("/api/admin/personas")
+def create_persona(payload: Optional[Dict[str, Any]] = Body(None)):
+    """根据模板新建人设并生成 YAML 配置文件。"""
+    if not payload:
+        return _error(400, "empty body")
+
+    persona_id = str(payload.get("id", "")).strip().lower()
+    if not persona_id or not _VALID_PERSONA_ID.match(persona_id):
+        return _error(400, "Invalid persona id (only alphanumeric, _ and - allowed)")
+
+    path = _persona_path(persona_id)
+    if path and path.exists():
+        return _error(400, f"Persona '{persona_id}' already exists")
+
+    name = str(payload.get("name", persona_id))
+    appearance = str(payload.get("appearance", ""))
+    base_prompt = str(payload.get("base_prompt", f"你叫 {name}，是一个AI助手。"))
+    sleepy_prompt = str(payload.get("sleepy_prompt", f"你叫 {name}，现在有些犯困。"))
+    knowledge_scope = str(payload.get("knowledge_scope", "日常陪伴"))
+    forbidden_topics = str(payload.get("forbidden_topics", "违规及敏感话题"))
+
+    tts_provider = str(payload.get("tts_provider", "gpt_sovits"))
+    voice_id = str(payload.get("voice_id", f"{persona_id}_voice"))
+
+    doc = {
+        "id": persona_id,
+        "name": name,
+        "appearance": appearance,
+        "base_prompt": base_prompt,
+        "sleepy_prompt": sleepy_prompt,
+        "knowledge_scope": knowledge_scope,
+        "forbidden_topics": forbidden_topics,
+        "tts": {
+            "provider": tts_provider,
+            "voice_id": voice_id,
+        },
+    }
+
+    try:
+        PERSONA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_path = None
+        target_path = PERSONA_DIR / f"{persona_id}.yaml"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=PERSONA_DIR,
+            prefix=f".{persona_id}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp_path = Path(f.name)
+            _yaml_rt.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target_path)
+    except Exception as exc:
+        logger.error(f"Failed to create persona YAML: {exc}")
+        return _error(500, "failed to create persona")
+
+    return {"status": "ok", "id": persona_id}
+
+
+@app.delete("/api/admin/personas/{persona_id}")
+def delete_persona(persona_id: str):
+    """删除指定人设 YAML 文件（禁止删除默认 catgirl 或当前活跃人设）。"""
+    path = _persona_path(persona_id)
+    if path is None or not path.exists():
+        return _error(404, "not found")
+
+    if persona_id == "catgirl":
+        return _error(400, "Cannot delete default persona 'catgirl'")
+
+    if persona_id == _get_active_persona_id():
+        return _error(400, f"Cannot delete currently active persona '{persona_id}'")
+
+    try:
+        path.unlink()
+    except Exception as exc:
+        logger.error(f"Failed to delete persona YAML {path}: {exc}")
+        return _error(500, "failed to delete persona")
 
     return {"status": "ok", "id": persona_id}
 
@@ -407,28 +508,66 @@ def _load_sqlite_users() -> Dict[int, Dict[str, Any]]:
     return rows
 
 
+def _load_companion_user_facts() -> Dict[int, Dict[str, Any]]:
+    facts_map: Dict[int, Dict[str, Any]] = {}
+    companion_db = REPO_ROOT / "services" / "companion" / "companion.db"
+    if not companion_db.exists():
+        return facts_map
+    try:
+        conn = sqlite3.connect(str(companion_db), timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        rows = cur.execute("SELECT user_id, key, value, created_at FROM user_profile_facts ORDER BY created_at ASC").fetchall()
+        for r in rows:
+            uid = r["user_id"]
+            if uid not in facts_map:
+                facts_map[uid] = {
+                    "user_id": uid,
+                    "display_name": "主人" if uid in (1, 1001) else f"用户{uid}",
+                    "known_facts": [],
+                    "last_seen": r["created_at"],
+                }
+            fact_str = f"{r['key']}: {r['value']}"
+            if fact_str not in facts_map[uid]["known_facts"]:
+                facts_map[uid]["known_facts"].append(fact_str)
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"Failed to read companion.db user_profile_facts: {exc}")
+    return facts_map
+
+
 def _all_records() -> Dict[int, Dict[str, Any]]:
-    """Merge Redis profiles (source of truth) with SQLite soft-delete flags."""
+    """Merge companion SQLite facts, Redis profiles, and Admin soft-delete flags."""
     r = _get_redis()
     redis_profiles = _redis_user_profiles(r) if r else {}
     sqlite_users = _load_sqlite_users()
+    companion_facts = _load_companion_user_facts()
 
     merged: Dict[int, Dict[str, Any]] = {}
-    for uid, u in sqlite_users.items():
+    for uid, c in companion_facts.items():
         merged[uid] = {
             "user_id": uid,
-            "display_name": u["display_name"] or f"用户{uid}",
-            "known_facts": u["known_facts"],
-            "last_seen": u["last_seen"],
+            "display_name": c["display_name"],
+            "known_facts": c["known_facts"],
+            "last_seen": c["last_seen"],
+            "deleted": False,
+        }
+    for uid, u in sqlite_users.items():
+        prev = merged.get(uid)
+        merged[uid] = {
+            "user_id": uid,
+            "display_name": u["display_name"] or (prev["display_name"] if prev else f"用户{uid}"),
+            "known_facts": u["known_facts"] or (prev["known_facts"] if prev else []),
+            "last_seen": u["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": u["deleted"],
         }
     for uid, p in redis_profiles.items():
         prev = merged.get(uid)
         merged[uid] = {
             "user_id": uid,
-            "display_name": p["display_name"],
-            "known_facts": p["known_facts"],
-            "last_seen": p["last_seen"],
+            "display_name": p["display_name"] or (prev["display_name"] if prev else f"用户{uid}"),
+            "known_facts": p["known_facts"] or (prev["known_facts"] if prev else []),
+            "last_seen": p["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": prev["deleted"] if prev else False,
         }
     return merged
@@ -504,7 +643,7 @@ def _format_session_message(msg: Dict[str, Any], index: int) -> Dict[str, Any]:
 
 @app.get("/api/admin/sessions")
 def list_sessions(
-    chat_id: int = Query(...),
+    chat_id: int = Query(0),
     limit: int = Query(50),
     offset: int = Query(0),
 ):
@@ -513,7 +652,25 @@ def list_sessions(
 
     r = _get_redis()
     if r is None:
-        return {"sessions": [], "total": 0, "chat_id": chat_id}
+        return {"sessions": [], "total": 0, "chat_id": chat_id, "active_chats": []}
+
+    # Discover all active chat_ids in Redis
+    active_chats: list = []
+    try:
+        for prefix in ("betteragent:short_term:", "short_term:"):
+            for k in r.scan_iter(f"{prefix}*"):
+                try:
+                    cid = int(k.split(":")[-1])
+                    if cid not in active_chats:
+                        active_chats.append(cid)
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+
+    # If chat_id is 0 or unspecified, pick the first active_chat (or 1001 default)
+    if not chat_id:
+        chat_id = active_chats[0] if active_chats else 1001
 
     items: list = []
     for template in SESSION_KEY_TEMPLATES:
@@ -536,7 +693,7 @@ def list_sessions(
             break  # 命中第一个有数据的 key 即返回，避免重复叠加
 
     total = len(items)
-    return {"sessions": items[offset:offset + limit], "total": total, "chat_id": chat_id}
+    return {"sessions": items[offset:offset + limit], "total": total, "chat_id": chat_id, "active_chats": active_chats}
 
 
 @app.get("/api/admin/sessions/overview")
@@ -829,8 +986,10 @@ def health():
 # 2.6 日程提醒 (Schedule) management -- 代理至 companion 服务，不重复实现逻辑
 # ---------------------------------------------------------------------------
 @app.get("/api/admin/schedules")
-async def list_schedules(chat_id: int = Query(...)):
+async def list_schedules(chat_id: int = Query(0)):
     """列出某 chat_id 下的所有日程（透传 companion /api/schedule/list）。"""
+    if not chat_id:
+        chat_id = 1001
     return await _forward(
         COMPANION_URL, "companion", "GET", f"/api/schedule/list?chat_id={chat_id}"
     )
@@ -854,6 +1013,458 @@ async def delete_schedule(schedule_id: str):
     return await _forward(
         COMPANION_URL, "companion", "DELETE", f"/api/schedule/{schedule_id}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 2.7 系统配置与 API 密钥管理 (BYOK 模式)
+# ---------------------------------------------------------------------------
+# 用户不应直接修改仓库根目录的 config/config.yaml 或 .env；API Key / 默认
+# Provider / 网络代理统一通过 Admin Panel 维护。.env 与 config.yaml 的读写
+# 逻辑全部封装在本节内，不触碰其它微服务边界（消费端热刷新由技术总监在各
+# 服务内实现，Admin 只发布 agent.config.reloaded）。
+ENV_PATH = REPO_ROOT / ".env"
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
+CONFIG_EXAMPLE = REPO_ROOT / "config" / "config.yaml.example"
+RELOAD_SUBJECT = "agent.config.reloaded"
+
+# 面板管理的 LLM Provider 范围（与 .env.example / config.yaml.example 的 llm
+# 段 / ProviderFactory 实际使用对齐）。cosyvoice（TTS）及 openai/deepseek/
+# ollama/vllm 不在面板管理范围。
+PROVIDER_DEFS: Dict[str, Dict[str, Any]] = {
+    "gemini": {
+        "env_key": "GEMINI_API_KEY",
+        "model_path": "llm.gemini.model",
+        "default_model": "gemini-2.5-flash",
+    },
+    "claude": {
+        "env_key": "CLAUDE_API_KEY",
+        "model_path": "llm.claude.model",
+        "default_model": "claude-3-5-sonnet-20241022",
+    },
+    "qwen": {
+        "env_key": "QWEN_API_KEY",
+        "model_path": "llm.qwen.model",
+        "default_model": None,
+    },
+}
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Crash-safe text write: same-dir temp file + fsync + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp_path = Path(f.name)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _read_env(path: Path) -> Dict[str, str]:
+    """Parse a KEY=VALUE .env file into a dict (no shell expansion)."""
+    env: Dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key:
+                    env[key] = value
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.warning(f"Failed to read env file {path}: {exc}")
+    return env
+
+
+def _upsert_env(updates: Dict[str, str]) -> None:
+    """Write API keys into the repo-root .env, preserving unrelated keys & comments.
+
+    Seeds .env from .env.example when the file is missing so other services'
+    required defaults (NATS creds, Redis password, ...) stay present. Both files
+    are gitignored, so this never pollutes the PR diff.
+    """
+    if not ENV_PATH.exists():
+        if ENV_EXAMPLE.exists():
+            shutil.copyfile(ENV_EXAMPLE, ENV_PATH)
+        else:
+            _atomic_write_text(ENV_PATH, "")
+
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as exc:
+        logger.error(f"Failed to read .env for update: {exc}")
+        raise
+
+    pending = dict(updates)
+    out: List[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            out.append(line)
+            continue
+        key = stripped.partition("=")[0].strip()
+        if key in pending:
+            out.append(f"{key}={pending.pop(key)}\n")
+        else:
+            out.append(line)
+    for key, value in pending.items():
+        out.append(f"{key}={value}\n")
+
+    _atomic_write_text(ENV_PATH, "".join(out))
+
+
+def _read_config(safe: bool = True) -> Dict[str, Any]:
+    """Parse config/config.yaml, falling back to the committed example."""
+    path = CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_EXAMPLE
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loader = _yaml_safe if safe else _yaml_rt
+            doc = loader.load(f)
+        return doc if isinstance(doc, dict) else {}
+    except Exception as exc:
+        logger.error(f"Failed to parse config {path}: {exc}")
+        return {}
+
+
+def _get_dotted(doc: Dict[str, Any], path: str, default: Any = None) -> Any:
+    cur: Any = doc
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def _ensure_config_file() -> None:
+    if CONFIG_PATH.exists():
+        return
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if CONFIG_EXAMPLE.exists():
+        shutil.copyfile(CONFIG_EXAMPLE, CONFIG_PATH)
+    else:
+        _atomic_write_text(CONFIG_PATH, "")
+
+
+def _write_config_rt(doc: Any) -> None:
+    """Persist a ruamel round-trip doc back to config/config.yaml atomically."""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=CONFIG_PATH.parent,
+            prefix=".config.yaml.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp_path = Path(f.name)
+            _yaml_rt.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CONFIG_PATH)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _mask_key(key: str) -> Optional[str]:
+    if not key or key.startswith("your_"):
+        return None
+    if len(key) <= 12:
+        return "***"
+    return f"{key[:6]}***{key[-3:]}"
+
+
+def _get_provider_key(name: str) -> str:
+    """Effective API key for a provider: root .env first, os.environ fallback."""
+    env_key = PROVIDER_DEFS[name]["env_key"]
+    value = _read_env(ENV_PATH).get(env_key) or os.getenv(env_key, "")
+    if not value or value.startswith("your_"):
+        return ""
+    return value
+
+
+async def _publish_config_reloaded(payload: Dict[str, Any]) -> bool:
+    """Best-effort NATS publish of agent.config.reloaded; never blocks PATCH."""
+    try:
+        import nats  # local import: backend still runs if nats-py is missing
+    except ImportError:
+        logger.warning("nats-py not installed; config reload message not published")
+        return False
+
+    cfg = _read_config(safe=True)
+    nats_url = os.getenv(
+        "NATS_URL", _get_dotted(cfg, "infrastructure.nats_url", "nats://127.0.0.1:4222")
+    )
+    root_env = _read_env(ENV_PATH)
+    nats_user = os.getenv("NATS_USER") or root_env.get("NATS_USER", "")
+    nats_password = os.getenv("NATS_PASSWORD") or root_env.get("NATS_PASSWORD", "")
+    if not nats_user or not nats_password:
+        logger.warning("NATS_USER / NATS_PASSWORD not configured; reload message not published")
+        return False
+
+    try:
+        nc = await nats.connect(
+            nats_url,
+            user=nats_user,
+            password=nats_password,
+            max_reconnect_attempts=1,
+            connect_timeout=3,
+        )
+        envelope = {"subject": RELOAD_SUBJECT, "source": "admin_backend", "payload": payload}
+        await nc.publish(RELOAD_SUBJECT, json.dumps(envelope, ensure_ascii=False).encode())
+        await nc.flush(timeout=3)
+        await nc.close()
+        logger.info(f"Published {RELOAD_SUBJECT}")
+        return True
+    except Exception as exc:
+        logger.warning(f"Failed to publish {RELOAD_SUBJECT}: {exc}")
+        return False
+
+
+@app.get("/api/admin/config")
+def get_admin_config():
+    """2.7 GET: 返回默认 Provider、网络代理与各 Provider 脱敏 key 状态。"""
+    cfg = _read_config(safe=True)
+    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    network = cfg.get("network") if isinstance(cfg.get("network"), dict) else {}
+    default_provider = llm.get("default_provider") or "gemini"
+
+    providers = []
+    for name, meta in PROVIDER_DEFS.items():
+        model = _get_dotted(cfg, meta["model_path"]) or meta["default_model"]
+        key = _get_provider_key(name)
+        providers.append({
+            "name": name,
+            "model": model,
+            "key_masked": _mask_key(key),
+            "key_set": bool(key),
+        })
+
+    return {
+        "default_provider": default_provider,
+        "network": {
+            "http_proxy": network.get("http_proxy", ""),
+            "https_proxy": network.get("https_proxy", ""),
+        },
+        "providers": providers,
+    }
+
+
+@app.patch("/api/admin/config")
+async def patch_admin_config(payload: Optional[Dict[str, Any]] = Body(None)):
+    """2.7 PATCH: 更新 Provider key/model、默认 Provider 与网络代理，写回 .env 与
+    config/config.yaml，并向 NATS 发布 agent.config.reloaded（best-effort）。"""
+    if not payload:
+        return _error(400, "empty body")
+
+    allowed_fields = {"default_provider", "network", "providers"}
+    for field in payload:
+        if field not in allowed_fields:
+            return _error(400, f"Forbidden field: {field}")
+
+    # 1) 白名单校验
+    default_provider = payload.get("default_provider")
+    if default_provider is not None and default_provider not in PROVIDER_DEFS:
+        return _error(400, f"Unknown default_provider: {default_provider}")
+
+    network = payload.get("network")
+    if network is not None:
+        if not isinstance(network, dict):
+            return _error(400, "network must be an object")
+        for key in network:
+            if key not in ("http_proxy", "https_proxy"):
+                return _error(400, f"Forbidden network field: {key}")
+            if not isinstance(network[key], str):
+                return _error(400, f"network.{key} must be a string")
+
+    providers = payload.get("providers")
+    if providers is not None:
+        if not isinstance(providers, dict):
+            return _error(400, "providers must be an object")
+        for name, update in providers.items():
+            if name not in PROVIDER_DEFS:
+                return _error(400, f"Unknown provider: {name}")
+            if not isinstance(update, dict):
+                return _error(400, f"providers.{name} must be an object")
+            for key in update:
+                if key not in ("api_key", "model"):
+                    return _error(400, f"Forbidden provider field: {name}.{key}")
+                if not isinstance(update[key], str):
+                    return _error(400, f"providers.{name}.{key} must be a string")
+
+    # 2) 先写 .env（密钥是更关键的状态）
+    if providers:
+        env_updates = {
+            PROVIDER_DEFS[name]["env_key"]: update["api_key"]
+            for name, update in providers.items()
+            if isinstance(update, dict) and "api_key" in update
+        }
+        if env_updates:
+            try:
+                _upsert_env(env_updates)
+            except Exception as exc:
+                logger.error(f"Failed to write .env: {exc}")
+                return _error(500, "failed to update .env")
+
+    # 3) 再写 config.yaml（ruamel round-trip 保留注释与字段顺序）
+    try:
+        doc = _read_config(safe=False)
+        _ensure_config_file()
+        if default_provider is not None:
+            doc.setdefault("llm", {})["default_provider"] = default_provider
+        if network is not None:
+            net = doc.setdefault("network", {})
+            for key, value in network.items():
+                net[key] = value
+        if providers:
+            llm = doc.setdefault("llm", {})
+            for name, update in providers.items():
+                if isinstance(update, dict) and "model" in update:
+                    llm.setdefault(name, {})["model"] = update["model"]
+        _write_config_rt(doc)
+    except Exception as exc:
+        logger.error(f"Failed to write config.yaml: {exc}")
+        return _error(500, "failed to update config.yaml")
+
+    # 4) 发布热刷新信号（失败不阻断配置落盘）
+    reloaded = False
+    try:
+        reloaded = await _publish_config_reloaded({
+            "default_provider": default_provider,
+            "network": network,
+            "providers": providers,
+        })
+    except Exception as exc:
+        logger.warning(f"Config reload publish failed: {exc}")
+
+    return {"status": "ok", "reloaded": reloaded}
+
+
+def _raise_http(resp: httpx.Response) -> None:
+    """raise_for_status() with the upstream's error body included for readability."""
+    if resp.status_code >= 400:
+        detail = (resp.text or resp.reason_phrase or "").strip().replace("\n", " ")[:200]
+        raise RuntimeError(
+            f"HTTP {resp.status_code}: {detail}" if detail else f"HTTP {resp.status_code}"
+        )
+
+
+async def _probe_models(provider: str, api_key: str, proxy: Optional[str]) -> List[str]:
+    """Call the provider's public models REST endpoint; return model ids."""
+    kwargs: Dict[str, Any] = {"timeout": httpx.Timeout(15.0), "trust_env": False}
+    if proxy:
+        kwargs["proxy"] = proxy
+
+    if provider == "gemini":
+        async with httpx.AsyncClient(**kwargs) as client:
+            resp = await client.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": api_key},
+            )
+        _raise_http(resp)
+        data = resp.json()
+        return sorted(
+            str(m["name"]).removeprefix("models/")
+            for m in data.get("models", [])
+            if isinstance(m, dict) and m.get("name")
+        )
+
+    if provider == "claude":
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+        async with httpx.AsyncClient(**kwargs) as client:
+            resp = await client.get("https://api.anthropic.com/v1/models", headers=headers)
+        _raise_http(resp)
+        data = resp.json()
+        return sorted(
+            str(m["id"])
+            for m in data.get("data", [])
+            if isinstance(m, dict) and m.get("id")
+        )
+
+    # qwen: OpenAI-compatible endpoint. Probe the base_url configured in
+    # config.yaml -- the runtime may point at e.g. the Alibaba TokenPlan
+    # endpoint (token-plan.cn-beijing.maas.aliyuncs.com), whose keys are
+    # rejected by the standard DashScope host. Fall back to the standard
+    # endpoint only when no base_url is configured.
+    headers = {"Authorization": f"Bearer {api_key}"}
+    cfg = _read_config(safe=True)
+    base = (
+        _get_dotted(cfg, "llm.qwen.base_url")
+        or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+    url = base.rstrip("/") + "/models"
+    async with httpx.AsyncClient(**kwargs) as client:
+        resp = await client.get(url, headers=headers)
+    _raise_http(resp)
+    data = resp.json()
+    return sorted(
+        str(m["id"])
+        for m in data.get("data", [])
+        if isinstance(m, dict) and m.get("id")
+    )
+
+
+@app.post("/api/admin/config/test-key")
+async def test_admin_key(payload: Optional[Dict[str, Any]] = Body(None)):
+    """2.7 test-key: 连通性测试，返回 HTTP 延迟与可用模型列表（不保存任何配置）。"""
+    if not payload or not isinstance(payload, dict):
+        return _error(400, "empty body")
+
+    provider = payload.get("provider")
+    if provider not in PROVIDER_DEFS:
+        return _error(400, f"Unknown provider: {provider}")
+
+    api_key = payload.get("api_key")
+    if api_key is not None and not isinstance(api_key, str):
+        return _error(400, "api_key must be a string")
+    key = (api_key or "").strip() or _get_provider_key(provider)
+    if not key:
+        return _error(400, f"no api key configured for provider: {provider}")
+
+    cfg = _read_config(safe=True)
+    network = cfg.get("network") if isinstance(cfg.get("network"), dict) else {}
+    proxy = network.get("https_proxy") or network.get("http_proxy") or None
+
+    start = time.perf_counter()
+    try:
+        models = await _probe_models(provider, key, proxy)
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        return {"provider": provider, "ok": True, "latency_ms": latency_ms, "models": models[:20]}
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        detail = str(exc) or type(exc).__name__
+        return {"provider": provider, "ok": False, "latency_ms": latency_ms, "error": detail}
 
 
 # ---------------------------------------------------------------------------

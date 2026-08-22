@@ -42,7 +42,7 @@ else {
 
 export default {
   appId: 'ai.moeru.airi',
-  productName: 'AIRI',
+  productName: 'Better Agent',
   directories: {
     output: 'dist',
     buildResources: 'build',
@@ -208,10 +208,10 @@ export default {
     },
     extendInfo: [
       {
-        NSMicrophoneUsageDescription: 'AIRI requires microphone access for voice interaction',
+        NSMicrophoneUsageDescription: 'Better Agent requires microphone access for voice interaction',
       },
       {
-        NSCameraUsageDescription: 'AIRI requires camera access for vision understanding',
+        NSCameraUsageDescription: 'Better Agent requires camera access for vision understanding',
       },
     ],
     // For self-publishing, testing, and distribution after modified the code without access to
@@ -242,7 +242,7 @@ export default {
     },
     category: 'Utility',
     synopsis: 'AI VTuber/Waifu chatbot app inspired by Neuro-sama.',
-    description: 'AIRI is an AI VTuber/Waifu chatbot supporting Live2D/VRM avatars, featuring human-like interactions and modular stage-based rendering.',
+    description: 'Better Agent is an AI VTuber/Waifu chatbot supporting Live2D/VRM avatars, featuring human-like interactions and modular stage-based rendering.',
     executableName: 'airi',
     artifactName: '${productName}-${version}-linux-${arch}.${ext}',
     icon: 'build/icons/icon.png',

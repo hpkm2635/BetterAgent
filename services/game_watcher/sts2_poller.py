@@ -377,7 +377,16 @@ async def poll_once(
             gold = player.get("gold")
             signature = (state_type, new_floor, hp, energy, hand_len, gold)
             now = time.time()
-            if signature != tracker.last_turn_signature or (now - tracker.last_turn_time > 8.0):
+            if energy == 0 and now - tracker.last_turn_time > 3.0:
+                logger.warning("⚡ Automated Hard Fallback: Energy is 0 in player turn for >3.0s, forcing end_turn directly...")
+                try:
+                    async with session.post(sts2_api_url, json={"action": "end_turn", "force": True}) as resp:
+                        await resp.json()
+                    tracker.last_turn_time = now
+                except Exception as e:
+                    logger.warning(f"Automated Hard Fallback end_turn failed: {e}")
+
+            if signature != tracker.last_turn_signature or (now - tracker.last_turn_time > 12.0):
                 tracker.last_turn_signature = signature
                 tracker.last_turn_time = now
                 await post_game_turn(session, game_turn_url, game_event_token, target_chat_id, reason)
@@ -387,7 +396,7 @@ async def main():
     sts2_api_url = get_config_val(
         "game_watcher.sts2.api_url", "http://127.0.0.1:15526/api/v1/singleplayer"
     )
-    poll_interval_seconds = float(get_config_val("game_watcher.sts2.poll_interval_seconds", 5))
+    poll_interval_seconds = float(get_config_val("game_watcher.sts2.poll_interval_seconds", 1.5))
     near_death_hp_ratio = float(get_config_val("game_watcher.sts2.near_death_hp_ratio", 0.15))
     rare_relic_rarities = {
         str(r).lower() for r in get_config_val("game_watcher.sts2.rare_relic_rarities", ["rare", "boss"])
@@ -440,7 +449,8 @@ async def main():
                 near_death_hp_ratio, rare_relic_rarities, target_chat_id, tracker,
                 game_state_url=game_state_url,
             )
-            await asyncio.sleep(poll_interval_seconds)
+            sleep_duration = 1.5 if tracker.last_logged_state_type in COMBAT_STATE_TYPES else poll_interval_seconds
+            await asyncio.sleep(sleep_duration)
 
 
 if __name__ == "__main__":

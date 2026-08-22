@@ -7,7 +7,7 @@ chat_stats / mood_history / topic_log 三张表，只允许 SELECT。
 """
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.companion.database import get_connection
@@ -51,7 +51,7 @@ class SQLAgent:
 
         # 1. 本周聊了多少次 / 这周聊了多少次
         if ("这周" in q or "本周" in q) and ("聊" in q or "消息" in q or "次" in q):
-            monday = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+            monday = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=datetime.now(timezone(timedelta(hours=8))).weekday())).strftime("%Y-%m-%d")
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
                 "WHERE chat_id = ? AND date >= ?"
@@ -60,7 +60,7 @@ class SQLAgent:
 
         # 2. 今天聊了多少次
         if ("今天" in q or "今日" in q) and ("聊" in q or "消息" in q or "次" in q):
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
             sql = (
                 "SELECT COALESCE(SUM(msg_count), 0) AS total FROM chat_stats "
                 "WHERE chat_id = ? AND date = ?"
@@ -120,32 +120,32 @@ class SQLAgent:
 
     def _format_answer(self, template: str, rows: List[Dict[str, Any]],
                        question: str) -> str:
-        """把查询结果转成猫娘口吻的回答。"""
+        """把查询结果转成角色口吻的回答。"""
         if template == "sum_week":
             total = self._first(rows, "total")
-            return f"这周你一共和我聊了 {total} 次喵～"
+            return f"这周你一共和我聊了 {total} 次"
         if template == "sum_today":
             total = self._first(rows, "total")
-            return f"今天你已经和我聊了 {total} 次喵～"
+            return f"今天你已经和我聊了 {total} 次"
         if template == "sum_total":
             total = self._first(rows, "total")
-            return f"你一共和我聊了 {total} 次喵～"
+            return f"你一共和我聊了 {total} 次"
         if template == "proactive":
             total = self._first(rows, "total")
-            return f"我一共主动找过你 {total} 次喵～"
+            return f"我一共主动找过你 {total} 次"
         if template == "mood":
             if not rows:
-                return "最近还没有情绪记录喵～"
+                return "最近还没有情绪记录"
             r = rows[0]
             tag = r.get("emotion_tag") or "平静"
             score = r.get("mood_score")
-            return f"最近我的情绪标签是 {tag}（评分 {score}）喵～"
+            return f"最近我的情绪标签是 {tag}（评分 {score}）"
         if template == "topics":
             if not rows:
-                return "最近还没有话题记录喵～"
+                return "最近还没有话题记录"
             topics = [r.get("topic") for r in rows if r.get("topic")]
-            return "最近我们聊的话题有：" + "、".join(topics) + " 喵～"
-        return "收到，但这个问题我还没学会怎么查喵～"
+            return "最近我们聊的话题有：" + "、".join(topics) + " "
+        return "收到，但这个问题我还没学会怎么查"
 
     @staticmethod
     def _first(rows: List[Dict[str, Any]], key: str, default: int = 0) -> int:

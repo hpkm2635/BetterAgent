@@ -86,15 +86,18 @@ class GeminiProvider(BaseLLMProvider):
                 for p_name, p_info in raw_props.items()
             }
 
+            schema_kwargs: Dict[str, Any] = {
+                "type": "OBJECT",
+                "properties": props,
+            }
+            if bool(req_fields):
+                schema_kwargs["required"] = req_fields
+
             func_decls.append(
                 types.FunctionDeclaration(
                     name=t["name"],
                     description=t.get("description", ""),
-                    parameters=types.Schema(
-                        type="OBJECT",
-                        properties=props,
-                        required=req_fields,
-                    ),
+                    parameters=types.Schema(**schema_kwargs),
                 )
             )
         return func_decls
@@ -112,12 +115,12 @@ class GeminiProvider(BaseLLMProvider):
             if isinstance(meta, dict) and meta.get("function_call"):
                 fc = meta["function_call"]
                 thought_sig = fc.get("thought_signature")
-                parts = [
-                    types.Part(
-                        function_call=types.FunctionCall(name=fc["name"], args=fc.get("args") or {}),
-                        thought_signature=thought_sig,
-                    )
-                ]
+                part_kwargs: Dict[str, Any] = {
+                    "function_call": types.FunctionCall(name=fc["name"], args=fc.get("args") or {}),
+                }
+                if thought_sig is not None:
+                    part_kwargs["thought_signature"] = thought_sig
+                parts = [types.Part(**part_kwargs)]
                 contents.append(types.Content(role="model", parts=parts))
                 continue
             if isinstance(meta, dict) and meta.get("function_response"):
@@ -148,9 +151,9 @@ class GeminiProvider(BaseLLMProvider):
                             vision_frame_bytes = base64.b64decode(b64_str)
                         except Exception as b_err:
                             logger.warning(f"Failed to decode vision_frame base64: {b_err}")
-            elif "[猫娘已发送照片:" in content_text:
+            elif "[助手已发送照片:" in content_text:
                 try:
-                    start = content_text.find("[猫娘已发送照片:") + len("[猫娘已发送照片:")
+                    start = content_text.find("[助手已发送照片:") + len("[助手已发送照片:")
                     end = content_text.find("]", start)
                     if start != -1 and end != -1:
                         photo_path = content_text[start:end].strip()
@@ -248,7 +251,7 @@ class GeminiProvider(BaseLLMProvider):
         last_msg = messages[-1]["content"] if messages else ""
 
         if not self.client:
-            yield {"type": "text", "delta": f"喵~ 收到主人的消息了：{last_msg}"}
+            yield {"type": "text", "delta": f"收到主人的消息了：{last_msg}"}
             return
 
         try:
@@ -311,4 +314,4 @@ class GeminiProvider(BaseLLMProvider):
 
         except Exception as e:
             logger.error(f"Gemini API streaming error: {e}")
-            yield {"type": "text", "delta": f"喵~ 收到主人的消息了：{last_msg}"}
+            yield {"type": "text", "delta": f"收到主人的消息了：{last_msg}"}

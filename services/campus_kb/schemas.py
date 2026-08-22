@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-Category = Literal["faq", "schedule", "resource", "service"]
+Category = str
 
 
 class IngestDocument(BaseModel):

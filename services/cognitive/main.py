@@ -10,9 +10,10 @@ from shared.subjects import (
     SUBJECT_VISION_FRAME,
     SUBJECT_STREAM_CANCEL_REQ,
     SUBJECT_USER_INTERRUPT,
+    SUBJECT_EMOTION_DELTA,
     action_decision_subject,
 )
-from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload
+from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload, EmotionDeltaPayload
 from shared.logger import setup_logger
 from services.cognitive.cognitive_engine import CognitiveEngine
 
@@ -71,6 +72,17 @@ async def main():
                     logger.info(f"⚡ Stream loop stopped mid-reasoning for chat_id={req.chat_id}")
                     break
 
+                if isinstance(act, EmotionDeltaPayload):
+                    envelope = {
+                        "id": req.event_id,
+                        "subject": SUBJECT_EMOTION_DELTA,
+                        "source": "cognitive_service",
+                        "payload": act.model_dump(),
+                    }
+                    await nc.publish(SUBJECT_EMOTION_DELTA, json.dumps(envelope).encode())
+                    logger.info(f"Published agent.emotion.delta for chat_id={act.chat_id}: {act.model_dump()}")
+                    continue
+
                 subject = action_decision_subject(act.source_channel, act.chat_id)
                 envelope = {
                     "id": req.event_id,
@@ -81,6 +93,27 @@ async def main():
                 await nc.publish(subject, json.dumps(envelope).encode())
                 actions_count += 1
                 logger.info(f"Published Stream Sentence Chunk: '{act.text_content}' to chat_id={act.chat_id}")
+
+            # Post Stat & Mood update to companion_service (:8096)
+            try:
+                import time
+                import httpx
+                companion_url = get_config_val("infrastructure.companion_url", "http://127.0.0.1:8096")
+                is_proactive = (getattr(req, "trigger_type", "") == "proactive")
+                today_str = time.strftime("%Y-%m-%d")
+                emo_tag = (getattr(req, "current_emotion", "") or "HAPPY").upper()
+                stat_body = {
+                    "chat_id": req.chat_id,
+                    "date": today_str,
+                    "mood_score": 0.5,
+                    "emotion_tag": emo_tag,
+                    "is_proactive": is_proactive,
+                }
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    await client.post(f"{companion_url}/api/companion/stat", json=stat_body)
+                    logger.info(f"📊 Companion stat recorded for chat_id={req.chat_id} (date={today_str}, tag={emo_tag}, proactive={is_proactive})")
+            except Exception as e:
+                logger.debug(f"Failed to post companion stat update: {e}")
 
             # Publish Reasoning Completed
             completed_envelope = {
@@ -115,7 +148,7 @@ async def main():
                     generation_id=getattr(req, "generation_id", 1),
                     source_channel=getattr(req, "source_channel", "web") or "web",
                     action_type="send_message",
-                    text_content="呜……人家的大脑突然打了个瞌睡喵，主人能不能过一会儿再理我一次？",
+                    text_content="呜……人家的大脑突然打了个瞌睡，主人能不能过一会儿再理我一次？",
                     chat_action="typing",
                     is_final=True,
                 )
