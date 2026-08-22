@@ -18,6 +18,7 @@ from shared.schema.payloads import STTTranscriptPayload
 from shared.logger import setup_logger
 from shared.config_loader import get_config_val
 from services.stt.funasr_client import FunASRSession
+from services.stt.iflytek_client import IFlytekSession
 
 load_dotenv()
 logger = setup_logger("stt_service")
