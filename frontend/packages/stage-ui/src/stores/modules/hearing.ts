@@ -896,7 +896,7 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       scriptNode.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0)
         const maxAmp = inputData.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
-        console.log('[Hearing Pipeline] ScriptProcessorNode onaudioprocess, samples:', inputData.length, 'maxAmplitude:', maxAmp)
+        console.log('[Hearing Pipeline] ScriptProcessorNode onaudioprocess, samples:', inputData.length, 'maxAmplitude:', maxAmp, 'audioContextState:', audioContext.state)
         const pcm16 = float32ToInt16(inputData)
         if (betterAgentWSBridge.isConnected()) {
           betterAgentWSBridge.sendAudioChunk(pcm16)
@@ -907,8 +907,16 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
         bumpIdle()
       }
 
-      if (audioContext.state === 'suspended')
-        await audioContext.resume()
+      console.info('[Hearing Pipeline] AudioContext state before resume:', audioContext.state)
+      if (audioContext.state === 'suspended') {
+        try {
+          await audioContext.resume()
+          console.info('[Hearing Pipeline] AudioContext resumed successfully')
+        }
+        catch (err) {
+          console.error('[Hearing Pipeline] Failed to resume AudioContext:', err)
+        }
+      }
 
       console.info('[Hearing Pipeline] Sending user.speech_start via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
       betterAgentWSBridge.sendSpeechStart()
