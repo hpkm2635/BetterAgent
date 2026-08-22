@@ -38,7 +38,7 @@ class IFlytekSession:
         app_id: str,
         api_key: str,
         api_secret: str,
-        endpoint: str = "ws://iat.xf-yun.com/v1",
+        endpoint: str = "wss://iat-api.xfyun.cn/v2/iat",
         sample_rate: int = 16000,
         language: str = "zh_cn",
         accent: str = "mandarin",
@@ -57,9 +57,11 @@ class IFlytekSession:
 
     def _create_url(self) -> str:
         """Build the authenticated WebSocket URL (HMAC-SHA256)."""
-        host = "iat.xf-yun.com"
-        path = "/v1"
-        # iFLYTEK demo uses local time (not GMT); keep aligned with official example.
+        host = "iat-api.xfyun.cn"
+        path = "/v2/iat"
+        # iFLYTEK docs require GET /v2/iat with RFC1123 date. Use local time
+        # to match the official demo; the server validates the signature against
+        # the provided date, not a fixed timezone.
         date = format_date_time(mktime(datetime.now().timetuple()))
         signature_origin = f"host: {host}\ndate: {date}\nGET {path} HTTP/1.1"
         signature_sha = hmac.new(
