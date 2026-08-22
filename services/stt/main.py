@@ -5,6 +5,7 @@ import logging
 import os
 import nats
 from dotenv import load_dotenv
+from typing import Any
 
 from shared.subjects import (
     SUBJECT_SPEECH_START,
