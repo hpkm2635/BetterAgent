@@ -1,11 +1,39 @@
 import logging
 import os
+import time
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from shared.schema.payloads import ReasoningRequestPayload
 from shared.persona_loader import PersonaLoader
 from shared.config_loader import get_config_val
 
 logger = logging.getLogger("prompt_builder")
+
+# Asia/Shanghai 固定 +08:00（无夏令时）。不能用 datetime.now()——机器本地时区可能
+# 不是 +08:00，会给模型一个错误的时间，导致相对时间换算整体偏移数小时。
+_CST = timezone(timedelta(hours=8))
+
+
+def log_raw_trace(category: str, chat_id: int, title: str, content: str):
+    """
+    Appends full un-truncated System Prompts and Raw LLM Responses to logs/raw_prompts_and_responses.log
+    """
+    try:
+        log_file = Path("logs") / "raw_prompts_and_responses.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = (
+            f"\n=======================================================\n"
+            f"[{timestamp}] [{category.upper()}] ChatID={chat_id} | {title}\n"
+            f"-------------------------------------------------------\n"
+            f"{content}\n"
+            f"=======================================================\n"
+        )
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception as e:
+        logger.warning(f"Failed to write raw trace log: {e}")
 
 
 def _load_sts2_agents_md() -> str:
@@ -84,6 +112,15 @@ class PromptBuilder:
         if getattr(payload, "circadian_description", None):
             prompt_parts.append(payload.circadian_description)
 
+        # 让模型知道当前日期时间，才能把“半个小时后”“明天9点”这类相对时间
+        # 换算成 add_schedule 需要的绝对时间（节律描述只有 HH:MM，没有日期）。
+        # 仅对非游戏回合注入，避免干扰极速打牌解说的提示词。
+        if payload.trigger_type != "game_turn":
+            prompt_parts.append(
+                f"[当前时间] {datetime.now(_CST).strftime('%Y-%m-%d %H:%M:%S')}（Asia/Shanghai, UTC+08:00）。"
+                " 当用户要求设置闹钟/提醒/日程时，请把相对时间换算成绝对时间（格式 YYYY-MM-DD HH:MM:SS）。"
+            )
+
         if payload.trigger_type != "game_turn":
             prompt_parts.append(
                 "[情绪更新元数据约束]: 如果本轮对话中主人的话语或互动让你的心情/好感度发生了明显变化（例如特别高兴、被安抚、难过、吃醋等），"
@@ -103,6 +140,21 @@ class PromptBuilder:
                 "不要等待被提问，自然地开启或延续话题，语气要符合你现在的心情。"
                 "【约束】主动搭话只需发送文字聊天，请勿在此轮主动对话中自动调用图片生成工具。"
             )
+            # Inject active companion recommendations/care items if companion service is running
+            try:
+                import httpx
+                companion_url = get_config_val("infrastructure.companion_url", "http://127.0.0.1:8096")
+                resp = httpx.get(f"{companion_url}/api/companion/recommendations?chat_id={payload.chat_id}", timeout=1.5)
+                if resp.status_code == 200:
+                    recs = resp.json().get("recommendations", [])
+                    if recs:
+                        recs_text = "\n".join(f"- {r}" for r in recs)
+                        prompt_parts.append(
+                            f"[主动关怀与智能提醒推荐]:\n{recs_text}\n"
+                            "请在本次主动搭话中，自然地关怀主人，并适时提醒上述事项。"
+                        )
+            except Exception as e:
+                logger.debug(f"Failed to fetch companion recommendations for proactive turn: {e}")
 
         if payload.trigger_type == "game_turn":
             if _STS2_AGENTS_MD_CONTENT:
@@ -110,7 +162,7 @@ class PromptBuilder:
             prompt_parts.append(
                 "[游戏自动托管 - 极速快节奏解说模式]\n"
                 "1. 【发言极其简短】打牌解说请严格控制在 5 至 8 个字以内（单句短句，如“看招！”、“防御，结束回合！”），严禁任何多余的解释或策略分析！确保解说与极速打牌节奏完全同步。\n"
-                "2. 【强制动作】你必须通过调用工具（Tool Call）执行游戏动作，禁止仅输出纯聊天文本。\n"
+                "2. 【强制说话+动作】你必须在每次回复中【同时输出一行 5~8 字解说短文本】并发起工具调用（Tool Call），绝不能只返回工具调用而不输出任何解说文字！\n"
                 "3. 如果手牌有可用卡牌且能量足够，优先按右到左顺序调用 sts2_play_card 打出。\n"
                 "3.5. 【批量出牌，节省时间】如果你已经想好了这整个回合要打哪几张牌（不需要先看某张牌打出后的效果再决定下一步），"
                 "可以在同一次回复里一次性发起这几张牌对应的多个 sts2_play_card 工具调用，不必每打一张就单独请求一轮——"
@@ -156,7 +208,10 @@ class PromptBuilder:
                     if desc:
                         prompt_parts.append(f"- 最新动作: {desc}")
 
-        return "\n".join(prompt_parts)
+        full_prompt = "\n".join(prompt_parts)
+        log_raw_trace("SYSTEM_PROMPT", payload.chat_id, f"Trigger: {payload.trigger_type}", full_prompt)
+        logger.info(f"🧠 [PromptBuilder] System Prompt Built for ChatID={payload.chat_id} ({len(full_prompt)} chars) -> logged to raw_prompts_and_responses.log")
+        return full_prompt
 
     @staticmethod
     def build_messages(

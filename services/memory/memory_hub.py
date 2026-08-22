@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 from shared.schema.payloads import (
     EnrichContextReqPayload,
@@ -100,6 +101,49 @@ class MemoryHub:
                 description=f"执行动作 {decision.action_type}: {full_content[:30]}",
                 emotion_tag="normal",
             )
+
+        # 写入陪伴统计（Companion /api/companion/stat）：对话次数 + 话题日志
+        await self._write_companion_stat(chat_id, full_content)
+
+    @staticmethod
+    def _detect_topic(text: str) -> Optional[str]:
+        """从助手回复里用简单关键词规则提取话题标签（供 topic_log / 推荐使用）。"""
+        if not text:
+            return None
+        study_kw = ("学习", "复习", "考试", "作业", "上课", "课程", "选课", "论文")
+        game_kw = ("游戏", "杀戮尖塔", "打游戏", "开黑")
+        for kw in study_kw:
+            if kw in text:
+                return "study"
+        for kw in game_kw:
+            if kw in text:
+                return "game"
+        return None
+
+    async def _write_companion_stat(self, chat_id: int, text: str) -> None:
+        """把每轮对话的统计（消息数 + 话题）写入 Companion 服务，供 NL2SQL / 推荐使用。"""
+        companion_url = get_config_val(
+            "infrastructure.companion_url",
+            os.getenv("COMPANION_URL", "http://127.0.0.1:8096"),
+        )
+        topic = self._detect_topic(text)
+        payload = {
+            "chat_id": chat_id,
+            "date": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"),
+            "is_proactive": False,
+            "topic": topic,
+        }
+        try:
+            session = await self.vector_store._get_http_session()
+            async with session.post(
+                f"{companion_url.rstrip('/')}/api/companion/stat",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Companion stat write failed ({resp.status})")
+        except Exception as e:
+            logger.warning(f"Companion stat write error ({e}), degrading gracefully.")
 
     async def search_campus_kb(self, query_text: str, top_k: int = 3) -> List[str]:
         if not query_text or not query_text.strip():

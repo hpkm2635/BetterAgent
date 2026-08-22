@@ -1,8 +1,18 @@
-# PowerShell Stop Script for BetterAgent (Windows)
+param(
+    [switch]$KillDockerDesktop
+)
 
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "   Stopping BetterAgent Microservices     " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
+
+if ($KillDockerDesktop) {
+    Write-Host "Force killing Docker Desktop application and resetting WSL2..." -ForegroundColor Red
+    taskkill /F /IM "Docker Desktop.exe" /T 2>$null
+    taskkill /F /IM "com.docker.backend.exe" /T 2>$null
+    taskkill /F /IM "com.docker.proxy.exe" /T 2>$null
+    wsl --shutdown 2>$null
+}
 
 $ROOT_DIR = Get-Item -Path $PSScriptRoot\.. | Select-Object -ExpandProperty FullName
 Set-Location $ROOT_DIR
@@ -32,9 +42,8 @@ Get-Process -Name "nats-server" -ErrorAction SilentlyContinue | Stop-Process -Fo
 # 3. Clean up orphaned Go & Python microservices by WMI command line match
 try {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { 
-        $_.CommandLine -like "*services.memory.main*" -or 
-        $_.CommandLine -like "*services.cognitive.main*" -or 
-        $_.CommandLine -like "*services.tts.main*" -or 
+        $_.CommandLine -like "*services.*" -or 
+
         $_.CommandLine -like "*runner.py*" -or 
         $_.CommandLine -like "*cmd/main.go*" -or 
         $_.CommandLine -like "*betteragent_core*" -or 
@@ -48,7 +57,7 @@ try {
 # 4. Stop Docker Compose dependencies if present
 if (Get-Command docker -ErrorAction SilentlyContinue) {
     Write-Host "Stopping Docker containers..." -ForegroundColor Yellow
-    docker compose -f deploy/docker-compose.yml --env-file .env stop
+    docker compose -f deploy/docker-compose.yml --env-file .env stop -t 5
 }
 
 Write-Host "==========================================" -ForegroundColor Cyan

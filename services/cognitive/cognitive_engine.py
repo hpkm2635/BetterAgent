@@ -6,7 +6,7 @@ from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayloa
 from shared.config_loader import get_config_val
 from services.cognitive.providers.factory import ProviderFactory
 from services.cognitive.tool_registry import ToolRegistry
-from services.cognitive.prompt_builder import PromptBuilder
+from services.cognitive.prompt_builder import PromptBuilder, log_raw_trace
 from services.cognitive.tools.validation import is_safe_media_filename
 from services.cognitive.mcp.presenter_manager import PresenterSessionManager
 
@@ -395,6 +395,32 @@ class CognitiveEngine:
                 sticker_id=tool_output.get("sticker_id"),
                 reaction_emoji=tool_output.get("reaction_emoji"),
             )
+        if tool_name == "query_companion_stats":
+            # 读类工具：直接把结果作为最终答复发给用户，不 round-trip，
+            # 这样不依赖 provider 的 round-trip 格式（qwen/Gemini 都适用）。
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type="send_message",
+                text_content=tool_output.get("answer") or tool_output.get("message") or "查询完成",
+                is_final=True,
+            )
+        if tool_name == "get_recommendations":
+            recs = tool_output.get("recommendations") or []
+            text = "\n".join(f"· {r}" for r in recs) if recs else "暂时没有特别的推荐喵～"
+            return ActionDecisionPayload(
+                event_id=payload.event_id,
+                source_component="cognitive_engine",
+                chat_id=payload.chat_id,
+                generation_id=gen_id,
+                source_channel=src_channel,
+                action_type="send_message",
+                text_content=text,
+                is_final=True,
+            )
         return None
 
     @classmethod
@@ -712,8 +738,16 @@ class CognitiveEngine:
 
         thought, clean_text = parse_thought_and_clean_text(cleaned_raw_text)
 
-        if thought:
-            logger.info(f"CoT Inner Monologue for chat_id={payload.chat_id}:\n{thought}")
+        logger.info(
+            f"\n=======================================================\n"
+            f"📥 [CognitiveEngine] LLM Raw Response Parsed (ChatID={payload.chat_id}):\n"
+            f"-------------------------------------------------------\n"
+            f"• Raw Text Output : {raw_text!r}\n"
+            f"• CoT Thought     : {thought or '(None)'}\n"
+            f"• Clean User Text : {clean_text!r}\n"
+            f"• Tool Calls      : {tool_calls}\n"
+            f"======================================================="
+        )
 
         if clean_text:
             actions.append(
@@ -813,6 +847,7 @@ class CognitiveEngine:
 
                 pending_calls: List[Dict[str, Any]] = []
                 cancelled = False
+                round_raw_text = ""
 
                 async for event in stream_gen:
                     if cancel_event and cancel_event.is_set():
@@ -827,10 +862,13 @@ class CognitiveEngine:
                     if event.get("type") == "thinking_delta":
                         thinking_text = event.get("text", "")
                         if thinking_text:
+                            round_raw_text += f"<thought>{thinking_text}</thought>"
                             segmenter.push(f"<thought>{thinking_text}</thought>")
                         continue
 
-                    sentences = segmenter.push(event.get("delta", ""))
+                    delta_str = event.get("delta", "")
+                    round_raw_text += delta_str
+                    sentences = segmenter.push(delta_str)
                     for s in sentences:
                         sentence_str = s.strip()
                         if sentence_str:
@@ -848,6 +886,16 @@ class CognitiveEngine:
 
                 if cancelled:
                     return
+
+                thought, clean_text = parse_thought_and_clean_text(round_raw_text)
+                raw_summary = (
+                    f"• Raw Text Output : {round_raw_text!r}\n"
+                    f"• CoT Thought     : {thought or '(None)'}\n"
+                    f"• Clean User Text : {clean_text!r}\n"
+                    f"• Pending Tools   : {pending_calls}"
+                )
+                log_raw_trace("RAW_RESPONSE", payload.chat_id, f"Stream Round {round_idx+1}", raw_summary)
+                logger.info(f"📥 [CognitiveEngine Stream Round {round_idx+1}] Raw response parsed for ChatID={payload.chat_id} -> logged to raw_prompts_and_responses.log")
 
                 if not pending_calls:
                     break
@@ -889,6 +937,12 @@ class CognitiveEngine:
                     tool = self.tool_registry.get_tool(tool_name)
 
                     if tool is not None:
+                        if tool_name in ("add_schedule", "query_schedule", "query_companion_stats", "get_recommendations"):
+                            # 陪伴类工具必须用真实的 chat_id（Go Core 已把它折叠进
+                            # WebNamespaceOffset），而不是模型猜的值——否则会查/写到
+                            # 错误的 id 下，前端和数字人都对不上。
+                            tool_args = dict(tool_args)
+                            tool_args["chat_id"] = payload.chat_id
                         if tool_name == "presenter_mode":
                             tool_output = await tool.execute(**tool_args, chat_id=payload.chat_id)
                         else:

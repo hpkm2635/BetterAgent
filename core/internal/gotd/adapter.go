@@ -400,6 +400,9 @@ func (a *GotdAdapter) handleIncomingMessage(ctx context.Context, e tg.Entities, 
 	}
 
 	// Publish InboundMessage to NATS
+	if a.urgeEngine != nil {
+		a.urgeEngine.OnUserActivity()
+	}
 	if err := a.bus.Publish(bus.SubjectInboundMessage, "gotd_adapter", inboundPayload); err != nil {
 		a.logger.Error("Failed to publish InboundMessage to NATS", zap.Int64("chat_id", chatID), zap.Error(err))
 	}

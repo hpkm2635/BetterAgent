@@ -726,9 +726,10 @@ def main():
 
     redis_alive = check_tcp("127.0.0.1", 6379)
     qdrant_alive = check_tcp("127.0.0.1", 6333)
+    funasr_alive = check_tcp("127.0.0.1", 10095)
 
-    if not (redis_alive and qdrant_alive):
-        print(" [0/5] Probing Docker infrastructure (Redis:6379, Qdrant:6333)...")
+    if not (redis_alive and qdrant_alive and funasr_alive):
+        print(" [0/5] Probing Docker infrastructure (Redis:6379, Qdrant:6333, FunASR:10095)...")
         docker_compose_file = ROOT_DIR / "deploy" / "docker-compose.yml"
         env_file = ROOT_DIR / ".env"
         if docker_compose_file.exists():
@@ -739,7 +740,7 @@ def main():
                 cmd.extend(["up", "-d"])
                 res = subprocess.run(cmd, check=False, capture_output=True, text=True)
                 if res.returncode == 0:
-                    print("     -> Triggered 'docker compose up -d' for Redis & Qdrant.")
+                    print("     -> Triggered 'docker compose up -d' for Redis, Qdrant & FunASR.")
                 else:
                     err_msg = res.stderr.strip()[:120] if res.stderr else "Docker Desktop not responding"
                     print(f" [!] Warning: Docker Compose execution note: {err_msg}")
@@ -750,12 +751,15 @@ def main():
         probe_deadline = time.time() + 4.0
         redis_now = False
         qdrant_now = False
+        funasr_now = False
         while time.time() < probe_deadline:
             if not redis_now:
                 redis_now = check_tcp("127.0.0.1", 6379)
             if not qdrant_now:
                 qdrant_now = check_tcp("127.0.0.1", 6333)
-            if redis_now and qdrant_now:
+            if not funasr_now:
+                funasr_now = check_tcp("127.0.0.1", 10095)
+            if redis_now and qdrant_now and funasr_now:
                 break
             time.sleep(0.5)
 
@@ -770,8 +774,15 @@ def main():
         else:
             print(" [!] NOTICE: Qdrant (127.0.0.1:6333) is offline. Campus KB will run in HashedNgram fallback mode.")
             print("     -> Run 'docker compose -f deploy/docker-compose.yml up -d' to enable Qdrant vector memory RAG.")
+
+        if funasr_now:
+            print(" [✓] FunASR Streaming ASR is ONLINE on 127.0.0.1:10095 🟢")
+        else:
+            print(" [!] NOTICE: FunASR (127.0.0.1:10095) is offline. STT service will attempt reconnect per utterance.")
+            print("     -> Run 'docker compose -f deploy/docker-compose.yml up -d' to enable FunASR ASR container.")
     else:
-        print(" [✓] Infrastructure Verified: Redis (6379) & Qdrant (6333) are active 🟢")
+        print(" [✓] Infrastructure Verified: Redis (6379), Qdrant (6333) & FunASR (10095) are active 🟢")
+
 
     # 1. NATS Infrastructure Check (True readiness probe)
     if not mgr.start_nats_if_needed():
@@ -830,6 +841,16 @@ def main():
         wait_for_readiness(
             lambda: is_port_open("127.0.0.1", 8094),
             service_name="Admin Backend Service (:8094)",
+            timeout=10.0,
+        )
+
+    # 8.5. Python Companion Tools Service (:8096)
+    companion_main = ROOT_DIR / "services" / "companion" / "main.py"
+    if companion_main.exists():
+        mgr.spawn_service("companion_service", [mgr.py_exe, "-u", "-m", "services.companion.main"])
+        wait_for_readiness(
+            lambda: is_port_open("127.0.0.1", 8096),
+            service_name="Python Companion Tools Service (:8096)",
             timeout=10.0,
         )
 

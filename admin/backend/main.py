@@ -146,6 +146,21 @@ def _read_persona(persona_id: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else {}
 
 
+def _get_active_persona_id() -> str:
+    config_path = REPO_ROOT / "config" / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                doc = _yaml_safe.load(f)
+            if isinstance(doc, dict):
+                persona_sec = doc.get("persona")
+                if isinstance(persona_sec, dict) and persona_sec.get("active"):
+                    return str(persona_sec["active"])
+        except Exception:
+            pass
+    return "catgirl"
+
+
 @app.get("/api/admin/personas")
 def list_personas():
     """列出所有人设，摘要字段（id/name/tts_provider/voice_id）。"""
@@ -236,6 +251,90 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
     except Exception as exc:
         logger.error(f"Failed to update persona YAML {path}: {exc}")
         return _error(500, "failed to update persona")
+
+    return {"status": "ok", "id": persona_id}
+
+
+@app.post("/api/admin/personas")
+def create_persona(payload: Optional[Dict[str, Any]] = Body(None)):
+    """根据模板新建人设并生成 YAML 配置文件。"""
+    if not payload:
+        return _error(400, "empty body")
+
+    persona_id = str(payload.get("id", "")).strip().lower()
+    if not persona_id or not _VALID_PERSONA_ID.match(persona_id):
+        return _error(400, "Invalid persona id (only alphanumeric, _ and - allowed)")
+
+    path = _persona_path(persona_id)
+    if path and path.exists():
+        return _error(400, f"Persona '{persona_id}' already exists")
+
+    name = str(payload.get("name", persona_id))
+    appearance = str(payload.get("appearance", ""))
+    base_prompt = str(payload.get("base_prompt", f"你叫 {name}，是一个AI助手。"))
+    sleepy_prompt = str(payload.get("sleepy_prompt", f"你叫 {name}，现在有些犯困。"))
+    knowledge_scope = str(payload.get("knowledge_scope", "日常陪伴"))
+    forbidden_topics = str(payload.get("forbidden_topics", "违规及敏感话题"))
+
+    tts_provider = str(payload.get("tts_provider", "gpt_sovits"))
+    voice_id = str(payload.get("voice_id", f"{persona_id}_voice"))
+
+    doc = {
+        "id": persona_id,
+        "name": name,
+        "appearance": appearance,
+        "base_prompt": base_prompt,
+        "sleepy_prompt": sleepy_prompt,
+        "knowledge_scope": knowledge_scope,
+        "forbidden_topics": forbidden_topics,
+        "tts": {
+            "provider": tts_provider,
+            "voice_id": voice_id,
+        },
+    }
+
+    try:
+        PERSONA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_path = None
+        target_path = PERSONA_DIR / f"{persona_id}.yaml"
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=PERSONA_DIR,
+            prefix=f".{persona_id}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp_path = Path(f.name)
+            _yaml_rt.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target_path)
+    except Exception as exc:
+        logger.error(f"Failed to create persona YAML: {exc}")
+        return _error(500, "failed to create persona")
+
+    return {"status": "ok", "id": persona_id}
+
+
+@app.delete("/api/admin/personas/{persona_id}")
+def delete_persona(persona_id: str):
+    """删除指定人设 YAML 文件（禁止删除默认 catgirl 或当前活跃人设）。"""
+    path = _persona_path(persona_id)
+    if path is None or not path.exists():
+        return _error(404, "not found")
+
+    if persona_id == "catgirl":
+        return _error(400, "Cannot delete default persona 'catgirl'")
+
+    if persona_id == _get_active_persona_id():
+        return _error(400, f"Cannot delete currently active persona '{persona_id}'")
+
+    try:
+        path.unlink()
+    except Exception as exc:
+        logger.error(f"Failed to delete persona YAML {path}: {exc}")
+        return _error(500, "failed to delete persona")
 
     return {"status": "ok", "id": persona_id}
 
@@ -405,14 +504,43 @@ def _load_sqlite_users() -> Dict[int, Dict[str, Any]]:
     return rows
 
 
+def _load_companion_user_facts() -> Dict[int, Dict[str, Any]]:
+    facts_map: Dict[int, Dict[str, Any]] = {}
+    companion_db = REPO_ROOT / "services" / "companion" / "companion.db"
+    if not companion_db.exists():
+        return facts_map
+    try:
+        conn = sqlite3.connect(str(companion_db), timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        rows = cur.execute("SELECT user_id, key, value, created_at FROM user_profile_facts ORDER BY created_at ASC").fetchall()
+        for r in rows:
+            uid = r["user_id"]
+            if uid not in facts_map:
+                facts_map[uid] = {
+                    "user_id": uid,
+                    "display_name": "主人" if uid in (1, 1001) else f"用户{uid}",
+                    "known_facts": [],
+                    "last_seen": r["created_at"],
+                }
+            fact_str = f"{r['key']}: {r['value']}"
+            if fact_str not in facts_map[uid]["known_facts"]:
+                facts_map[uid]["known_facts"].append(fact_str)
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"Failed to read companion.db user_profile_facts: {exc}")
+    return facts_map
+
+
 def _all_records() -> Dict[int, Dict[str, Any]]:
-    """Merge Redis profiles (source of truth) with SQLite soft-delete flags."""
+    """Merge companion SQLite facts, Redis profiles, and Admin soft-delete flags."""
     r = _get_redis()
     redis_profiles = _redis_user_profiles(r) if r else {}
     sqlite_users = _load_sqlite_users()
+    companion_facts = _load_companion_user_facts()
 
     merged: Dict[int, Dict[str, Any]] = {}
-    for uid, u in sqlite_users.items():
+    for uid, c in companion_facts.items():
         merged[uid] = {
             "user_id": uid,
             "display_name": u["display_name"] or f"用户{uid}",
@@ -689,8 +817,10 @@ def health():
 # 2.6 日程提醒 (Schedule) management -- 代理至 companion 服务，不重复实现逻辑
 # ---------------------------------------------------------------------------
 @app.get("/api/admin/schedules")
-async def list_schedules(chat_id: int = Query(...)):
+async def list_schedules(chat_id: int = Query(0)):
     """列出某 chat_id 下的所有日程（透传 companion /api/schedule/list）。"""
+    if not chat_id:
+        chat_id = 1001
     return await _forward(
         COMPANION_URL, "companion", "GET", f"/api/schedule/list?chat_id={chat_id}"
     )

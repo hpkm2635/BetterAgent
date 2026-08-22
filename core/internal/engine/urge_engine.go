@@ -45,11 +45,12 @@ type UrgeEngine struct {
 
 	params UrgeParams
 
-	value           float64
-	gameEventEnergy float64
-	cooldownUntil   time.Time
-	deadZoneUntil   time.Time
-	lastReason      string
+	value                float64
+	gameEventEnergy      float64
+	cooldownUntil        time.Time
+	deadZoneUntil        time.Time
+	consecutiveUnreplied int
+	lastReason           string
 
 	logger *zap.Logger
 }
@@ -89,6 +90,26 @@ func (u *UrgeEngine) RecordGameEvent(weight float64, reason string) {
 		zap.Float64("weight", weight),
 		zap.Float64("game_event_energy", u.gameEventEnergy),
 	)
+}
+
+// OnUserActivity resets the consecutive unreplied proactive counter when the
+// user interacts/sends a message, returning proactive threshold to normal.
+func (u *UrgeEngine) OnUserActivity() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.consecutiveUnreplied > 0 {
+		u.logger.Info("UrgeEngine: User activity received, resetting consecutive unreplied counter to 0",
+			zap.Int("previous_unreplied", u.consecutiveUnreplied),
+		)
+		u.consecutiveUnreplied = 0
+	}
+}
+
+// ConsecutiveUnreplied returns current unreplied proactive count (diagnostic/test).
+func (u *UrgeEngine) ConsecutiveUnreplied() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.consecutiveUnreplied
 }
 
 // OnTurnCompleted resets Urge to zero and enforces the cooldown/dead-zone
@@ -174,7 +195,19 @@ func (u *UrgeEngine) EvaluateTick(
 	threshold := u.params.BaseThreshold *
 		(1 - u.params.ArousalSensitivity*(arousal-0.5)) *
 		(1 + u.params.EnergyPenalty*(1-energy))
-	threshold = clamp(threshold, u.params.MinThreshold, u.params.MaxThreshold)
+
+	// 6. Exponential backoff for unreplied proactive turns:
+	// If master does not reply to proactive chatter(s), scale threshold up
+	// (1.0x -> 1.8x -> 3.24x -> 5.0x cap), reducing proactive chatter frequency.
+	if u.consecutiveUnreplied > 0 {
+		backoffFactor := math.Pow(1.8, float64(u.consecutiveUnreplied))
+		if backoffFactor > 5.0 {
+			backoffFactor = 5.0
+		}
+		threshold *= backoffFactor
+	}
+
+	threshold = clamp(threshold, u.params.MinThreshold, u.params.MaxThreshold*5.0)
 
 	if u.value < threshold {
 		return false, ""
@@ -187,6 +220,11 @@ func (u *UrgeEngine) EvaluateTick(
 	u.value = 0
 	u.gameEventEnergy = 0
 	u.lastReason = ""
+	u.consecutiveUnreplied++
+	u.logger.Info("UrgeEngine proactive turn triggered",
+		zap.Int("consecutive_unreplied", u.consecutiveUnreplied),
+		zap.String("reason", reason),
+	)
 	return true, reason
 }
 

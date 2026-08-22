@@ -56,6 +56,9 @@ pytest tests/test_api_contract.py -v -k TestCompanionTools
 
 ## 说明
 
-- 本服务不 import 任何 NATS 库。提醒触发由 APScheduler 内部定时，
-  POST 到技术总监的 `http://127.0.0.1:8097/internal/trigger_reminder`。
+- 提醒触发由 APScheduler 内部定时，到期时把 ActionDecision 发布到 NATS 的
+  `agent.action.{channel}.{chat_id}`，由 Go Core 的 WebGateway / GotdAdapter
+  推送到 Web 页面或 Telegram（不再依赖不存在的 8097 内部端点）。
+- 服务已接入 `runner.py` 自动启动（端口 8096 就绪探测）；也可手动
+  `python -m services.companion.main` 单独启动。
 - `companion.db` 已被 `.gitignore` 的 `*.db` 规则覆盖，不会被提交。

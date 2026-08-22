@@ -94,6 +94,27 @@ async def main():
                 actions_count += 1
                 logger.info(f"Published Stream Sentence Chunk: '{act.text_content}' to chat_id={act.chat_id}")
 
+            # Post Stat & Mood update to companion_service (:8096)
+            try:
+                import time
+                import httpx
+                companion_url = get_config_val("infrastructure.companion_url", "http://127.0.0.1:8096")
+                is_proactive = (getattr(req, "trigger_type", "") == "proactive")
+                today_str = time.strftime("%Y-%m-%d")
+                emo_tag = (getattr(req, "current_emotion", "") or "HAPPY").upper()
+                stat_body = {
+                    "chat_id": req.chat_id,
+                    "date": today_str,
+                    "mood_score": 0.5,
+                    "emotion_tag": emo_tag,
+                    "is_proactive": is_proactive,
+                }
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    await client.post(f"{companion_url}/api/companion/stat", json=stat_body)
+                    logger.info(f"📊 Companion stat recorded for chat_id={req.chat_id} (date={today_str}, tag={emo_tag}, proactive={is_proactive})")
+            except Exception as e:
+                logger.debug(f"Failed to post companion stat update: {e}")
+
             # Publish Reasoning Completed
             completed_envelope = {
                 "id": req.event_id,

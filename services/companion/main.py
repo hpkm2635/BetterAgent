@@ -12,8 +12,9 @@ Feature Branch: feat/companion-tools
   POST /api/companion/query                 NL2SQL 陪伴数据查询
   GET  /api/companion/recommendations       规则推荐
 
-本服务不 import 任何 NATS 库；提醒触发由 APScheduler 内部定时，
-POST 到技术总监的 http://127.0.0.1:8097/internal/trigger_reminder。
+本服务不直接 import 任何 NATS 库；提醒触发由 APScheduler 内部定时，
+到期时把 ActionDecision 发布到 NATS 的 agent.action.{channel}.{chat_id}，
+由 Go Core 推送到 Web 页面或 Telegram。
 """
 import logging
 import time
@@ -21,15 +22,18 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 from services.companion.database import init_db, get_connection
 from services.companion.schedule_service import ScheduleService
 from services.companion.sql_agent import SQLAgent
 from services.companion.recommendation import get_recommendations
 
-logger = logging.getLogger("companion_service")
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Companion Tools Service", version="1.0.0")
+load_dotenv()
+
+logger = logging.getLogger("companion_service")
 
 # 启动时自动建表
 init_db()
@@ -38,14 +42,24 @@ schedule_service = ScheduleService()
 sql_agent = SQLAgent()
 
 
-@app.on_event("startup")
-async def _startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     schedule_service.start()
-
-
-@app.on_event("shutdown")
-async def _shutdown():
+    yield
     schedule_service.shutdown()
+
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Companion Tools Service", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ─── 数据模型 ──────────────────────────────────────────────────────────────
@@ -56,6 +70,7 @@ class StatPayload(BaseModel):
     mood_score: Optional[float] = None
     emotion_tag: Optional[str] = ""
     is_proactive: bool = False
+    topic: Optional[str] = None
 
 
 class ScheduleAddPayload(BaseModel):
@@ -112,6 +127,14 @@ def write_stat(payload: StatPayload):
                 "INSERT INTO mood_history (chat_id, ts, mood_score, emotion_tag) "
                 "VALUES (?, ?, ?, ?)",
                 (payload.chat_id, time.time(), payload.mood_score, payload.emotion_tag or ""),
+            )
+
+        # 写入 topic_log（若带了话题标签）
+        if payload.topic:
+            cur.execute(
+                "INSERT INTO topic_log (chat_id, ts, topic, source) "
+                "VALUES (?, ?, ?, 'assistant')",
+                (payload.chat_id, time.time(), payload.topic),
             )
 
         conn.commit()
