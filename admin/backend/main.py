@@ -62,6 +62,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333").rstrip("/")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "betteragent_memories")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 
 # Admin API access token. When set (non-empty), every /api/admin/* endpoint
 # requires a valid `X-Admin-Token: <secret>` or `Authorization: Bearer <secret>`
