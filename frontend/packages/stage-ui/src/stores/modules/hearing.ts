@@ -662,6 +662,8 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       audioStreamController.enqueue(pcm16.buffer.slice(0))
       onActivity?.()
       onPcmChunk?.(pcm16)
+      if (onPcmChunk)
+        console.debug('[Hearing Pipeline] Worklet produced PCM chunk (samples):', pcm16.length)
     }
 
     const mediaStreamSource = audioContext.createMediaStreamSource(stream)
