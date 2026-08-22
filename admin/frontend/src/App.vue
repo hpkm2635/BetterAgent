@@ -63,14 +63,14 @@ const chatId = ref(0)
 const sessions = ref([])
 const sessionsTotal = ref(0)
 
-const schedChatId = ref(0)
+const schedChatId = ref(1001)
 const schedules = ref([])
 const schedulesTotal = ref(0)
 const schedMsg = ref('')
 const schedAddMsg = ref('')
 const schedForm = reactive({
-  chat_id: '',
-  user_id: '',
+  chat_id: 1001,
+  user_id: 1,
   title: '',
   remind_at: '',
   note: '',
@@ -166,6 +166,64 @@ async function savePersona() {
   }
 }
 
+const deletePersonaTarget = ref(null)
+
+function askDeletePersona(persona) {
+  personaSaveMsg.value = ''
+  deletePersonaTarget.value = persona
+}
+
+async function confirmDeletePersona() {
+  const target = deletePersonaTarget.value
+  if (!target) return
+  try {
+    await api(`/api/admin/personas/${target.id}`, { method: 'DELETE' })
+    deletePersonaTarget.value = null
+    selectedId.value = ''
+    personaDetail.value = null
+    await loadPersonas()
+  } catch (e) {
+    personaSaveMsg.value = `删除失败: ${e.message}`
+    deletePersonaTarget.value = null
+  }
+}
+
+const showCreateModal = ref(false)
+const createMsg = ref('')
+const newPersona = reactive({
+  id: '',
+  name: '',
+  appearance: '',
+  base_prompt: '',
+  knowledge_scope: '日常陪伴',
+  forbidden_topics: '敏感及违规话题',
+})
+
+async function handleCreatePersona() {
+  createMsg.value = ''
+  if (!newPersona.id.trim() || !newPersona.name.trim()) {
+    createMsg.value = '请填写 ID 与 角色名称'
+    return
+  }
+  try {
+    await api('/api/admin/personas', {
+      method: 'POST',
+      body: JSON.stringify(newPersona),
+    })
+    createMsg.value = '创建成功 ✓'
+    showCreateModal.value = false
+    const createdId = newPersona.id.trim()
+    newPersona.id = ''
+    newPersona.name = ''
+    newPersona.appearance = ''
+    newPersona.base_prompt = ''
+    await loadPersonas()
+    await selectPersona(createdId)
+  } catch (e) {
+    createMsg.value = `创建失败: ${e.message}`
+  }
+}
+
 // ---- Users ----------------------------------------------------------------
 async function loadUsers() {
   error.value = ''
@@ -204,6 +262,9 @@ async function loadSessions() {
     const data = await api(`/api/admin/sessions?chat_id=${encodeURIComponent(chatId.value)}&limit=50&offset=0`)
     sessions.value = data.sessions || []
     sessionsTotal.value = data.total ?? 0
+    if (data.chat_id) {
+      chatId.value = data.chat_id
+    }
   } catch (e) {
     error.value = e.message
   }
@@ -239,6 +300,11 @@ async function addSchedule() {
     schedAddMsg.value = '请填写标题与提醒时间'
     return
   }
+  let formattedTime = schedForm.remind_at.trim().replace('T', ' ')
+  if (formattedTime.length === 16) {
+    formattedTime += ':00'
+  }
+
   try {
     const data = await api('/api/admin/schedules', {
       method: 'POST',
@@ -246,7 +312,7 @@ async function addSchedule() {
         chat_id: chatId,
         user_id: userId,
         title: schedForm.title.trim(),
-        remind_at: schedForm.remind_at.trim(),
+        remind_at: formattedTime,
         note: schedForm.note.trim(),
       }),
     })
@@ -445,7 +511,10 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>人设列表</h2>
-            <button class="btn" @click="loadPersonas">刷新</button>
+            <div class="row">
+              <button class="btn btn-primary" @click="showCreateModal = true">+ 新增人设</button>
+              <button class="btn" @click="loadPersonas">刷新</button>
+            </div>
           </div>
           <ul class="list">
             <li v-if="loading">加载中…</li>
@@ -486,6 +555,7 @@ onMounted(() => {
             </div>
             <div class="row field">
               <button class="btn btn-primary" @click="savePersona">保存修改</button>
+              <button v-if="selectedId !== 'catgirl' && !personaDetail.is_active" class="btn btn-danger" @click="askDeletePersona(personaDetail)">删除人设</button>
               <span v-if="personaSaveMsg" class="muted small">{{ personaSaveMsg }}</span>
             </div>
             <details class="field">
@@ -603,7 +673,7 @@ onMounted(() => {
           </div>
           <div class="field">
             <label>提醒时间</label>
-            <input v-model="schedForm.remind_at" class="input" placeholder="如：2026-08-20T09:00:00+08:00" />
+            <input v-model="schedForm.remind_at" type="datetime-local" class="input" />
           </div>
           <div class="field">
             <label>备注（可选）</label>
@@ -713,6 +783,59 @@ onMounted(() => {
         <div class="modal-actions">
           <button class="btn" @click="deleteTarget = null">取消</button>
           <button class="btn btn-danger" @click="confirmDelete">确认软删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新增人设弹窗 -->
+    <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
+      <div class="modal" style="max-width: 520px;">
+        <h3>新增人设模板</h3>
+        <div class="field">
+          <label>人设 ID（英文字母/数字/下划线）</label>
+          <input v-model="newPersona.id" class="input" placeholder="如：shizuku" />
+        </div>
+        <div class="field">
+          <label>角色名称</label>
+          <input v-model="newPersona.name" class="input" placeholder="如：Shizuku" />
+        </div>
+        <div class="field">
+          <label>外貌设定 (appearance)</label>
+          <textarea v-model="newPersona.appearance" class="textarea" rows="2" placeholder="如：黑发双马尾少女，身穿制服..."></textarea>
+        </div>
+        <div class="field">
+          <label>基础 Prompt (base_prompt)</label>
+          <textarea v-model="newPersona.base_prompt" class="textarea" rows="4" placeholder="如：你是一个性格温和、贴心的伴侣..."></textarea>
+        </div>
+        <div class="field">
+          <label>知识专业范围 (knowledge_scope)</label>
+          <input v-model="newPersona.knowledge_scope" class="input" placeholder="如：日常陪伴、情感倾听" />
+        </div>
+        <div class="field">
+          <label>禁忌话题 (forbidden_topics)</label>
+          <input v-model="newPersona.forbidden_topics" class="input" placeholder="如：违法违规话题" />
+        </div>
+        <p v-if="createMsg" class="muted small" style="margin-top: 8px;">{{ createMsg }}</p>
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button class="btn" @click="showCreateModal = false">取消</button>
+          <button class="btn btn-primary" @click="handleCreatePersona">创建人设</button>
+        </div>
+      </div>
+    </div>
+    <!-- 删除人设确认弹窗 -->
+    <div v-if="deletePersonaTarget" class="modal-overlay" @click.self="deletePersonaTarget = null">
+      <div class="modal">
+        <h3>确认删除人设</h3>
+        <p>
+          即将永久删除人设配置文件 <strong>{{ deletePersonaTarget.name }}</strong>
+          （id: {{ deletePersonaTarget.id }}.yaml）。
+        </p>
+        <p class="muted small">
+          删除后该 YAML 配置文件将被物理移除，请确认是否删除。
+        </p>
+        <div class="modal-actions">
+          <button class="btn" @click="deletePersonaTarget = null">取消</button>
+          <button class="btn btn-danger" @click="confirmDeletePersona">确认删除</button>
         </div>
       </div>
     </div>

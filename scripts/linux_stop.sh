@@ -26,7 +26,7 @@ fi
 
 if command -v docker >/dev/null 2>&1; then
     echo "Stopping Docker containers..."
-    docker compose -f deploy/docker-compose.yml stop
+    docker compose -f deploy/docker-compose.yml stop -t 5
 fi
 
 echo "=========================================="

@@ -601,13 +601,18 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 	// 1. Central State Machine Management for Stream Reasoning & Audio:
 	if b.csm != nil {
 		if !decision.IsFinal {
-			// Streaming in progress: Maintain STREAMING_TTS and extend watchdog
+			// Streaming in progress: Maintain STREAMING_TTS and extend watchdog (5s window)
 			b.csm.TransitionToChat(decision.ChatID, engine.StateStreamingTTS, "stream_reasoning_chunk")
-			b.csm.TouchWatchdogChat(decision.ChatID, 30*time.Second)
+			b.csm.TouchWatchdogChat(decision.ChatID, 5*time.Second)
 		} else {
 			// IsFinal == true: Text reasoning completed.
-			// Set 5-second smooth audio flush window instead of jumping immediately to IDLE
-			b.csm.TouchWatchdogChat(decision.ChatID, 5*time.Second)
+			if decision.TextContent == nil || *decision.TextContent == "" {
+				// Pure tool-only turn (no speech/text to flush): Transition immediately back to IDLE
+				b.csm.TransitionToChat(decision.ChatID, engine.StateIdle, "tool_only_turn_completed")
+			} else {
+				// Set 3-second smooth audio flush window instead of 30s timeout
+				b.csm.TouchWatchdogChat(decision.ChatID, 3*time.Second)
+			}
 			if b.urgeEngine != nil {
 				b.urgeEngine.OnTurnCompleted()
 			}
