@@ -508,7 +508,11 @@ def _redis_user_profiles(r: Any) -> Dict[int, Dict[str, Any]]:
                 # Redis profile keys are namespaced by WebGateway; fold back to
                 # the base id so they merge with companion.db / admin SQLite.
                 base_user_id = _from_web_chat_id(user_id)
+                # Ignore legacy mock test user IDs (e.g. 988776655443322, 555444333222111)
+                if str(base_user_id).startswith("9887766") or str(base_user_id).startswith("555444") or str(base_user_id).startswith("987654"):
+                    continue
                 profiles[base_user_id] = _normalize_profile(base_user_id, raw)
+
     except Exception as exc:
         logger.warning(f"Failed to scan Redis user profiles: {exc}")
     return profiles
