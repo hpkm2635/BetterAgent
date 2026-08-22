@@ -312,6 +312,10 @@ export class BetterAgentWSBridge {
     }
   }
 
+  public isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN
+  }
+
   public onTextDelta(cb: TextDeltaCallback): () => void {
     this.textDeltaListeners.add(cb)
     return () => this.textDeltaListeners.delete(cb)

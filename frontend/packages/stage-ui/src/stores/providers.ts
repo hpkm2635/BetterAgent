@@ -925,6 +925,55 @@ export const useProvidersStore = defineStore('providers', () => {
         },
       },
     },
+    'betteragent-iflytek-stt': {
+      id: 'betteragent-iflytek-stt',
+      category: 'transcription',
+      tasks: ['speech-to-text', 'automatic-speech-recognition', 'asr', 'stt', 'streaming-transcription'],
+      nameKey: 'settings.pages.providers.provider.betteragent-iflytek-stt.title',
+      name: 'BetterAgent iFLYTEK STT',
+      descriptionKey: 'settings.pages.providers.provider.betteragent-iflytek-stt.description',
+      description: 'Stream microphone audio to the BetterAgent backend iFLYTEK STT service.',
+      icon: 'i-solar:microphone-bold-duotone',
+      requiresCredentials: false,
+      defaultOptions: () => ({
+        language: 'zh-CN',
+        continuous: true,
+        interimResults: true,
+      }),
+      transcriptionFeatures: {
+        supportsGenerate: false,
+        supportsStreamOutput: true,
+        supportsStreamInput: true,
+      },
+      isAvailableBy: async () => true,
+      createProvider: async () => {
+        return {
+          transcription: () => ({
+            baseURL: 'about:blank',
+            model: 'betteragent-iflytek-stt',
+            fetch: async () => {
+              throw new Error('BetterAgent iFLYTEK STT does not use HTTP fetch; audio is streamed via WebSocket.')
+            },
+          }),
+        }
+      },
+      capabilities: {
+        listModels: async () => [
+          {
+            id: 'betteragent-iflytek-stt',
+            name: 'BetterAgent iFLYTEK STT',
+            provider: 'betteragent-iflytek-stt',
+            description: 'Stream microphone audio to the BetterAgent backend iFLYTEK STT service',
+            contextLength: 0,
+            deprecated: false,
+          },
+        ],
+      },
+      validators: {
+        chatPingCheckAvailable: false,
+        validateProviderConfig: async () => ({ valid: true, errors: [], reason: '' }),
+      },
+    },
     'browser-web-speech-api': {
       id: 'browser-web-speech-api',
       category: 'transcription',

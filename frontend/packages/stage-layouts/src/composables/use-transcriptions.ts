@@ -1,5 +1,6 @@
 import type { MaybeRefOrGetter, Ref } from 'vue'
 
+import { betterAgentWSBridge } from '@proj-airi/stage-ui/services/betteragent-ws'
 import { useHearingSpeechInputPipeline, useHearingStore } from '@proj-airi/stage-ui/stores/modules/hearing'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
@@ -82,19 +83,17 @@ export function useTranscriptions(options: TranscriptionOptions) {
       hearingConfigured: hearingConfigured.value,
     }, { source: 'useTranscriptions' })
 
-    // Auto-configure Web Speech API as default if no provider is configured
+    // Auto-configure BetterAgent iFLYTEK STT as default if no provider is configured.
+    // Falls back to Web Speech API when the backend bridge is not connected.
     if (!hearingConfigured.value) {
-      console.info('No transcription provider configured. Auto-configuring Web Speech API as default', { source: 'useTranscriptions' })
-      // Check if Web Speech API is available in the browser
-      // Web Speech API is NOT available in Electron (stage-tamagotchi) - it requires Google's embedded API keys
-      // which are not available in Electron, causing it to fail at runtime
+      console.info('No transcription provider configured. Auto-configuring BetterAgent iFLYTEK STT as default', { source: 'useTranscriptions' })
+
       const isWebSpeechAvailable = typeof window !== 'undefined'
         && !toValue(isStageTamagotchi) // Explicitly exclude Electron
         && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)
 
       if (!isWebSpeechAvailable) {
-        // TODO: also propagate to user
-        const errorMsg = 'Web Speech API is not available and no transcription provider is configured. Please go to Settings > Modules > Hearing to configure a transcription provider. '
+        const errorMsg = 'Web Speech API is not available and no transcription provider is configured. Please go to Settings > Modules > Hearing to configure a transcription provider.'
         console.error(errorMsg, 'Browser support:', {
           hasWindow: typeof window !== 'undefined',
           hasWebkitSpeechRecognition: typeof window !== 'undefined' && 'webkitSpeechRecognition' in window,
@@ -104,24 +103,20 @@ export function useTranscriptions(options: TranscriptionOptions) {
         return
       }
 
-      // Initialize the provider in the providers store first
-      try {
-        providersStore.initializeProvider('browser-web-speech-api')
-        hearingStore.activeTranscriptionProvider = 'browser-web-speech-api'
-      }
-      catch (err) {
-        console.warn('Error initializing Web Speech API provider:', err, { source: 'useTranscriptions' })
-      }
-      // Wait for reactivity to update
+      providersStore.initializeProvider('betteragent-iflytek-stt')
+      providersStore.initializeProvider('browser-web-speech-api')
       await nextTick()
 
-      // Verify the provider was set to Web Speech API
-      if (hearingStore.activeTranscriptionProvider !== 'browser-web-speech-api') {
-        console.error('Failed to set Web Speech API as default provider', { source: 'useTranscriptions' })
-        isListening.value = false
-        return
+      // Prefer backend iFLYTEK STT when the WebSocket bridge is connected;
+      // otherwise fall back to the browser-native Web Speech API.
+      if (betterAgentWSBridge.isConnected()) {
+        hearingStore.activeTranscriptionProvider = 'betteragent-iflytek-stt'
+        console.info('BetterAgent iFLYTEK STT configured as default provider', { source: 'useTranscriptions' })
       }
-      console.info('Web Speech API configured as default provider', { source: 'useTranscriptions' })
+      else {
+        hearingStore.activeTranscriptionProvider = 'browser-web-speech-api'
+        console.info('BetterAgent WebSocket not connected; falling back to Web Speech API as default provider', { source: 'useTranscriptions' })
+      }
     }
 
     // Check if streaming input is supported
