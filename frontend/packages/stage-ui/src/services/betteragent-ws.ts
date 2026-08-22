@@ -41,6 +41,42 @@ export interface EmotionalStatePayload {
 }
 export type EmotionStateCallback = (state: EmotionalStatePayload, action?: string) => void
 
+const STORAGE_CHAT_ID_KEY = 'betteragent:web:chat_id'
+
+export function resolveStableChatId(): number {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BETTERAGENT_USER_ID) {
+    const envId = Number(import.meta.env.VITE_BETTERAGENT_USER_ID)
+    if (!Number.isNaN(envId) && envId > 0)
+      return envId
+  }
+
+  if (typeof window !== 'undefined') {
+    const urlParams = new URLSearchParams(window.location.search)
+    const queryChatId = urlParams.get('chat_id')
+    if (queryChatId) {
+      const parsed = Number(queryChatId)
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        localStorage.setItem(STORAGE_CHAT_ID_KEY, String(parsed))
+        return parsed
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    const stored = localStorage.getItem(STORAGE_CHAT_ID_KEY)
+    if (stored) {
+      const parsed = Number(stored)
+      if (!Number.isNaN(parsed) && parsed > 0)
+        return parsed
+    }
+  }
+
+  const generated = Math.floor(1000000 + Math.random() * 9000000)
+  if (typeof window !== 'undefined')
+    localStorage.setItem(STORAGE_CHAT_ID_KEY, String(generated))
+  return generated
+}
+
 // Binary Audio Frame Protocol
 function encodeBinaryAudioFrame(pcm: Int16Array): ArrayBuffer {
   const buf = new ArrayBuffer(20 + pcm.byteLength)
@@ -83,9 +119,18 @@ export class BetterAgentWSBridge {
   private gameStateListeners: Set<GameStateCallback> = new Set()
 
   constructor(serverUrl = 'ws://localhost:8080/ws') {
-    if (!serverUrl.includes('chat_id=')) {
-      const defaultChatID = Math.floor(1000000 + Math.random() * 9000000)
-      serverUrl += (serverUrl.includes('?') ? '&' : '?') + `chat_id=${defaultChatID}`
+    const existingChatId = (() => {
+      try {
+        return Number(new URL(serverUrl).searchParams.get('chat_id'))
+      }
+      catch {
+        return Number.NaN
+      }
+    })()
+
+    if (Number.isNaN(existingChatId) || existingChatId === 0) {
+      const stableChatId = resolveStableChatId()
+      serverUrl += (serverUrl.includes('?') ? '&' : '?') + `chat_id=${stableChatId}`
     }
 
     if (!serverUrl.includes('token=')) {

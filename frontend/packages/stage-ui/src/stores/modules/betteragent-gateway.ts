@@ -4,6 +4,7 @@ import { betterAgentWSBridge } from '../../services/betteragent-ws'
 import { useChatStreamStore } from '../chat/stream-store'
 import { useChatSessionStore } from '../chat/session-store'
 import { useSTS2GameStateStore } from './sts2-game-state'
+import { resolveStableChatId } from '../../services/betteragent-ws'
 
 import type { EmotionalStatePayload } from '../../services/betteragent-ws'
 
@@ -66,14 +67,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
       return bridgeChatId
     }
 
-    if (typeof window !== 'undefined') {
-      const urlParams = new URLSearchParams(window.location.search)
-      const queryChatId = urlParams.get('chat_id')
-      if (queryChatId && !Number.isNaN(Number(queryChatId))) {
-        currentChatId.value = Number(queryChatId)
-        return currentChatId.value
-      }
+    const stableChatId = resolveStableChatId()
+    if (stableChatId) {
+      currentChatId.value = stableChatId
+      return currentChatId.value
     }
+
     return null
   }
 
