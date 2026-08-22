@@ -371,3 +371,7 @@ export class BetterAgentWSBridge {
 }
 
 export const betterAgentWSBridge = new BetterAgentWSBridge()
+
+if (typeof window !== 'undefined') {
+  (window as any).betterAgentWSBridge = betterAgentWSBridge
+}

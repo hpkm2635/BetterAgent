@@ -743,20 +743,26 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
     // Special handling for BetterAgent iFLYTEK STT
     if (session.providerId === 'betteragent-iflytek-stt') {
       try {
+        console.info('[Hearing Pipeline] Sending user.speech_end via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
         betterAgentWSBridge.sendSpeechEnd()
         if (abort)
           session.audioStreamController?.error(new DOMException('Aborted', 'AbortError'))
         else
           session.audioStreamController?.close()
       }
-      catch {}
+      catch (err) {
+        console.warn('[Hearing Pipeline] Error during BetterAgent iFLYTEK STT cleanup:', err)
+      }
 
       await tryCatch(() => {
         session.mediaStreamSource.disconnect()
         session.workletNode.port.onmessage = null
         session.workletNode.disconnect()
       })
-      await tryCatch(() => session.audioContext.close())
+      await tryCatch(() => {
+        if (session.audioContext.state !== 'closed')
+          session.audioContext.close()
+      })
 
       if (session.idleTimer)
         clearTimeout(session.idleTimer)
@@ -886,7 +892,12 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
         options?.sampleRate ?? DEFAULT_SAMPLE_RATE,
         () => bumpIdle(),
         (pcm16) => {
-          betterAgentWSBridge.sendAudioChunk(pcm16)
+          if (betterAgentWSBridge.isConnected()) {
+            betterAgentWSBridge.sendAudioChunk(pcm16)
+          }
+          else {
+            console.warn('[Hearing Pipeline] BetterAgentWSBridge not connected, dropping audio chunk')
+          }
         },
       )
 
@@ -894,6 +905,7 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
         await session.audioContext.resume()
 
       // Tell backend to start listening
+      console.info('[Hearing Pipeline] Sending user.speech_start via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
       betterAgentWSBridge.sendSpeechStart()
 
       // Drain the internal audio stream so the worklet's enqueue calls do not
