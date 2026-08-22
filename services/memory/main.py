@@ -4,6 +4,7 @@ import logging
 import os
 import nats
 from dotenv import load_dotenv
+from pathlib import Path
 from shared.subjects import (
     SUBJECT_ENRICH_CONTEXT_REQ,
     SUBJECT_INBOUND_MESSAGE,
@@ -20,7 +21,8 @@ from shared.logger import setup_logger
 from shared.config_loader import get_config_val
 from services.memory.memory_hub import MemoryHub
 
-load_dotenv()
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+load_dotenv(REPO_ROOT / ".env")
 logger = setup_logger("memory_service")
 
 

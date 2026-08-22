@@ -43,7 +43,7 @@ logger = logging.getLogger("admin_backend")
 # Load REDIS_URL / REDIS_PASSWORD etc. from a local .env when present.
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(REPO_ROOT / ".env")
 except Exception:  # python-dotenv is optional at runtime
     pass
 
@@ -83,6 +83,30 @@ PERSONA_ALLOWED_FIELDS = frozenset({
 SESSION_KEY_TEMPLATES = ("short_term:{chat_id}", "betteragent:short_term:{chat_id}")
 # 会话/短期记忆 key 前缀，用于在 Redis 中枚举出所有聊天历史。
 SHORT_TERM_KEY_PREFIXES = ("short_term:", "betteragent:short_term:")
+
+_WEB_NAMESPACE_OFFSET = 9_000_000_000_000_000
+
+
+def _to_web_chat_id(chat_id: int) -> int:
+    """Mirror core/webgateway WebNamespaceOffset for Redis/Qdrant lookups.
+
+    WebGateway folds every explicit/random web chat_id into the 9e15+
+    namespace; memory service and Go core store data under that namespaced id.
+    Admin endpoints receive the base id from the frontend, so we re-apply the
+    offset before hitting storage.
+    """
+    if chat_id <= 0:
+        return chat_id
+    if chat_id < _WEB_NAMESPACE_OFFSET:
+        return chat_id + _WEB_NAMESPACE_OFFSET
+    return chat_id
+
+
+def _from_web_chat_id(chat_id: int) -> int:
+    """De-namespace a WebGateway chat_id for display/frontend use."""
+    if chat_id >= _WEB_NAMESPACE_OFFSET:
+        return chat_id - _WEB_NAMESPACE_OFFSET
+    return chat_id
 
 _VALID_PERSONA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -480,7 +504,10 @@ def _redis_user_profiles(r: Any) -> Dict[int, Dict[str, Any]]:
                 except Exception as exc:
                     logger.warning(f"Failed to read Redis key {key}: {exc}")
                     continue
-                profiles[user_id] = _normalize_profile(user_id, raw)
+                # Redis profile keys are namespaced by WebGateway; fold back to
+                # the base id so they merge with companion.db / admin SQLite.
+                base_user_id = _from_web_chat_id(user_id)
+                profiles[base_user_id] = _normalize_profile(base_user_id, raw)
     except Exception as exc:
         logger.warning(f"Failed to scan Redis user profiles: {exc}")
     return profiles
@@ -662,8 +689,9 @@ def list_sessions(
             for k in r.scan_iter(f"{prefix}*"):
                 try:
                     cid = int(k.split(":")[-1])
-                    if cid not in active_chats:
-                        active_chats.append(cid)
+                    base_cid = _from_web_chat_id(cid)
+                    if base_cid not in active_chats:
+                        active_chats.append(base_cid)
                 except ValueError:
                     pass
     except Exception:
@@ -673,9 +701,10 @@ def list_sessions(
     if not chat_id:
         chat_id = active_chats[0] if active_chats else 1001
 
+    storage_chat_id = _to_web_chat_id(chat_id)
     items: list = []
     for template in SESSION_KEY_TEMPLATES:
-        key = template.format(chat_id=chat_id)
+        key = template.format(chat_id=storage_chat_id)
         try:
             raw = r.lrange(key, 0, -1)
         except Exception as exc:
@@ -716,9 +745,10 @@ def list_session_overview():
         try:
             for key in r.scan_iter(f"{prefix}*"):
                 chat_id = _chat_id_from_session_key(key)
-                if chat_id is None or chat_id in seen:
+                base_chat_id = _from_web_chat_id(chat_id) if chat_id is not None else None
+                if base_chat_id is None or base_chat_id in seen:
                     continue
-                seen.add(chat_id)
+                seen.add(base_chat_id)
 
                 count = 0
                 preview = ""
@@ -740,7 +770,9 @@ def list_session_overview():
                     logger.warning(f"Failed to summarize session key {key}: {exc}")
 
                 sessions.append({
-                    "chat_id": chat_id,
+                    # Display the base id so the frontend stays consistent with
+                    # the chat_id it knows (localStorage / URL query param).
+                    "chat_id": _from_web_chat_id(chat_id),
                     "message_count": count,
                     "last_timestamp": last_timestamp,
                     "preview": preview,
@@ -765,7 +797,8 @@ def _chat_id_from_session_key(key: str) -> Optional[int]:
 def _read_short_term_list(user_id: int, r: Any) -> List[Dict[str, Any]]:
     """Read one user's short-term messages, trying both key spellings."""
     items: List[Dict[str, Any]] = []
-    for key in (f"betteragent:short_term:{user_id}", f"short_term:{user_id}"):
+    storage_user_id = _to_web_chat_id(user_id)
+    for key in (f"betteragent:short_term:{storage_user_id}", f"short_term:{storage_user_id}"):
         try:
             raw = r.lrange(key, 0, -1)
         except Exception as exc:
@@ -811,10 +844,11 @@ def clear_short_term_memory(user_id: int = Query(...)):
     if r is None:
         return _error(503, "redis unavailable")
 
+    storage_user_id = _to_web_chat_id(user_id)
     keys = (
-        f"betteragent:short_term:{user_id}",
-        f"short_term:{user_id}",
-        f"betteragent:consolidate_cursor:{user_id}",
+        f"betteragent:short_term:{storage_user_id}",
+        f"short_term:{storage_user_id}",
+        f"betteragent:consolidate_cursor:{storage_user_id}",
     )
     for key in keys:
         try:
@@ -834,11 +868,12 @@ def get_long_term_memory(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     try:
+        storage_user_id = _to_web_chat_id(user_id)
         with httpx.Client(timeout=5.0, trust_env=False) as client:
             resp = client.post(
                 f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
                 json={
-                    "filter": {"must": [{"key": "user_id", "match": {"value": int(user_id)}}]},
+                    "filter": {"must": [{"key": "user_id", "match": {"value": int(storage_user_id)}}]},
                     "limit": limit,
                     "offset": offset,
                     "with_payload": True,
