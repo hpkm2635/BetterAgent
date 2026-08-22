@@ -698,9 +698,13 @@ def list_sessions(
     except Exception:
         pass
 
-    # If chat_id is 0 or unspecified, pick the first active_chat (or 1001 default)
+    # Filter out obvious mock test IDs (e.g. 555444333222111, 987654321012345)
+    real_chats = [c for c in active_chats if not (str(c).startswith("555444") or str(c).startswith("987654"))]
+
+    # If chat_id is 0 or unspecified, pick the first real active_chat (or 1001 default)
     if not chat_id:
-        chat_id = active_chats[0] if active_chats else 1001
+        chat_id = real_chats[0] if real_chats else (active_chats[0] if active_chats else 1001)
+
 
     storage_chat_id = _to_web_chat_id(chat_id)
     items: list = []
