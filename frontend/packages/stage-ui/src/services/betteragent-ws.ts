@@ -33,6 +33,7 @@ export interface EmotionalStatePayload {
   valence: number
   arousal: number
   energy: number
+  satiety: number
   social_battery: number
   affection: number
   is_jealous: boolean
