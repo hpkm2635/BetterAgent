@@ -582,8 +582,6 @@ classDiagram
     EmotionalState --> UrgeEngine : Arousal/Energy 动态调节触发阈值
 ```
 
-```
-
 ---
 
 ## 6. 多渠道适配器扩展规范与 Better Agent 前端架构
@@ -681,15 +679,15 @@ STT 识别本身仍通过 `agent.inbound_message` 进入同一推理链路。
 
 为了在大型项目中保证跨组员协作互不干扰，Python 服务层拆分为**核心认知与记忆引擎**与**团队独立微服务**：
 
-| 微服务名称 | 目录路径 | 监听端口 | 负责人 | 核心职责与解耦方式 |
-| :--- | :--- | :--- | :--- | :--- |
-| **Cognitive Service** | `services/cognitive/` | `:8091` / `:8092` | 核心 / 褚裕禄 | LLM 推理、Tool 调度、TTS 语音与 STT 转写生成 |
-| **Memory Service** | `services/memory/` | — (Redis/Qdrant) | 核心 / 褚裕禄 | Redis 短时缓存、Qdrant 向量检索、UserProfile 画像 |
-| **Game Watcher Service**| `services/game_watcher/`| — (Polling) | 核心 / 褚裕禄 | Slay the Spire 2 游戏轮询与自动回合触发 |
-| **Campus KB Service** | `services/campus_kb/` | `:8093` (HTTP) | 冯文哲 | 校园 FAQ 文本切片、向量入库与 `/api/kb/search` 检索 |
-| **Admin Backend** | `admin/backend/` | `:8094` (REST) | 谢自立 | B 端控制台：人设 YAML PATCH、用户画像、会话历史/概览、短期/长期记忆管理 |
-| **Admin Frontend** | `admin/frontend/` | `:8095` (Web Dev)| 谢自立 | Vue 3 + Element Plus 独立后台管理界面 |
-| **Companion Service** | `services/companion/` | `:8096` (HTTP) | 张劭哲 | SQLite 陪伴统计、APScheduler 日程提醒与 NL2SQL 查询 |
+| 微服务名称 | 目录路径 | 监听端口 | 负责人 | 状态 | 核心路由 / 职责 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Cognitive Service** | `services/cognitive/` | `:8091` / `:8092` | 核心 / 褚裕禄 | ✅ 就绪 | LLM 推理、Tool 调度、TTS/STT 流式生成 |
+| **Memory Service** | `services/memory/` | — (Redis/Qdrant) | 核心 / 褚裕禄 | ✅ 就绪 | Redis 短时缓存、Qdrant 向量检索、UserProfile 画像 |
+| **Game Watcher Service**| `services/game_watcher/`| — (Polling) | 核心 / 褚裕禄 | ✅ 就绪 | Slay the Spire 2 游戏轮询与自动回合触发 |
+| **Campus KB Service** | `services/campus_kb/` | `:8093` (HTTP) | 冯文哲 | ✅ 就绪 | `POST /api/kb/ingest`（向量入库）、`POST /api/kb/search`（语义检索） |
+| **Admin Backend** | `admin/backend/` | `:8094` (REST) | 谢自立 | ✅ 就绪 | 人设 CRUD、用户管理、会话查看、记忆管理、日程/KB 代理、Config PATCH（共 27 路由） |
+| **Admin Frontend** | `admin/frontend/` | `:8095` (Web Dev)| 谢自立 | ✅ 就绪 | Vue 3 + Element Plus 独立后台管理界面（`dist/` 已构建） |
+| **Companion Service** | `services/companion/` | `:8096` (HTTP) | 张劭哲 | ✅ 就绪 | 日程 CRUD、`POST /api/companion/query`（NL2SQL）、`GET /api/companion/recommendations`（任务推荐） |
 
 ### 7.1 Campus KB 校园知识库交互数据流 (Campus KB RAG Flow)
 
@@ -724,7 +722,77 @@ sequenceDiagram
 
 ---
 
-## 8. 防腐化策略 (Documentation Maintenance Rules)
+## 8. Admin Panel 操作时序 (Admin Panel Interaction Sequence)
+
+B 端管理控制台（`admin/frontend/` → `admin/backend/:8094`）与核心存储层的交互时序，覆盖人设 PATCH 热重载、会话查看与知识库管理三条关键路径：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as 管理员 (Admin Web :8095)
+    participant AR as Admin REST (:8094)
+    participant YAML as Persona YAML 磁盘
+    participant GC as Go Core (WebGateway)
+    participant NATS as NATS Message Bus
+    participant PL as PersonaLoader (Python In-Memory)
+    participant Redis as Redis (短时记忆)
+    participant Qdrant as Qdrant (长期记忆)
+    participant KB as Campus KB (:8093)
+    participant Comp as Companion (:8096)
+
+    rect rgb(240, 248, 255)
+    note right of Admin: 路径 1：人设 PATCH 热重载
+    Admin->>AR: PATCH /api/admin/personas/{id} (字段白名单: name/appearance/base_prompt...)
+    AR->>YAML: ruamel 圆形读写 (保留注释与格式)
+    AR->>GC: WebSocket 下发 admin.persona_update 帧
+    GC->>NATS: Publish "agent.persona.update"
+    NATS-->>PL: Notify "agent.persona.update"
+    PL->>PL: 失效 TTL 缓存，重新从磁盘加载 YAML
+    AR-->>Admin: 200 OK {id, name, updated_fields}
+    end
+
+    rect rgb(255, 245, 238)
+    note right of Admin: 路径 2：会话记录查看 (Redis)
+    Admin->>AR: GET /api/admin/sessions?chat_id={id}&limit=50
+    AR->>Redis: LRANGE short_term:{chat_id} 0 49
+    Redis-->>AR: 返回 JSON 对话历史条目
+    AR-->>Admin: 200 OK [{role, content, timestamp}...]
+    end
+
+    rect rgb(240, 255, 240)
+    note right of Admin: 路径 3：长期记忆管理 (Qdrant)
+    Admin->>AR: GET /api/admin/memory/long-term?chat_id={id}
+    AR->>Qdrant: REST GET /collections/betteragent_memories/points/scroll
+    Qdrant-->>AR: 返回向量记忆点列表
+    AR-->>Admin: 200 OK [{id, payload, score}...]
+    Admin->>AR: DELETE /api/admin/memory/long-term/{point_id}
+    AR->>Qdrant: DELETE /points (point_id)
+    AR-->>Admin: 200 OK
+    end
+
+    rect rgb(255, 248, 220)
+    note right of Admin: 路径 4：知识库管理 (Campus KB 代理)
+    Admin->>AR: POST /api/admin/kb/ingest {content, metadata}
+    AR->>KB: HTTP POST /api/kb/ingest (透传)
+    KB-->>AR: 200 OK {ingested_count}
+    AR-->>Admin: 200 OK
+    end
+
+    rect rgb(248, 240, 255)
+    note right of Admin: 路径 5：日程提醒管理 (Companion 代理)
+    Admin->>AR: GET /api/admin/schedules?chat_id={id}
+    AR->>Comp: HTTP GET /api/schedule/list?chat_id={id}
+    Comp-->>AR: 200 OK [{id, title, remind_at}...]
+    AR-->>Admin: 200 OK
+    Admin->>AR: DELETE /api/admin/schedules/{schedule_id}
+    AR->>Comp: HTTP DELETE /api/schedule/{schedule_id}
+    AR-->>Admin: 200 OK
+    end
+```
+
+---
+
+## 9. 防腐化策略 (Documentation Maintenance Rules)
 
 为了保持设计资产永不过期，开发过程中须遵循以下原则：
 

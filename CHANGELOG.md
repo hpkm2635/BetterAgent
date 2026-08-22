@@ -7,70 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] - 2026-08-18
+## [Unreleased]
 
-### Added & Refactored (Production Debt Remediation — Sprints 1 ~ 7)
-- **Memory Service Modernization (Sprint 1 - Storage & Pipelines)**:
-  - Upgraded Redis operations to `redis.asyncio` async connection pooling (`short_term_buffer.py`).
-  - Implemented `AsyncQdrantClient` vector store in `services/memory/vector_store.py` with multi-provider embedding fallback (OpenAI/Gemini/HashedNgram) and Ebbinghaus decay scoring.
-  - Implemented active memory consolidation in `services/memory/consolidator.py` writing LLM-extracted facts to vector store.
-  - Added Redis Hash persistence for `user_profile.py` user facts.
-- **Context Budget & Fault Tolerance (Sprint 2)**:
-  - Added CJK-weighted character token estimation (`estimate_tokens`) in `token_budget.py` to prevent token overflow on Asian languages.
-  - Narrowed `SentenceSegmenter` JSON barrier regex to prevent false-positive suppression of valid text containing `{`.
-  - Enforced `is_final=True` fallback payloads in `stream_reasoning_loop` exception handlers to unblock Go Core CSM watchdogs.
-- **Campus KB Integration (Sprint 3)**:
-  - Added concurrent `asyncio.gather` context enrichment for personal RAG, Campus KB (`:8093`), and User Profile in `memory_hub.py`.
-  - Added service readiness probes and supervisor launch for `campus_kb_service` in `runner.py`.
-- **Self-Memory & Persona Cleanup (Sprint 4)**:
-  - Integrated `AgentSelfMemory` tracking in `memory_hub.py` for post-action reflection.
-  - Replaced hardcoded persona names with config injection `get_config_val("persona.default_user_name", "主人")`.
-- **LLM Provider Interface Normalization (Sprint 5)**:
-  - Defined `generate_stream()` abstract contract and `supports_vision()` capability hooks in `BaseLLMProvider`.
-  - Refactored `ClaudeProvider` to full `anthropic.AsyncAnthropic` streaming tool-calling engine with API key safety warnings and ID correlation.
-  - Removed thread pool blocking `loop.run_in_executor` in `GeminiProvider.generate()` by delegating to `generate_stream()`.
-- **MCP Subprocess Lifecycle & Anti-Hang (Sprint 6)**:
-  - Added background `presenter_sweep_loop` in `main.py` calling `sweep_idle()` every 60s to prevent orphaned PPT/VSCode child process leaks.
-  - Added `asyncio.wait_for` timeout guards to `McpSession.start()` and `McpSession.call_tool()` preventing infinite coroutine stalls.
-- **Prompt Optimization & Token Reduction (Sprint 7)**:
-  - Added TTL in-memory caching to `PersonaLoader` eliminating per-request YAML file disk I/O.
-  - Optimized `PromptBuilder.build_system_prompt()` to strip non-game memory/KB sections during `game_turn` (saving 100-500 tokens/turn).
-  - Compacted `agent_self_events` to retain latest 1-2 detailed actions while aggregating historical actions into counter summaries (saving 60-80% tokens).
-- **Persona Real-Time Control Panel & Emotion HUD (Sprint A - Frontend & Hot-Reload)**:
-  - Added 4-Tab Persona Control Panel UI (`/settings/persona`) for online System Prompt editing, basic identity settings, tsundere/clingy weight compilation, and interactive boundaries.
-  - Implemented dual-channel update pipeline: Admin REST API (`:8094`) HTTP PATCH for disk YAML persistence + WebSocket `admin.persona_update` frame to Go Core, publishing NATS `agent.persona.update` for zero-downtime Python `PersonaLoader` in-memory hot reload.
-  - Added `EmotionHUDWidget.vue` floating widget displaying live 3D VAD metrics, Affection, Energy, Social Battery, and Jealousy status driven by enriched `AgentEmotionPayload` WebSocket frames.
-  - Added prompt compilation header stripping (`stripCompiledHeader`) to guarantee 100% idempotency across repeated save operations.
-  - Moved `VisionPrivacyIndicator.vue` to top-left (`left: 16px`) to resolve UI button overlap.
-- **Supervisor & Admin Panel Integration (`runner.py`)**:
-  - Integrated Admin Backend REST Service (`:8094`) and Admin Frontend Vue Service (`:8095`) into `runner.py` process supervisor with cross-platform CLI discovery (`find_cli_cmd` / `shutil.which`).
-  - Added stale port listener cleanup for `:8094`, `:8095`, and `:5173`.
-- **Companion Schedule & Memory Integration (`services/companion/`)**:
-  - Integrated `ScheduleHUDWidget.vue` floating schedule widget and `Schedule.vue` action button in `stage-web`.
-  - Added `companion_tool.py` enabling Cognitive LLM to create, query, and manage user reminders via HTTP REST API (`:8096`).
-  - Added `schedule-api.ts` and `memory-api.ts` for frontend memory inspection and reminder management.
-- **Gotd MTProto Headless Handling (`core/internal/gotd/`)**:
-  - Implemented `HasSessionFile()` check in Go Core `gotd/adapter.go` to gracefully skip MTProto login when `gotd.session.json` is absent.
-- **Frontend Build Tooling & Robustness (`frontend/`)**:
-  - Upgraded Vite build engine dependencies across `stage-web` and Admin Frontend services.
-  - Added empty `providerId` guards in `MobileInteractiveArea.vue` and `ChatArea.vue` preventing console errors in WebSocket bridge mode.
-- **API Contract & Team Subservice Boundary (`docs/API-CONTRACT.md`)**:
-  - Defined rigid HTTP REST interface specs and port assignments for Campus KB (`:8093`), Admin Panel (`:8094`/`:8095`), and Companion Tool Service (`:8096`).
-  - Added automated integration tests (`tests/test_api_contract.py`) for PR merge gating.
-- **Slay the Spire 2 Game Perception & Autonomous Gameplay (`services/game_watcher`)**:
-  - Implemented `sts2_poller.py` for turn-based state sync and autonomous `game_turn` triggering.
-  - Added Go Core HTTP/WS bridge (`core/internal/webgateway/game_state_handler.go`) for real-time game state streaming to `stage-web`.
-  - Integrated `Sts2HttpClient` and `sts2_action_tool` with multi-card batch execution optimization in Python Cognitive Service.
-  - Added `frontend/apps/stage-web/src/stores/modules/sts2-game-state.ts` Vue Pinia store for live game HUD overlay.
+### Added
+- **iFLYTEK 科大讯飞 STT Provider (`services/stt/`)**：
+  - 新增 iFLYTEK WebSocket 流式 STT Provider，支持从浏览器 ScriptProcessorNode 采集 PCM 并通过 WebSocket 推送至后端实时转写。
+  - 缺少 iFLYTEK 凭据时自动回退至 FunASR 离线 Provider。
+- **MCP Presenter 会话复活 (`services/mcp_ppt/`)**：
+  - 优化 presenter_manager 会话重激活逻辑与 Win32 窗口 Docking 机制。
 
-### Changed
-- **Cognitive Prompt Protocol & Safety Preamble (`services/cognitive/prompt_builder.py`)**:
-  - Hardened system prompt against prompt injection and directory traversal attacks on media parameters.
-  - Enhanced chain-of-thought protocol `<thought>` parsing and stage direction filtering in `cognitive_engine.py`.
-- **NATS Subject-Graded Action Routing (`shared/subjects.py` & `core/internal/bus/nats_bus.go`)**:
-  - Refactored `agent.action.{channel}.{chat_id}` subject routing to prevent cross-channel message leakage between Web and Telegram.
+### Fixed
+- **Admin 用户/会话列表过滤**：过滤遗留 mock 测试用 `chat_id` 与用户画像，避免测试数据污染 B 端控制台。
+- **STT AudioWorklet**：改用 ScriptProcessorNode 规避 iFLYTEK 下 AudioWorklet 采集无声问题；添加 AudioContext 恢复状态日志。
+- **Go Core WebGateway**：PCM 边缘平滑处理 + 真正 GPT-SoVITS 分块流式推送 + generation_id 同步修复。
 
 ---
+
+## [v1.8.0] - 2026-08-22
+
+### Added (Supervisor、Admin Panel & Companion 全面集成)
+- **Supervisor & Admin Panel Integration (`runner.py`)**:
+  - 集成 Admin Backend REST Service (`:8094`) 与 Admin Frontend Vue Service (`:8095`) 到 `runner.py` 进程守护，支持跨平台 CLI 路径探测（`find_cli_cmd` / `shutil.which`）。
+  - 新增 `:8094`、`:8095`、`:5173` 端口占用的启动前清理逻辑。
+- **Companion Schedule & Memory Integration (`services/companion/`)**:
+  - 集成 `ScheduleHUDWidget.vue` 浮动日程小组件与 `Schedule.vue` 操作按钮至 `stage-web`。
+  - 新增 `companion_tool.py`，使 Cognitive LLM 可通过 HTTP 调用 `:8096` 管理用户日程。
+  - 新增 `schedule-api.ts` 与 `memory-api.ts`，支持前端直接访问记忆与提醒接口。
+- **Gotd MTProto 无会话文件优雅处理 (`core/internal/gotd/`)**:
+  - 实现 `HasSessionFile()` 检查，`gotd.session.json` 不存在时跳过 MTProto 登录，避免首次启动 panic。
+- **API Contract & Team Subservice Boundary (`docs/API-CONTRACT.md`)**:
+  - 定义 Campus KB (`:8093`)、Admin Panel (`:8094`/`:8095`)、Companion (`:8096`) 的 HTTP REST 接口规范与端口隔离策略。
+  - 新增自动化集成测试 (`tests/test_api_contract.py`) 作为 PR 合并门控。
+
+### Fixed
+- **Frontend Build**：升级 `stage-web` 与 Admin Frontend 的 Vite 构建依赖。
+- **MobileInteractiveArea.vue / ChatArea.vue**：新增空 `providerId` 防护，避免 WebSocket 桥模式下控制台报错。
+- **Admin Backend (`admin/backend/main.py`)**：Qdrant API Key 头部、WebGateway chat_id 命名空间、用户画像 key 命名空间对齐修复；补充模块级 `QDRANT_API_KEY` 变量定义。
+- **Memory Service**：强制 Redis RESP2 协议兼容旧版 Windows Redis Server。
+
+---
+
+## [v1.7.0] - 2026-08-20
+
+### Added (Sprint A — 前端人设控制面板 & Emotion HUD)
+- **4-Tab 人设控制面板 (`/settings/persona`)**：
+  - 支持在线 System Prompt 编辑、基础身份设置、tsundere/clingy 权重编译与交互边界配置。
+  - 双渠道更新管道：Admin REST API (`:8094`) HTTP PATCH 持久化 YAML 磁盘 + WebSocket `admin.persona_update` 帧发送至 Go Core，触发 NATS `agent.persona.update` 广播，实现 Python `PersonaLoader` 零停机内存热重载。
+  - 新增 `stripCompiledHeader` 函数，保证编译后 Prompt 头部被正确剥离，重复保存时 100% 幂等。
+- **EmotionHUDWidget.vue**：
+  - 浮动 HUD 组件，实时显示 3D VAD 指标（Valence/Arousal/Dominance）、Affection、Energy、Social Battery 与 Jealousy 状态，由 `AgentEmotionPayload` WebSocket 帧驱动。
+- **VisionPrivacyIndicator.vue**：移动至左上角 (`left: 16px`) 解决与其他 UI 按钮重叠问题。
+
+---
+
+## [v1.6.0] - 2026-08-19
+
+### Added (Sprint 7 — Prompt 优化 & Token 裁剪)
+- **PersonaLoader TTL 内存缓存**：消除每次请求的 YAML 文件磁盘 I/O。
+- **`PromptBuilder.build_system_prompt()` 按场景裁剪**：`game_turn` 模式下跳过非游戏记忆与 KB 章节，节省 100-500 tokens/轮。
+- **`agent_self_events` 压缩**：保留最新 1-2 条详细动作，历史动作聚合为计数摘要，节省 60-80% tokens。
+
+---
+
+## [v1.5.0] - 2026-08-18
+
+### Added & Fixed (Sprint 6 — MCP 子进程生命周期防挂起)
+- **`presenter_sweep_loop`**：`main.py` 新增后台扫描协程，每 60s 调用 `sweep_idle()` 防止 PPT/VSCode 孤儿子进程泄漏。
+- **`asyncio.wait_for` 超时守卫**：为 `McpSession.start()` 与 `McpSession.call_tool()` 添加超时门控，防止协程永久挂起。
+
+---
+
+## [v1.4.0] - 2026-08-18
+
+### Added & Refactored (Sprint 5 — LLM Provider 接口标准化)
+- **`BaseLLMProvider` 抽象契约**：定义 `generate_stream()` 抽象方法与 `supports_vision()` 能力 Hook。
+- **`ClaudeProvider` 全异步重构**：切换至 `anthropic.AsyncAnthropic` 流式工具调用引擎，添加 API Key 安全警告与 ID 关联校验。
+- **`GeminiProvider` 去阻塞化**：移除 `loop.run_in_executor` 线程池阻塞，委托给 `generate_stream()`。
+
+---
+
+## [v1.3.0] - 2026-08-17
+
+### Added (Sprint 4 — 自我记忆 & 人设清理)
+- **`AgentSelfMemory`**：在 `memory_hub.py` 中集成 Agent 自我行为反思追踪。
+- **Persona 名称去硬编码**：将硬编码人名替换为 `get_config_val("persona.default_user_name", "主人")` 配置注入。
+
+---
+
+## [v1.2.0] - 2026-08-17
+
+### Added (Sprint 3 — Campus KB 集成)
+- **并发上下文增强**：在 `memory_hub.py` 中使用 `asyncio.gather` 并发执行个人 RAG、Campus KB (`:8093`) 与 UserProfile 上下文注入。
+- **服务就绪探针**：在 `runner.py` 中为 `campus_kb_service` 添加启动探针与 Supervisor 管理。
+
+---
+
+## [v1.1.0] - 2026-08-16
+
+### Added & Refactored (Sprint 1-2 — 记忆现代化 & Token 预算)
+- **Redis 异步连接池**：将 `short_term_buffer.py` 升级至 `redis.asyncio` 连接池。
+- **AsyncQdrantClient**：在 `services/memory/vector_store.py` 中实现异步向量存储，支持多 Provider 嵌入回退（OpenAI/Gemini/HashedNgram）与 Ebbinghaus 衰减评分。
+- **主动记忆归档 (`consolidator.py`)**：实现 LLM 提取事实写入向量存储的主动归档流程。
+- **UserProfile Redis Hash 持久化**：在 `user_profile.py` 中实现用户事实画像的 Redis Hash 持久化。
+- **CJK 加权 Token 估算 (`token_budget.py`)**：防止亚洲语言文本 Token 溢出。
+- **`SentenceSegmenter` JSON 边界正则修复**：收窄正则，防止包含 `{` 的有效文本被误判截断。
+- **`stream_reasoning_loop` 异常处理**：强制补发 `is_final=True` 兜底 Payload，解除 Go Core CSM 看门狗因异常阻塞的情形。
+
+---
+
 
 ## [v1.0.0] - 2026-08-15
 

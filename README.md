@@ -65,10 +65,42 @@
 | `8090` | Go Core 游戏事件摄入 | HTTP / WS | 核心 (褚裕禄) | ✅ 已就绪 |
 | `8091` | TTS Service | HTTP | 核心 (褚裕禄) | ✅ 已就绪 |
 | `8092` | STT Service | HTTP | 核心 (褚裕禄) | ✅ 已就绪 |
-| `8093` | **Campus KB RAG Service** | HTTP REST | 冯文哲 | 🔲 待实现 |
-| `8094` | **Admin Panel REST API** | HTTP REST | 谢自立 | 🔲 待实现 |
-| `8095` | **Admin Web UI (Vite)** | HTTP Dev | 谢自立 | 🔲 待实现 |
-| `8096` | **Companion Tool Service** | HTTP REST | 张劭哲 | 🔲 待实现 |
+| `8093` | **Campus KB RAG Service** | HTTP REST | 冯文哲 | ✅ 已就绪 |
+| `8094` | **Admin Panel REST API** | HTTP REST | 谢自立 | ✅ 已就绪 |
+| `8095` | **Admin Web UI (Vite)** | HTTP Dev | 谢自立 | ✅ 已就绪 |
+| `8096` | **Companion Tool Service** | HTTP REST | 张劭哲 | ✅ 已就绪 |
+
+<details>
+<summary>各子服务已实现接口摘要</summary>
+
+**Campus KB (`:8093`, `services/campus_kb/`)**
+- `GET  /health` — 健康检查
+- `POST /api/kb/ingest` — 知识条目向量入库
+- `POST /api/kb/search` — 语义相似度检索
+
+**Admin Panel REST (`:8094`, `admin/backend/`)**
+- `GET/POST/PATCH/DELETE /api/admin/personas/{id}` — 人设 YAML 全生命周期管理（ruamel 圆形读写，保留注释与格式）
+- `GET/DELETE /api/admin/users/{user_id}` — 用户管理（只读 + 软删除）
+- `GET /api/admin/sessions`, `GET /api/admin/sessions/overview` — 会话记录查看（Redis 短时历史）
+- `GET/DELETE /api/admin/memory/short-term` — 短期记忆管理
+- `GET/DELETE /api/admin/memory/long-term/{point_id}` — 长期记忆（Qdrant）管理
+- `GET/PUT /api/admin/memory/profile/{user_id}` — 用户事实画像管理
+- `GET/POST /api/admin/kb/*` — 校园知识库代理（透传至 `:8093`）
+- `GET/POST/DELETE /api/admin/schedules` — 日程提醒管理（代理至 `:8096`）
+- `GET/PATCH /api/admin/config` — 系统配置在线查看与修改
+
+**Admin Web UI (`:8095`, `admin/frontend/`)**
+- Vue 3 + Element Plus 独立后台管理界面，`dist/` 已构建完成
+
+**Companion Service (`:8096`, `services/companion/`)**
+- `POST /api/companion/stat` — 陪伴统计写入
+- `POST/GET/DELETE /api/schedule/*` — 日程 CRUD（APScheduler 到期触发 NATS 推送）
+- `POST /api/companion/query` — NL2SQL 陪伴数据自然语言查询
+- `GET  /api/companion/recommendations` — 任务推荐（规则引擎）
+- `GET/POST/DELETE /api/user_profile/*` — 用户事实画像管理
+- `GET  /api/memory/stats` — 记忆统计
+
+</details>
 
 ---
 
