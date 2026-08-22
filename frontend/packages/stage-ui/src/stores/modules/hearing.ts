@@ -895,6 +895,8 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
 
       scriptNode.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0)
+        const maxAmp = inputData.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
+        console.log('[Hearing Pipeline] ScriptProcessorNode onaudioprocess, samples:', inputData.length, 'maxAmplitude:', maxAmp)
         const pcm16 = float32ToInt16(inputData)
         if (betterAgentWSBridge.isConnected()) {
           betterAgentWSBridge.sendAudioChunk(pcm16)
