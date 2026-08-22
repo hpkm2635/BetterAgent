@@ -56,8 +56,8 @@ async def main():
         iflytek_api_key = os.getenv("IFLYTEK_APIKEY")
         iflytek_api_secret = os.getenv("IFLYTEK_APISECRET")
         if not (iflytek_app_id and iflytek_api_key and iflytek_api_secret):
-            logger.error("STT_PROVIDER=iflytek but IFLYTEK_APPID / IFLYTEK_APIKEY / IFLYTEK_APISECRET are not all set.")
-            return
+            logger.warning("STT_PROVIDER=iflytek but IFLYTEK_APPID / IFLYTEK_APIKEY / IFLYTEK_APISECRET are not all set. Falling back to funasr.")
+            provider = "funasr"
     elif provider != "funasr":
         logger.error(f"Unknown STT_PROVIDER '{provider}', falling back to funasr")
         provider = "funasr"
