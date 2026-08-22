@@ -747,10 +747,7 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       try {
         console.info('[Hearing Pipeline] Sending user.speech_end via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
         betterAgentWSBridge.sendSpeechEnd()
-        if (abort)
-          session.audioStreamController?.error(new DOMException('Aborted', 'AbortError'))
-        else
-          session.audioStreamController?.close()
+        session.audioStreamController?.close()
       }
       catch (err) {
         console.warn('[Hearing Pipeline] Error during BetterAgent iFLYTEK STT cleanup:', err)
@@ -758,8 +755,7 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
 
       await tryCatch(() => {
         session.mediaStreamSource.disconnect()
-        session.workletNode.port.onmessage = null
-        session.workletNode.disconnect()
+        // workletNode is a placeholder for this provider; no-op for ScriptProcessorNode path.
       })
       await tryCatch(() => {
         if (session.audioContext.state !== 'closed')
@@ -889,52 +885,39 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
         }, idleTimeout)
       }
 
-      const session = await createAudioStreamFromMediaStream(
-        stream,
-        options?.sampleRate ?? DEFAULT_SAMPLE_RATE,
-        () => bumpIdle(),
-        (pcm16) => {
-          if (betterAgentWSBridge.isConnected()) {
-            betterAgentWSBridge.sendAudioChunk(pcm16)
-          }
-          else {
-            console.warn('[Hearing Pipeline] BetterAgentWSBridge not connected, dropping audio chunk')
-          }
-        },
-      )
+      const sampleRate = options?.sampleRate ?? DEFAULT_SAMPLE_RATE
+      const audioContext = new AudioContext({ sampleRate, latencyHint: 'interactive' })
+      const mediaStreamSource = audioContext.createMediaStreamSource(stream)
+      const scriptNode = audioContext.createScriptProcessor(4096, 1, 1)
 
-      if (session.audioContext.state === 'suspended')
-        await session.audioContext.resume()
+      mediaStreamSource.connect(scriptNode)
+      scriptNode.connect(audioContext.destination)
 
-      // Tell backend to start listening
+      scriptNode.onaudioprocess = (event) => {
+        const inputData = event.inputBuffer.getChannelData(0)
+        const pcm16 = float32ToInt16(inputData)
+        if (betterAgentWSBridge.isConnected()) {
+          betterAgentWSBridge.sendAudioChunk(pcm16)
+        }
+        else {
+          console.warn('[Hearing Pipeline] BetterAgentWSBridge not connected, dropping audio chunk')
+        }
+        bumpIdle()
+      }
+
+      if (audioContext.state === 'suspended')
+        await audioContext.resume()
+
       console.info('[Hearing Pipeline] Sending user.speech_start via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
       betterAgentWSBridge.sendSpeechStart()
-
-      // Drain the internal audio stream so the worklet's enqueue calls do not
-      // back up. For the iFLYTEK path, audio is already forwarded to the
-      // backend via the WebSocket bridge in the onPcmChunk callback above.
-      const audioReader = session.audioStream.getReader()
-      async function drainInternalAudioStream() {
-        try {
-          while (true) {
-            const { done } = await audioReader.read()
-            if (done)
-              break
-          }
-        }
-        catch {
-          // Expected when the session is cancelled/closed.
-        }
-      }
-      drainInternalAudioStream()
 
       bumpIdle()
 
       streamingSession.value = {
-        audioContext: session.audioContext,
-        workletNode: session.workletNode,
-        mediaStreamSource: session.mediaStreamSource,
-        audioStreamController: session.controller,
+        audioContext,
+        workletNode: {} as AudioWorkletNode,
+        mediaStreamSource,
+        audioStreamController: undefined,
         abortController,
         result: {
           mode: 'stream',
@@ -952,6 +935,8 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
 
       return
     }
+
+      // Special handling for Web Speech API - it works directly with MediaStream
 
       // Special handling for Web Speech API - it works directly with MediaStream
       if (providerId === 'browser-web-speech-api') {
