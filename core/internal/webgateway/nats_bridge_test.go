@@ -3,6 +3,7 @@ package webgateway
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
@@ -149,5 +150,117 @@ func TestPublishInboundMessage_GameStartCommand_NeverTouchesCSM(t *testing.T) {
 	}
 	if !b.autonomousPlayState.IsActive() {
 		t.Errorf("expected autonomous play to be active after /game_start routed through publishInboundMessage")
+	}
+}
+
+func TestDeferredTextManager_AddAndPop(t *testing.T) {
+	mgr := newDeferredTextManager()
+	chatID := int64(1001)
+	genID := uint64(1)
+	text := "主人的金枪鱼拿来喵~"
+
+	mgr.Add(chatID, genID, text, true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		t.Errorf("expected timer not to fire when popped before timeout")
+	})
+
+	poppedText, isFinal, ok := mgr.PopAndStop(chatID, genID)
+	if !ok || poppedText != text || !isFinal {
+		t.Fatalf("expected to pop deferred text %q with isFinal=true, got ok=%v, text=%q, isFinal=%v", text, ok, poppedText, isFinal)
+	}
+
+	// Second pop should return false
+	_, _, ok2 := mgr.PopAndStop(chatID, genID)
+	if ok2 {
+		t.Errorf("expected second pop to fail after text was popped")
+	}
+}
+
+func TestDeferredTextManager_MultiSentenceFIFO(t *testing.T) {
+	mgr := newDeferredTextManager()
+	chatID := int64(1005)
+	genID := uint64(5)
+
+	mgr.Add(chatID, genID, "句1：你好！", false, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {})
+	mgr.Add(chatID, genID, "句2：今天天气不错。", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {})
+
+	txt1, final1, ok1 := mgr.PopAndStop(chatID, genID)
+	if !ok1 || txt1 != "句1：你好！" || final1 != false {
+		t.Fatalf("expected FIFO sentence 1, got text=%q, final=%v, ok=%v", txt1, final1, ok1)
+	}
+
+	txt2, final2, ok2 := mgr.PopAndStop(chatID, genID)
+	if !ok2 || txt2 != "句2：今天天气不错。" || final2 != true {
+		t.Fatalf("expected FIFO sentence 2, got text=%q, final=%v, ok=%v", txt2, final2, ok2)
+	}
+
+	_, _, ok3 := mgr.PopAndStop(chatID, genID)
+	if ok3 {
+		t.Errorf("expected queue to be empty after popping both sentences")
+	}
+}
+
+func TestDeferredTextManager_WatchdogTimeout(t *testing.T) {
+	mgr := newDeferredTextManager()
+	chatID := int64(1002)
+	genID := uint64(2)
+	text := "超时保底文本上屏"
+	fired := make(chan string, 1)
+
+	mgr.Add(chatID, genID, text, true, 50*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		fired <- txt
+	})
+
+	select {
+	case gotText := <-fired:
+		if gotText != text {
+			t.Errorf("expected timeout callback to receive %q, got %q", text, gotText)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected watchdog timeout callback to fire within 200ms")
+	}
+
+	// After watchdog timeout fired, PopAndStop should return false
+	_, _, ok := mgr.PopAndStop(chatID, genID)
+	if ok {
+		t.Errorf("expected PopAndStop to return false after watchdog timeout executed")
+	}
+}
+
+func TestDeferredTextManager_GenIDIsolation(t *testing.T) {
+	mgr := newDeferredTextManager()
+	chatID := int64(1003)
+
+	mgr.Add(chatID, 1, "Turn 1 Text", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		t.Errorf("Turn 1 timer should be stopped")
+	})
+	mgr.Add(chatID, 2, "Turn 2 Text", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		t.Errorf("Turn 2 timer should be stopped")
+	})
+
+	// Popping Turn 1 should not affect Turn 2
+	txt1, _, ok1 := mgr.PopAndStop(chatID, 1)
+	if !ok1 || txt1 != "Turn 1 Text" {
+		t.Errorf("failed to pop Turn 1 text")
+	}
+
+	txt2, _, ok2 := mgr.PopAndStop(chatID, 2)
+	if !ok2 || txt2 != "Turn 2 Text" {
+		t.Errorf("failed to pop Turn 2 text")
+	}
+}
+
+func TestDeferredTextManager_BargeInClear(t *testing.T) {
+	mgr := newDeferredTextManager()
+	chatID := int64(1004)
+
+	mgr.Add(chatID, 1, "Interrupted Text", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		t.Errorf("Barge-in cleared item should not fire timer callback")
+	})
+
+	mgr.ClearChat(chatID)
+
+	_, _, ok := mgr.PopAndStop(chatID, 1)
+	if ok {
+		t.Errorf("expected item to be cleared by ClearChat")
 	}
 }

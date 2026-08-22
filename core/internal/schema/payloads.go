@@ -153,12 +153,14 @@ type ErrorPayload struct {
 
 type StreamAudioChunkPayload struct {
 	BasePayload
-	ChatID       int64    `json:"chat_id"`
-	GenerationID uint64   `json:"generation_id,omitempty"`
-	AudioBase64  string   `json:"audio_base64"`
-	SampleRate   int      `json:"sample_rate"`
-	Format       string   `json:"format"`
-	Visemes      []Viseme `json:"visemes,omitempty"`
+	ChatID          int64    `json:"chat_id"`
+	GenerationID    uint64   `json:"generation_id,omitempty"`
+	AudioBase64     string   `json:"audio_base64"`
+	SampleRate      int      `json:"sample_rate"`
+	Format          string   `json:"format"`
+	Visemes         []Viseme `json:"visemes,omitempty"`
+	TextDelta       string   `json:"text_delta,omitempty"`
+	IsSentenceStart bool     `json:"is_sentence_start,omitempty"`
 }
 
 type Viseme struct {

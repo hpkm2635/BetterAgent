@@ -140,21 +140,29 @@ class PromptBuilder:
                 "不要等待被提问，自然地开启或延续话题，语气要符合你现在的心情。"
                 "【约束】主动搭话只需发送文字聊天，请勿在此轮主动对话中自动调用图片生成工具。"
             )
-            # Inject active companion recommendations/care items if companion service is running
-            try:
-                import httpx
-                companion_url = get_config_val("infrastructure.companion_url", "http://127.0.0.1:8096")
-                resp = httpx.get(f"{companion_url}/api/companion/recommendations?chat_id={payload.chat_id}", timeout=1.5)
-                if resp.status_code == 200:
-                    recs = resp.json().get("recommendations", [])
-                    if recs:
-                        recs_text = "\n".join(f"- {r}" for r in recs)
-                        prompt_parts.append(
-                            f"[主动关怀与智能提醒推荐]:\n{recs_text}\n"
-                            "请在本次主动搭话中，自然地关怀主人，并适时提醒上述事项。"
-                        )
-            except Exception as e:
-                logger.debug(f"Failed to fetch companion recommendations for proactive turn: {e}")
+            is_game_proactive = any(k in (payload.proactive_reason or "").lower() for k in ["run ended", "death", "victory", "floor"])
+            if is_game_proactive:
+                prompt_parts.append(
+                    "【游戏战况沉浸约束】本次主动发言是因为《杀戮尖塔2》游戏刚结束或触发重大游戏事件。"
+                    "请 100% 专心针对游戏战况、打牌过程或结果进行沉浸式猫娘情感解说与安慰，"
+                    "严禁硬塞无关的日常学习、复习功课、校园 FAQ 或日程安排提醒！"
+                )
+            else:
+                # Inject active companion recommendations/care items if companion service is running
+                try:
+                    import httpx
+                    companion_url = get_config_val("infrastructure.companion_url", "http://127.0.0.1:8096")
+                    resp = httpx.get(f"{companion_url}/api/companion/recommendations?chat_id={payload.chat_id}", timeout=1.5)
+                    if resp.status_code == 200:
+                        recs = resp.json().get("recommendations", [])
+                        if recs:
+                            recs_text = "\n".join(f"- {r}" for r in recs)
+                            prompt_parts.append(
+                                f"[主动关怀与智能提醒推荐]:\n{recs_text}\n"
+                                "请在本次主动搭话中，自然地关怀主人，并适时提醒上述事项。"
+                            )
+                except Exception as e:
+                    logger.debug(f"Failed to fetch companion recommendations for proactive turn: {e}")
 
         if payload.trigger_type == "game_turn":
             if _STS2_AGENTS_MD_CONTENT:

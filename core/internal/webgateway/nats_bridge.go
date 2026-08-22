@@ -3,8 +3,11 @@ package webgateway
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
@@ -16,6 +19,153 @@ import (
 	"betteragent-core/internal/schema"
 )
 
+type deferredTextItem struct {
+	mu       sync.Mutex
+	chatID   int64
+	genID    uint64
+	text     string
+	isFinal  bool
+	timer    *time.Timer
+	executed bool
+}
+
+type deferredTextManager struct {
+	mu    sync.Mutex
+	items map[string][]*deferredTextItem
+}
+
+func newDeferredTextManager() *deferredTextManager {
+	return &deferredTextManager{
+		items: make(map[string][]*deferredTextItem),
+	}
+}
+
+func (m *deferredTextManager) Add(chatID int64, genID uint64, text string, isFinal bool, timeout time.Duration, onTimeout func(cID int64, gID uint64, txt string, final bool)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	key := fmt.Sprintf("%d:%d", chatID, genID)
+
+	item := &deferredTextItem{
+		chatID:  chatID,
+		genID:   genID,
+		text:    text,
+		isFinal: isFinal,
+	}
+
+	item.timer = time.AfterFunc(timeout, func() {
+		item.mu.Lock()
+		if item.executed {
+			item.mu.Unlock()
+			return
+		}
+		item.executed = true
+		item.mu.Unlock()
+
+		m.mu.Lock()
+		if slice, exists := m.items[key]; exists {
+			var newSlice []*deferredTextItem
+			for _, it := range slice {
+				if it != item {
+					newSlice = append(newSlice, it)
+				}
+			}
+			if len(newSlice) > 0 {
+				m.items[key] = newSlice
+			} else {
+				delete(m.items, key)
+			}
+		}
+		m.mu.Unlock()
+
+		onTimeout(chatID, genID, text, isFinal)
+	})
+
+	m.items[key] = append(m.items[key], item)
+	m.mu.Unlock()
+}
+
+func (m *deferredTextManager) PopAndStop(chatID int64, genID uint64) (string, bool, bool) {
+	if m == nil {
+		return "", false, false
+	}
+	m.mu.Lock()
+	key := fmt.Sprintf("%d:%d", chatID, genID)
+	slice, exists := m.items[key]
+	if !exists || len(slice) == 0 {
+		m.mu.Unlock()
+		return "", false, false
+	}
+
+	item := slice[0]
+	if len(slice) == 1 {
+		delete(m.items, key)
+	} else {
+		m.items[key] = slice[1:]
+	}
+	m.mu.Unlock()
+
+	item.mu.Lock()
+	defer item.mu.Unlock()
+	if item.timer != nil {
+		item.timer.Stop()
+	}
+	if item.executed {
+		return "", false, false
+	}
+	item.executed = true
+	return item.text, item.isFinal, true
+}
+
+func (m *deferredTextManager) ClearChat(chatID int64) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	var keysToRemove []string
+	var itemsToStop []*deferredTextItem
+	for key, slice := range m.items {
+		if len(slice) > 0 && slice[0].chatID == chatID {
+			keysToRemove = append(keysToRemove, key)
+			itemsToStop = append(itemsToStop, slice...)
+		}
+	}
+	for _, k := range keysToRemove {
+		delete(m.items, k)
+	}
+	m.mu.Unlock()
+
+	for _, item := range itemsToStop {
+		item.mu.Lock()
+		if item.timer != nil {
+			item.timer.Stop()
+		}
+		item.executed = true
+		item.mu.Unlock()
+	}
+}
+
+func (b *NatsBridge) getDeferredTexts() *deferredTextManager {
+	if b.deferredTexts == nil {
+		b.deferredTexts = newDeferredTextManager()
+	}
+	return b.deferredTexts
+}
+
+func isPronounceableText(text string) bool {
+	s := strings.TrimSpace(text)
+	if s == "" || strings.EqualFold(s, "none") || strings.EqualFold(s, "null") || strings.EqualFold(s, "undefined") {
+		return false
+	}
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
+
 type NatsBridge struct {
 	bus                 *bus.NatsBus
 	sessions            *SessionManager
@@ -26,6 +176,7 @@ type NatsBridge struct {
 	circadian           *emotion.CircadianRhythmEvaluator
 	urgeEngine          *engine.UrgeEngine
 	autonomousPlayState *engine.AutonomousPlayState
+	deferredTexts       *deferredTextManager
 	logger              *zap.Logger
 }
 
@@ -49,6 +200,7 @@ func newNatsBridge(
 		circadian:           circadian,
 		urgeEngine:          urgeEngine,
 		autonomousPlayState: autonomousPlayState,
+		deferredTexts:       newDeferredTextManager(),
 		logger:              logger,
 	}
 }
@@ -261,6 +413,7 @@ func (b *NatsBridge) handleBargeInInterrupt(chatID int64) {
 
 	// 1. Immediately purge any queued outbound audio/text/emotion chunks in WebGateway send buffer
 	b.sessions.ClearChatBuffers(chatID)
+	b.getDeferredTexts().ClearChat(chatID)
 
 	cancelPayload := schema.StreamCancelPayload{
 		BasePayload:   schema.NewBasePayload("web_gateway"),
@@ -541,15 +694,38 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 	}
 
 	if decision.TextContent != nil && *decision.TextContent != "" {
-		outBytes, _ := json.Marshal(WSMessage{
-			Type: "agent.text_delta",
-			Payload: marshalRaw(AgentTextDeltaPayload{
-				Text:       *decision.TextContent,
-				EmotionTag: b.getMoodTagForChat(decision.ChatID),
-				IsFinal:    decision.IsFinal,
-			}),
-		})
-		b.sessions.SendTextToChat(decision.ChatID, outBytes)
+		text := *decision.TextContent
+		genID := decision.GenerationID
+		if genID == 0 && b.csm != nil {
+			genID = b.csm.GetGenerationChat(decision.ChatID)
+		}
+
+		if decision.SourceChannel == "web" && isPronounceableText(text) {
+			isFinal := decision.IsFinal
+			b.getDeferredTexts().Add(decision.ChatID, genID, text, isFinal, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+				b.logger.Warn("⏰ TTS Audio Chunk timeout (>800ms) - Watchdog fallback forcing text push to WS",
+					zap.Int64("chat_id", cID), zap.Uint64("gen_id", gID), zap.String("text", txt))
+				outBytes, _ := json.Marshal(WSMessage{
+					Type: "agent.text_delta",
+					Payload: marshalRaw(AgentTextDeltaPayload{
+						Text:       txt,
+						EmotionTag: b.getMoodTagForChat(cID),
+						IsFinal:    final,
+					}),
+				})
+				b.sessions.SendTextToChat(cID, outBytes)
+			})
+		} else {
+			outBytes, _ := json.Marshal(WSMessage{
+				Type: "agent.text_delta",
+				Payload: marshalRaw(AgentTextDeltaPayload{
+					Text:       text,
+					EmotionTag: b.getMoodTagForChat(decision.ChatID),
+					IsFinal:    decision.IsFinal,
+				}),
+			})
+			b.sessions.SendTextToChat(decision.ChatID, outBytes)
+		}
 
 		stateBytes, _ := json.Marshal(WSMessage{
 			Type: "agent.state_change",
@@ -563,7 +739,6 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 
 		if decision.IsFinal {
 			chatID := decision.ChatID
-			genID := decision.GenerationID
 			go func() {
 				time.Sleep(3 * time.Second)
 				if b.csm != nil {
@@ -641,6 +816,25 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	}
 
 	p := env.Payload
+
+	// Flush deferred text if audio chunk arrives
+	genID := p.GenerationID
+	if genID == 0 && b.csm != nil {
+		genID = b.csm.GetGenerationChat(p.ChatID)
+	}
+	if deferredText, isFinal, popped := b.getDeferredTexts().PopAndStop(p.ChatID, genID); popped && deferredText != "" {
+		b.logger.Info("🎙️ Synchronized audio arrival - Flushing deferred text to WS",
+			zap.Int64("chat_id", p.ChatID), zap.Uint64("gen_id", genID), zap.String("text", deferredText), zap.Bool("is_final", isFinal))
+		outTextBytes, _ := json.Marshal(WSMessage{
+			Type: "agent.text_delta",
+			Payload: marshalRaw(AgentTextDeltaPayload{
+				Text:       deferredText,
+				EmotionTag: b.getMoodTagForChat(p.ChatID),
+				IsFinal:    isFinal,
+			}),
+		})
+		b.sessions.SendTextToChat(p.ChatID, outTextBytes)
+	}
 
 	// 1. Standard JSON WebSocket Message (for stage-web compat)
 	visemes := make([]Viseme, len(p.Visemes))
