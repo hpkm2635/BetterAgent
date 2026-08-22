@@ -195,6 +195,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    'HistoryPage': RouteRecordInfo<
+      'HistoryPage',
+      '/history',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/settings/': RouteRecordInfo<
       '/settings/',
       '/settings',
@@ -699,6 +706,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/settings/schedule/': RouteRecordInfo<
+      '/settings/schedule/',
+      '/settings/schedule',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/settings/system/': RouteRecordInfo<
       '/settings/system/',
       '/settings/system',
@@ -936,6 +950,12 @@ declare module 'vue-router/auto-routes' {
     '../../packages/stage-pages/src/pages/devtools/websocket-inspector.vue': {
       routes:
         | '/devtools/websocket-inspector'
+      views:
+        | never
+    }
+    '../../packages/stage-pages/src/pages/history/index.vue': {
+      routes:
+        | 'HistoryPage'
       views:
         | never
     }
@@ -1368,6 +1388,12 @@ declare module 'vue-router/auto-routes' {
     '../../packages/stage-pages/src/pages/settings/scene/index.vue': {
       routes:
         | '/settings/scene/'
+      views:
+        | never
+    }
+    '../../packages/stage-pages/src/pages/settings/schedule/index.vue': {
+      routes:
+        | '/settings/schedule/'
       views:
         | never
     }

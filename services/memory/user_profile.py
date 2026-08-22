@@ -28,6 +28,7 @@ class UserProfileManager:
                 password=redis_password,
                 decode_responses=True,
                 socket_connect_timeout=0.2,
+                protocol=2,
             )
             logger.info(f"UserProfileManager configured Async Redis at {redis_url}")
         except Exception as e:

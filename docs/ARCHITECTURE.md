@@ -671,6 +671,10 @@ graph LR
     EmotionStore --"Expression & Motion"--> Live2DCanvas
 ```
 
+WebGateway 下行 JSON 帧还包括 `agent.stt_transcript`（`{ text, is_final, chat_id }`），
+用于把 `agent.stt.stream_final` 识别结果回显给前端，让语音输入在聊天窗口中显示为普通用户消息；
+STT 识别本身仍通过 `agent.inbound_message` 进入同一推理链路。
+
 ---
 
 ## 7. 团队 Python 微服务扩展矩阵 (Python Microservice Subsystem)
@@ -683,7 +687,7 @@ graph LR
 | **Memory Service** | `services/memory/` | — (Redis/Qdrant) | 核心 / 褚裕禄 | Redis 短时缓存、Qdrant 向量检索、UserProfile 画像 |
 | **Game Watcher Service**| `services/game_watcher/`| — (Polling) | 核心 / 褚裕禄 | Slay the Spire 2 游戏轮询与自动回合触发 |
 | **Campus KB Service** | `services/campus_kb/` | `:8093` (HTTP) | 冯文哲 | 校园 FAQ 文本切片、向量入库与 `/api/kb/search` 检索 |
-| **Admin Backend** | `admin/backend/` | `:8094` (REST) | 谢自立 | B 端控制台，提供人设 YAML PATCH 与用户画像查看 |
+| **Admin Backend** | `admin/backend/` | `:8094` (REST) | 谢自立 | B 端控制台：人设 YAML PATCH、用户画像、会话历史/概览、短期/长期记忆管理 |
 | **Admin Frontend** | `admin/frontend/` | `:8095` (Web Dev)| 谢自立 | Vue 3 + Element Plus 独立后台管理界面 |
 | **Companion Service** | `services/companion/` | `:8096` (HTTP) | 张劭哲 | SQLite 陪伴统计、APScheduler 日程提醒与 NL2SQL 查询 |
 
@@ -727,4 +731,3 @@ sequenceDiagram
 1. **单一点真相 (Single Source of Truth)**：任何对 `core/internal/schema/payloads.go` 或状态机 `state_machine.go` 的修改，必须同步更新本文件中的 Mermaid 图纸。
 2. **Git Hook 校验**：合并 PR 时检测 `docs/ARCHITECTURE.md` 是否同步变更。
 3. **AI Prompt 提示**：在向抗重力 Agent 发出架构重构指令时，附带本文件（`docs/ARCHITECTURE.md`）作为上下文基准。
-

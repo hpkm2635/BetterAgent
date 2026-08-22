@@ -5,6 +5,7 @@ import logging
 import os
 import nats
 from dotenv import load_dotenv
+from typing import Any
 
 from shared.subjects import (
     SUBJECT_SPEECH_START,
@@ -47,7 +48,21 @@ async def main():
         logger.warning(f"Failed to connect to NATS ({e}). STT Service exiting gracefully.")
         return
 
-    sessions: dict[int, FunASRSession] = {}
+    provider = os.getenv("STT_PROVIDER", get_config_val("stt.provider", "funasr")).lower().strip()
+    logger.info(f"STT provider configured: {provider}")
+
+    if provider == "iflytek":
+        iflytek_app_id = os.getenv("IFLYTEK_APPID")
+        iflytek_api_key = os.getenv("IFLYTEK_APIKEY")
+        iflytek_api_secret = os.getenv("IFLYTEK_APISECRET")
+        if not (iflytek_app_id and iflytek_api_key and iflytek_api_secret):
+            logger.warning("STT_PROVIDER=iflytek but IFLYTEK_APPID / IFLYTEK_APIKEY / IFLYTEK_APISECRET are not all set. Falling back to funasr.")
+            provider = "funasr"
+    elif provider != "funasr":
+        logger.error(f"Unknown STT_PROVIDER '{provider}', falling back to funasr")
+        provider = "funasr"
+
+    sessions: dict[int, Any] = {}
     result_tasks: dict[int, asyncio.Task] = {}
 
     async def publish_transcript(subject: str, chat_id: int, text: str):
@@ -65,7 +80,7 @@ async def main():
         }
         await nc.publish(subject, json.dumps(envelope).encode())
 
-    async def drain_results(chat_id: int, session: FunASRSession):
+    async def drain_results(chat_id: int, session: Any):
         try:
             result_iter = session.results().__aiter__()
             while True:
@@ -74,7 +89,7 @@ async def main():
                 except StopAsyncIteration:
                     break
                 except asyncio.TimeoutError:
-                    logger.warning(f"⏳ FunASR result timeout for chat_id={chat_id}, closing session")
+                    logger.warning(f"⏳ STT result timeout for chat_id={chat_id}, closing session")
                     break
 
                 is_final = result["is_final"]
@@ -87,7 +102,7 @@ async def main():
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Error draining FunASR results for chat_id={chat_id}: {e}", exc_info=True)
+            logger.error(f"Error draining STT results for chat_id={chat_id}: {e}", exc_info=True)
         finally:
             await session.close()
             sessions.pop(chat_id, None)
@@ -112,16 +127,23 @@ async def main():
             # don't let it linger, this one supersedes it.
             await close_existing_session(chat_id)
 
-            session = FunASRSession()
+            if provider == "iflytek":
+                session = IFlytekSession(
+                    app_id=iflytek_app_id,
+                    api_key=iflytek_api_key,
+                    api_secret=iflytek_api_secret,
+                )
+            else:
+                session = FunASRSession()
             try:
                 await session.start()
             except Exception as e:
-                logger.warning(f"Failed to start FunASR session for chat_id={chat_id} ({e}); STT unavailable for this utterance.")
+                logger.warning(f"Failed to start {provider} STT session for chat_id={chat_id} ({e}); STT unavailable for this utterance.")
                 return
 
             sessions[chat_id] = session
             result_tasks[chat_id] = asyncio.create_task(drain_results(chat_id, session))
-            logger.info(f"🎤 FunASR session started for chat_id={chat_id}")
+            logger.info(f"🎤 {provider} STT session started for chat_id={chat_id}")
         except Exception as e:
             logger.error(f"Error handling speech_start: {e}", exc_info=True)
 
@@ -136,7 +158,7 @@ async def main():
 
             session = sessions.get(chat_id)
             if session is None:
-                # Chunk arrived before speech_start's FunASR handshake finished,
+                # Chunk arrived before speech_start's STT handshake finished,
                 # or after the session already closed -- drop it rather than
                 # error; the rest of the utterance still gets through.
                 return
@@ -144,7 +166,7 @@ async def main():
             pcm_bytes = base64.b64decode(audio_b64)
             await session.send_audio(pcm_bytes)
         except Exception as e:
-            logger.error(f"Error forwarding audio chunk to FunASR: {e}", exc_info=True)
+            logger.error(f"Error forwarding audio chunk to STT provider: {e}", exc_info=True)
 
     async def speech_end_handler(msg):
         try:
@@ -158,7 +180,7 @@ async def main():
                 return
 
             await session.finish()
-            logger.info(f"🎤 FunASR session finishing for chat_id={chat_id}")
+            logger.info(f"🎤 {provider} STT session finishing for chat_id={chat_id}")
         except Exception as e:
             logger.error(f"Error handling speech_end: {e}", exc_info=True)
 

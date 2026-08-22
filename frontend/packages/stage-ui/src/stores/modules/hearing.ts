@@ -19,6 +19,7 @@ import { OFFICIAL_TRANSCRIPTION_PROVIDER_ID } from '../../libs/providers'
 import { useProvidersStore } from '../providers'
 import { streamAliyunTranscription } from '../providers/aliyun/stream-transcription'
 import { streamWebSpeechAPITranscription } from '../providers/web-speech-api'
+import { betterAgentWSBridge } from '../../services/betteragent-ws'
 
 function errorMessage(err: unknown): string {
   const msg = errorMessageFromValue(err)
@@ -375,6 +376,12 @@ export const useHearingStore = defineStore('hearing-store', () => {
       return true // Web Speech API is ready if provider is selected and available
     }
 
+    // BetterAgent iFLYTEK STT doesn't need a model selected; audio is streamed
+    // to the backend STT service which handles recognition internally.
+    if (activeTranscriptionProvider.value === 'betteragent-iflytek-stt') {
+      return true
+    }
+
     // For OpenAI Compatible providers, check provider config as fallback
     let hasProviderModel = false
     if (activeTranscriptionProvider.value === 'openai-compatible-audio-transcription') {
@@ -630,7 +637,7 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
     return output
   }
 
-  async function createAudioStreamFromMediaStream(stream: MediaStream, sampleRate = DEFAULT_SAMPLE_RATE, onActivity?: () => void) {
+  async function createAudioStreamFromMediaStream(stream: MediaStream, sampleRate = DEFAULT_SAMPLE_RATE, onActivity?: () => void, onPcmChunk?: (pcm16: Int16Array) => void) {
     const audioContext = new AudioContext({ sampleRate, latencyHint: 'interactive' })
     await audioContext.audioWorklet.addModule(vadWorkletUrl)
     const workletNode = new AudioWorkletNode(audioContext, 'vad-audio-worklet-processor')
@@ -654,6 +661,9 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       // Clone buffer to avoid retaining underlying ArrayBuffer references
       audioStreamController.enqueue(pcm16.buffer.slice(0))
       onActivity?.()
+      onPcmChunk?.(pcm16)
+      if (onPcmChunk)
+        console.debug('[Hearing Pipeline] Worklet produced PCM chunk (samples):', pcm16.length)
     }
 
     const mediaStreamSource = audioContext.createMediaStreamSource(stream)
@@ -731,6 +741,34 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
 
       return
     }
+
+    // Special handling for BetterAgent iFLYTEK STT
+    if (session.providerId === 'betteragent-iflytek-stt') {
+      try {
+        console.info('[Hearing Pipeline] Sending user.speech_end via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
+        betterAgentWSBridge.sendSpeechEnd()
+        session.audioStreamController?.close()
+      }
+      catch (err) {
+        console.warn('[Hearing Pipeline] Error during BetterAgent iFLYTEK STT cleanup:', err)
+      }
+
+      await tryCatch(() => {
+        session.mediaStreamSource.disconnect()
+        // workletNode is a placeholder for this provider; no-op for ScriptProcessorNode path.
+      })
+      await tryCatch(() => {
+        if (session.audioContext.state !== 'closed')
+          session.audioContext.close()
+      })
+
+      if (session.idleTimer)
+        clearTimeout(session.idleTimer)
+
+      streamingSession.value = undefined
+      return
+    }
+
 
     try {
       const reason = new DOMException(abort ? 'Aborted' : 'Stopped', 'AbortError')
@@ -815,6 +853,100 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       }
 
       console.info('[Hearing Pipeline] Using provider:', providerId)
+
+    // Special handling for BetterAgent iFLYTEK STT - stream raw 16kHz 16-bit PCM to backend.
+    if (providerId === 'betteragent-iflytek-stt') {
+      trackVoiceInputStarted({ stt_provider_id: providerId })
+
+      const existingSession = streamingSession.value
+      if (existingSession && existingSession.providerId === 'betteragent-iflytek-stt') {
+        const nextCallbacks = {
+          onSentenceEnd: options?.onSentenceEnd,
+          onSpeechEnd: options?.onSpeechEnd,
+        }
+        if (!haveStreamingCallbacksChanged(existingSession.callbacks, nextCallbacks)) {
+          console.info('BetterAgent iFLYTEK STT session already active, reusing existing session')
+          return
+        }
+        console.info('BetterAgent iFLYTEK STT: new callbacks provided, restarting session')
+        await stopStreamingTranscription(false, existingSession.providerId)
+      }
+
+      startStreamingAsrSpan(providerId)
+
+      const abortController = new AbortController()
+      const idleTimeout = options?.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT
+      let idleTimer: ReturnType<typeof setTimeout> | undefined
+      const bumpIdle = () => {
+        if (idleTimer)
+          clearTimeout(idleTimer)
+        idleTimer = setTimeout(async () => {
+          await stopStreamingTranscription(false, providerId)
+        }, idleTimeout)
+      }
+
+      const sampleRate = options?.sampleRate ?? DEFAULT_SAMPLE_RATE
+      const audioContext = new AudioContext({ sampleRate, latencyHint: 'interactive' })
+      const mediaStreamSource = audioContext.createMediaStreamSource(stream)
+      const scriptNode = audioContext.createScriptProcessor(4096, 1, 1)
+
+      mediaStreamSource.connect(scriptNode)
+      scriptNode.connect(audioContext.destination)
+
+      scriptNode.onaudioprocess = (event) => {
+        const inputData = event.inputBuffer.getChannelData(0)
+        const maxAmp = inputData.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
+        console.log('[Hearing Pipeline] ScriptProcessorNode onaudioprocess, samples:', inputData.length, 'maxAmplitude:', maxAmp, 'audioContextState:', audioContext.state)
+        const pcm16 = float32ToInt16(inputData)
+        if (betterAgentWSBridge.isConnected()) {
+          betterAgentWSBridge.sendAudioChunk(pcm16)
+        }
+        else {
+          console.warn('[Hearing Pipeline] BetterAgentWSBridge not connected, dropping audio chunk')
+        }
+        bumpIdle()
+      }
+
+      console.info('[Hearing Pipeline] AudioContext state before resume:', audioContext.state)
+      if (audioContext.state === 'suspended') {
+        try {
+          await audioContext.resume()
+          console.info('[Hearing Pipeline] AudioContext resumed successfully')
+        }
+        catch (err) {
+          console.error('[Hearing Pipeline] Failed to resume AudioContext:', err)
+        }
+      }
+
+      console.info('[Hearing Pipeline] Sending user.speech_start via BetterAgentWSBridge, connected:', betterAgentWSBridge.isConnected())
+      betterAgentWSBridge.sendSpeechStart()
+
+      bumpIdle()
+
+      streamingSession.value = {
+        audioContext,
+        workletNode: {} as AudioWorkletNode,
+        mediaStreamSource,
+        audioStreamController: undefined,
+        abortController,
+        result: {
+          mode: 'stream',
+          text: new Promise(() => {}),
+          textStream: new ReadableStream<string>({ start() {} }),
+          fullStream: new ReadableStream<string>({ start() {} }),
+        } as any,
+        idleTimer,
+        providerId,
+        callbacks: {
+          onSentenceEnd: options?.onSentenceEnd,
+          onSpeechEnd: options?.onSpeechEnd,
+        },
+      }
+
+      return
+    }
+
+      // Special handling for Web Speech API - it works directly with MediaStream
 
       // Special handling for Web Speech API - it works directly with MediaStream
       if (providerId === 'browser-web-speech-api') {

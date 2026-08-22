@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Body, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from ruamel.yaml import YAML
 
 import httpx
@@ -42,7 +43,7 @@ logger = logging.getLogger("admin_backend")
 # Load REDIS_URL / REDIS_PASSWORD etc. from a local .env when present.
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(REPO_ROOT / ".env")
 except Exception:  # python-dotenv is optional at runtime
     pass
 
@@ -59,6 +60,9 @@ CAMPUS_KB_URL = os.getenv("CAMPUS_KB_URL", "http://127.0.0.1:8093").rstrip("/")
 COMPANION_URL = os.getenv("COMPANION_URL", "http://127.0.0.1:8096").rstrip("/")
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333").rstrip("/")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "betteragent_memories")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 
 # Admin API access token. When set (non-empty), every /api/admin/* endpoint
 # requires a valid `X-Admin-Token: <secret>` or `Authorization: Bearer <secret>`
@@ -78,6 +82,32 @@ PERSONA_ALLOWED_FIELDS = frozenset({
 # 会话历史 key 候选（契约文本为 short_term:{chat_id}，现有代码使用
 # betteragent:short_term:{user_id}；两者都尝试，命中即返回）。
 SESSION_KEY_TEMPLATES = ("short_term:{chat_id}", "betteragent:short_term:{chat_id}")
+# 会话/短期记忆 key 前缀，用于在 Redis 中枚举出所有聊天历史。
+SHORT_TERM_KEY_PREFIXES = ("short_term:", "betteragent:short_term:")
+
+_WEB_NAMESPACE_OFFSET = 9_000_000_000_000_000
+
+
+def _to_web_chat_id(chat_id: int) -> int:
+    """Mirror core/webgateway WebNamespaceOffset for Redis/Qdrant lookups.
+
+    WebGateway folds every explicit/random web chat_id into the 9e15+
+    namespace; memory service and Go core store data under that namespaced id.
+    Admin endpoints receive the base id from the frontend, so we re-apply the
+    offset before hitting storage.
+    """
+    if chat_id <= 0:
+        return chat_id
+    if chat_id < _WEB_NAMESPACE_OFFSET:
+        return chat_id + _WEB_NAMESPACE_OFFSET
+    return chat_id
+
+
+def _from_web_chat_id(chat_id: int) -> int:
+    """De-namespace a WebGateway chat_id for display/frontend use."""
+    if chat_id >= _WEB_NAMESPACE_OFFSET:
+        return chat_id - _WEB_NAMESPACE_OFFSET
+    return chat_id
 
 _VALID_PERSONA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -387,6 +417,7 @@ def _get_redis() -> Any:
             password=REDIS_PASSWORD or None,
             decode_responses=True,
             socket_connect_timeout=2,
+            protocol=2,
         )
         client.ping()
         _redis_client = client
@@ -474,7 +505,10 @@ def _redis_user_profiles(r: Any) -> Dict[int, Dict[str, Any]]:
                 except Exception as exc:
                     logger.warning(f"Failed to read Redis key {key}: {exc}")
                     continue
-                profiles[user_id] = _normalize_profile(user_id, raw)
+                # Redis profile keys are namespaced by WebGateway; fold back to
+                # the base id so they merge with companion.db / admin SQLite.
+                base_user_id = _from_web_chat_id(user_id)
+                profiles[base_user_id] = _normalize_profile(base_user_id, raw)
     except Exception as exc:
         logger.warning(f"Failed to scan Redis user profiles: {exc}")
     return profiles
@@ -656,8 +690,9 @@ def list_sessions(
             for k in r.scan_iter(f"{prefix}*"):
                 try:
                     cid = int(k.split(":")[-1])
-                    if cid not in active_chats:
-                        active_chats.append(cid)
+                    base_cid = _from_web_chat_id(cid)
+                    if base_cid not in active_chats:
+                        active_chats.append(base_cid)
                 except ValueError:
                     pass
     except Exception:
@@ -667,9 +702,10 @@ def list_sessions(
     if not chat_id:
         chat_id = active_chats[0] if active_chats else 1001
 
+    storage_chat_id = _to_web_chat_id(chat_id)
     items: list = []
     for template in SESSION_KEY_TEMPLATES:
-        key = template.format(chat_id=chat_id)
+        key = template.format(chat_id=storage_chat_id)
         try:
             raw = r.lrange(key, 0, -1)
         except Exception as exc:
@@ -689,6 +725,247 @@ def list_sessions(
 
     total = len(items)
     return {"sessions": items[offset:offset + limit], "total": total, "chat_id": chat_id, "active_chats": active_chats}
+
+
+@app.get("/api/admin/sessions/overview")
+def list_session_overview():
+    """Enumerate every chat that has a Redis short-term history.
+
+    `GET /api/admin/sessions` requires a concrete `chat_id`; a history page
+    needs the reverse operation first (which chat_ids actually exist). This
+    endpoint scans the two supported key prefixes and returns one lightweight
+    summary per chat, newest first.
+    """
+    r = _get_redis()
+    if r is None:
+        return {"sessions": [], "total": 0}
+
+    sessions: List[Dict[str, Any]] = []
+    seen: set = set()
+    for prefix in SHORT_TERM_KEY_PREFIXES:
+        try:
+            for key in r.scan_iter(f"{prefix}*"):
+                chat_id = _chat_id_from_session_key(key)
+                base_chat_id = _from_web_chat_id(chat_id) if chat_id is not None else None
+                if base_chat_id is None or base_chat_id in seen:
+                    continue
+                seen.add(base_chat_id)
+
+                count = 0
+                preview = ""
+                last_timestamp: Optional[float] = None
+                try:
+                    count = int(r.llen(key) or 0)
+                    raw_tail = r.lrange(key, -1, -1)
+                    if raw_tail:
+                        last: Any = raw_tail[0]
+                        if isinstance(last, str):
+                            try:
+                                last = json.loads(last)
+                            except (TypeError, ValueError):
+                                last = {"content": last}
+                        if isinstance(last, dict):
+                            preview = str(last.get("content", ""))[:120]
+                            last_timestamp = _format_session_message(last, 0).get("timestamp")
+                except Exception as exc:
+                    logger.warning(f"Failed to summarize session key {key}: {exc}")
+
+                sessions.append({
+                    # Display the base id so the frontend stays consistent with
+                    # the chat_id it knows (localStorage / URL query param).
+                    "chat_id": _from_web_chat_id(chat_id),
+                    "message_count": count,
+                    "last_timestamp": last_timestamp,
+                    "preview": preview,
+                })
+        except Exception as exc:
+            logger.warning(f"Failed to scan session keys with prefix {prefix}: {exc}")
+
+    sessions.sort(key=lambda item: item.get("last_timestamp") or 0, reverse=True)
+    return {"sessions": sessions, "total": len(sessions)}
+
+
+def _chat_id_from_session_key(key: str) -> Optional[int]:
+    for prefix in SHORT_TERM_KEY_PREFIXES:
+        if key.startswith(prefix):
+            try:
+                return int(key[len(prefix):])
+            except ValueError:
+                return None
+    return None
+
+
+def _read_short_term_list(user_id: int, r: Any) -> List[Dict[str, Any]]:
+    """Read one user's short-term messages, trying both key spellings."""
+    items: List[Dict[str, Any]] = []
+    storage_user_id = _to_web_chat_id(user_id)
+    for key in (f"betteragent:short_term:{storage_user_id}", f"short_term:{storage_user_id}"):
+        try:
+            raw = r.lrange(key, 0, -1)
+        except Exception as exc:
+            logger.warning(f"Failed to read short-term key {key}: {exc}")
+            continue
+        for index, entry in enumerate(raw):
+            msg: Any = entry
+            if isinstance(entry, str):
+                try:
+                    msg = json.loads(entry)
+                except (TypeError, ValueError):
+                    msg = {"content": entry}
+            if isinstance(msg, dict):
+                items.append(_format_session_message(msg, index))
+        if items:
+            break
+    return items
+
+
+# ---------------------------------------------------------------------------
+# 2.3b 记忆管理 (Memory) -- 短期/长期/画像，面向 stage-web 设置页
+# ---------------------------------------------------------------------------
+@app.get("/api/admin/memory/short-term")
+def get_short_term_memory(
+    user_id: int = Query(...),
+    limit: int = Query(50),
+    offset: int = Query(0),
+):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    r = _get_redis()
+    if r is None:
+        return {"messages": [], "total": 0, "user_id": user_id}
+
+    items = _read_short_term_list(user_id, r)
+    total = len(items)
+    return {"messages": items[offset:offset + limit], "total": total, "user_id": user_id}
+
+
+@app.delete("/api/admin/memory/short-term")
+def clear_short_term_memory(user_id: int = Query(...)):
+    r = _get_redis()
+    if r is None:
+        return _error(503, "redis unavailable")
+
+    storage_user_id = _to_web_chat_id(user_id)
+    keys = (
+        f"betteragent:short_term:{storage_user_id}",
+        f"short_term:{storage_user_id}",
+        f"betteragent:consolidate_cursor:{storage_user_id}",
+    )
+    for key in keys:
+        try:
+            r.delete(key)
+        except Exception as exc:
+            logger.warning(f"Failed to delete short-term key {key}: {exc}")
+    return {"status": "cleared", "user_id": user_id}
+
+
+@app.get("/api/admin/memory/long-term")
+def get_long_term_memory(
+    user_id: int = Query(...),
+    query: Optional[str] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+):
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    try:
+        storage_user_id = _to_web_chat_id(user_id)
+        with httpx.Client(timeout=5.0, trust_env=False) as client:
+            headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+            resp = client.post(
+                f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
+                headers=headers,
+                json={
+                    "filter": {"must": [{"key": "user_id", "match": {"value": int(storage_user_id)}}]},
+                    "limit": limit,
+                    "offset": offset,
+                    "with_payload": True,
+                    "with_vector": False,
+                },
+            )
+            if resp.status_code != 200:
+                return {"memories": [], "total": 0, "user_id": user_id}
+            points = (resp.json().get("result") or {}).get("points", [])
+    except Exception as exc:
+        logger.warning(f"Qdrant unavailable while listing long-term memory: {exc}")
+        return {"memories": [], "total": 0, "user_id": user_id}
+
+    memories: List[Dict[str, Any]] = []
+    needle = (query or "").strip().lower()
+    for point in points:
+        payload = point.get("payload") or {}
+        text = str(payload.get("text", ""))
+        if needle and needle not in text.lower():
+            continue
+        memories.append({
+            "id": point.get("id"),
+            "text": text,
+            "timestamp": payload.get("timestamp"),
+            "metadata": payload.get("metadata") or {},
+        })
+
+    return {"memories": memories, "total": len(memories), "user_id": user_id}
+
+
+@app.delete("/api/admin/memory/long-term/{point_id}")
+def delete_long_term_memory(point_id: str):
+    try:
+        with httpx.Client(timeout=5.0, trust_env=False) as client:
+            headers = {"api-key": QDRANT_API_KEY} if QDRANT_API_KEY else {}
+            resp = client.post(
+                f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/delete",
+                headers=headers,
+                json={"points": [point_id]},
+            )
+            if resp.status_code == 200:
+                return {"status": "deleted", "id": point_id}
+            return _error(404, "not found")
+    except Exception as exc:
+        logger.warning(f"Qdrant unavailable while deleting long-term memory: {exc}")
+        return _error(503, "qdrant unavailable")
+
+
+class MemoryProfileUpdatePayload(BaseModel):
+    display_name: Optional[str] = None
+    known_facts: Optional[List[str]] = None
+
+
+@app.get("/api/admin/memory/profile")
+def get_memory_profile(user_id: int = Query(...)):
+    rec = _all_records().get(user_id)
+    if rec is None:
+        rec = _normalize_profile(user_id, {})
+    return {
+        "user_id": user_id,
+        "display_name": rec.get("display_name") or f"用户{user_id}",
+        "known_facts": rec.get("known_facts") or [],
+        "last_seen": rec.get("last_seen"),
+    }
+
+
+@app.put("/api/admin/memory/profile/{user_id}")
+def update_memory_profile(user_id: int, payload: MemoryProfileUpdatePayload):
+    r = _get_redis()
+    if r is None:
+        return _error(503, "redis unavailable")
+
+    storage_user_id = _to_web_chat_id(user_id)
+    key = f"betteragent:profile:{storage_user_id}"
+    try:
+        if payload.display_name is not None:
+            r.hset(key, "preferred_name", payload.display_name)
+            r.hset(key, "display_name", payload.display_name)
+        if payload.known_facts is not None:
+            encoded = json.dumps(payload.known_facts, ensure_ascii=False)
+            # `known_facts` feeds the admin UI; `likes` mirrors it into the
+            # memory service's own profile prompt so both readers stay in sync.
+            r.hset(key, "known_facts", encoded)
+            r.hset(key, "likes", encoded)
+    except Exception as exc:
+        logger.warning(f"Failed to update memory profile {user_id}: {exc}")
+        return _error(500, "failed to update profile")
+
+    return get_memory_profile(user_id)
 
 
 # ---------------------------------------------------------------------------

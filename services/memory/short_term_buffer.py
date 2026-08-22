@@ -30,6 +30,7 @@ class ShortTermMemoryBuffer:
                 password=redis_password,
                 decode_responses=True,
                 socket_connect_timeout=0.2,
+                protocol=2,
             )
             logger.info(f"ShortTermMemoryBuffer configured Async Redis storage at {redis_url}")
         except Exception as e:

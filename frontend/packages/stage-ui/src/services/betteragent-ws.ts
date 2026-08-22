@@ -18,6 +18,7 @@ export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number
 export type EmotionCallback = (emotion: string, action?: string) => void
 export type AudioChunkCallback = (audioBase64: string, sampleRate: number, visemes?: Viseme[]) => void
 export type StateChangeCallback = (state: string, chatId?: number) => void
+export type STTTranscriptCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export interface GameStatePayload {
   floor: number
   hp: number
@@ -39,6 +40,42 @@ export interface EmotionalStatePayload {
   description: string
 }
 export type EmotionStateCallback = (state: EmotionalStatePayload, action?: string) => void
+
+const STORAGE_CHAT_ID_KEY = 'betteragent:web:chat_id'
+
+export function resolveStableChatId(): number {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BETTERAGENT_USER_ID) {
+    const envId = Number(import.meta.env.VITE_BETTERAGENT_USER_ID)
+    if (!Number.isNaN(envId) && envId > 0)
+      return envId
+  }
+
+  if (typeof window !== 'undefined') {
+    const urlParams = new URLSearchParams(window.location.search)
+    const queryChatId = urlParams.get('chat_id')
+    if (queryChatId) {
+      const parsed = Number(queryChatId)
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        localStorage.setItem(STORAGE_CHAT_ID_KEY, String(parsed))
+        return parsed
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    const stored = localStorage.getItem(STORAGE_CHAT_ID_KEY)
+    if (stored) {
+      const parsed = Number(stored)
+      if (!Number.isNaN(parsed) && parsed > 0)
+        return parsed
+    }
+  }
+
+  const generated = Math.floor(1000000 + Math.random() * 9000000)
+  if (typeof window !== 'undefined')
+    localStorage.setItem(STORAGE_CHAT_ID_KEY, String(generated))
+  return generated
+}
 
 // Binary Audio Frame Protocol
 function encodeBinaryAudioFrame(pcm: Int16Array): ArrayBuffer {
@@ -65,48 +102,10 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
-const CHAT_ID_STORAGE_KEY = 'betteragent.web.chat_id'
-
-/**
- * 稳定地解析 WebSocket 会话的 chat_id 子 id：优先复用 localStorage 里保存的值，
- * 否则生成一个随机值并持久化。这样刷新页面后 chat_id 不变，日程/记忆能跨刷新
- * 保持连续（否则每次刷新都换 id，右上角日程列表永远对不上旧数据）。
- */
-function resolvePersistentChatId(): number {
-  let storage: Storage | null = null
-  try {
-    storage = typeof window !== 'undefined' ? window.localStorage : null
-  }
-  catch {
-    storage = null
-  }
-
-  if (storage) {
-    try {
-      const saved = storage.getItem(CHAT_ID_STORAGE_KEY)
-      if (saved) {
-        const parsed = Number(saved)
-        if (Number.isFinite(parsed) && parsed > 0)
-          return parsed
-      }
-    }
-    catch { /* ignore */ }
-  }
-
-  const fresh = Math.floor(1000000 + Math.random() * 9000000)
-  if (storage) {
-    try {
-      storage.setItem(CHAT_ID_STORAGE_KEY, String(fresh))
-    }
-    catch { /* ignore */ }
-  }
-  return fresh
-}
-
 export class BetterAgentWSBridge {
   private ws: WebSocket | null = null
   private url: string
-  private chatId: number
+  private chatId: number | null = null
   private reconnectAttempts = 0
   private maxReconnectInterval = 5000
   private isIntentionalClose = false
@@ -115,21 +114,24 @@ export class BetterAgentWSBridge {
   private emotionListeners: Set<EmotionCallback> = new Set()
   private emotionStateListeners: Set<EmotionStateCallback> = new Set()
   private audioChunkListeners: Set<AudioChunkCallback> = new Set()
+  private sttTranscriptListeners: Set<STTTranscriptCallback> = new Set()
   private stateChangeListeners: Set<StateChangeCallback> = new Set()
   private gameStateListeners: Set<GameStateCallback> = new Set()
 
   constructor(serverUrl = 'ws://localhost:8080/ws') {
-    if (!serverUrl.includes('chat_id=')) {
-      const defaultChatID = resolvePersistentChatId()
-      serverUrl += (serverUrl.includes('?') ? '&' : '?') + `chat_id=${defaultChatID}`
-    }
+    const existingChatId = (() => {
+      try {
+        return Number(new URL(serverUrl).searchParams.get('chat_id'))
+      }
+      catch {
+        return Number.NaN
+      }
+    })()
 
-    // Resolve the sub-id actually used for this WS session. The Go core folds
-    // it into WebNamespaceOffset (see core/internal/idspace/idspace.go) to
-    // derive the real routing chat_id; the schedule feature reuses the same id
-    // so reminders are stored/delivered under the session's true identity.
-    const match = serverUrl.match(/[?&]chat_id=(\d+)/)
-    this.chatId = match ? Number(match[1]) : Math.floor(1000000 + Math.random() * 9000000)
+    if (Number.isNaN(existingChatId) || existingChatId === 0) {
+      const stableChatId = resolveStableChatId()
+      serverUrl += (serverUrl.includes('?') ? '&' : '?') + `chat_id=${stableChatId}`
+    }
 
     if (!serverUrl.includes('token=')) {
       const token = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BETTERAGENT_WS_TOKEN)
@@ -141,13 +143,19 @@ export class BetterAgentWSBridge {
     }
 
     this.url = serverUrl
+
+    try {
+      const parsedUrl = new URL(serverUrl)
+      const chatId = Number(parsedUrl.searchParams.get('chat_id'))
+      if (!Number.isNaN(chatId))
+        this.chatId = chatId
+    }
+    catch {
+      this.chatId = null
+    }
   }
 
-  /**
-   * The sub-id this WS session uses (without the Go-side WebNamespaceOffset).
-   * The schedule API needs the full id: WEB_NAMESPACE_OFFSET + getChatId().
-   */
-  public getChatId(): number {
+  public getChatId(): number | null {
     return this.chatId
   }
 
@@ -227,6 +235,12 @@ export class BetterAgentWSBridge {
         case 'agent.audio_chunk':
           break
 
+        case 'agent.stt_transcript':
+          if (msg.payload?.text) {
+            this.sttTranscriptListeners.forEach(cb => cb(msg.payload.text, !!msg.payload.is_final, msg.payload.chat_id))
+          }
+          break
+
         case 'agent.state_change':
           if (msg.payload?.state) {
             this.stateChangeListeners.forEach(cb => cb(msg.payload.state, msg.payload.chat_id))
@@ -298,6 +312,10 @@ export class BetterAgentWSBridge {
     }
   }
 
+  public isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN
+  }
+
   public onTextDelta(cb: TextDeltaCallback): () => void {
     this.textDeltaListeners.add(cb)
     return () => this.textDeltaListeners.delete(cb)
@@ -311,6 +329,11 @@ export class BetterAgentWSBridge {
   public onAudioChunk(cb: AudioChunkCallback): () => void {
     this.audioChunkListeners.add(cb)
     return () => this.audioChunkListeners.delete(cb)
+  }
+
+  public onSTTTranscript(cb: STTTranscriptCallback): () => void {
+    this.sttTranscriptListeners.add(cb)
+    return () => this.sttTranscriptListeners.delete(cb)
   }
 
   public onStateChange(cb: StateChangeCallback): () => void {
@@ -348,3 +371,7 @@ export class BetterAgentWSBridge {
 }
 
 export const betterAgentWSBridge = new BetterAgentWSBridge()
+
+if (typeof window !== 'undefined') {
+  (window as any).betterAgentWSBridge = betterAgentWSBridge
+}

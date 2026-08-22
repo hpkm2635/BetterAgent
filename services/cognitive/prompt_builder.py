@@ -185,6 +185,13 @@ class PromptBuilder:
                 pref = payload.user_profile.get("preferred_name", "主人")
                 prompt_parts.append(f"[称呼习惯] 你称呼对方为：{pref}")
 
+                likes = payload.user_profile.get("likes") or payload.user_profile.get("known_facts") or []
+                dislikes = payload.user_profile.get("dislikes") or []
+                if likes:
+                    prompt_parts.append(f"[对方喜好] {', '.join(str(x) for x in likes)}")
+                if dislikes:
+                    prompt_parts.append(f"[对方厌恶] {', '.join(str(x) for x in dislikes)}")
+
             if payload.rag_facts:
                 prompt_parts.append("[长期记忆/个人相关信息]:")
                 for fact in payload.rag_facts:

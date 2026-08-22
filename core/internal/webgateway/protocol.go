@@ -83,6 +83,12 @@ type AgentStateChangePayload struct {
 	State string `json:"state"` // e.g. "IDLE", "THINKING", "TALKING", "SLEEPING"
 }
 
+type AgentSTTTranscriptPayload struct {
+	Text    string `json:"text"`
+	IsFinal bool   `json:"is_final,omitempty"`
+	ChatID  int64  `json:"chat_id,omitempty"`
+}
+
 // Binary Audio Protocol (Zero-Copy 0% Base64 Overhead)
 // Header (20 Bytes):
 // [0..3]: Magic "AUDI"
