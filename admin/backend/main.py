@@ -40,6 +40,12 @@ import httpx
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("admin_backend")
 
+# ---------------------------------------------------------------------------
+# Paths & configuration (all overridable via env so the panel stays portable)
+# ---------------------------------------------------------------------------
+BACKEND_DIR = Path(__file__).resolve().parent           # admin/backend
+REPO_ROOT = BACKEND_DIR.parent.parent                   # repository root
+
 # Load REDIS_URL / REDIS_PASSWORD etc. from a local .env when present.
 try:
     from dotenv import load_dotenv
@@ -47,11 +53,6 @@ try:
 except Exception:  # python-dotenv is optional at runtime
     pass
 
-# ---------------------------------------------------------------------------
-# Paths & configuration (all overridable via env so the panel stays portable)
-# ---------------------------------------------------------------------------
-BACKEND_DIR = Path(__file__).resolve().parent           # admin/backend
-REPO_ROOT = BACKEND_DIR.parent.parent                   # repository root
 PERSONA_DIR = Path(os.getenv("PERSONA_DIR", REPO_ROOT / "config" / "persona"))
 DB_PATH = Path(os.getenv("ADMIN_DB_PATH", BACKEND_DIR / "admin.db"))
 
@@ -226,7 +227,7 @@ def get_persona(persona_id: str):
 
 
 @app.patch("/api/admin/personas/{persona_id}")
-def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None)):
+async def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None)):
     """部分更新人设字段。白名单校验 + ruamel 原地更新（保留注释与顺序）。"""
     path = _persona_path(persona_id)
     if path is None or not path.exists():
@@ -282,7 +283,17 @@ def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Body(None
         logger.error(f"Failed to update persona YAML {path}: {exc}")
         return _error(500, "failed to update persona")
 
-    return {"status": "ok", "id": persona_id}
+    # YAML on disk is the source of truth and is already updated at this
+    # point; the NATS push below only hot-reloads the running cognitive
+    # service's in-memory cache. A failure here must not fail the PATCH --
+    # but it must also not be silently swallowed, or the caller has no way
+    # to know the edit hasn't taken effect yet (see PersonaLoader).
+    hot_reloaded = await _publish_persona_update(persona_id, payload)
+    return {
+        "status": "ok",
+        "id": persona_id,
+        "hot_reload": "ok" if hot_reloaded else "failed",
+    }
 
 
 @app.post("/api/admin/personas")
@@ -1264,12 +1275,12 @@ def _get_provider_key(name: str) -> str:
     return value
 
 
-async def _publish_config_reloaded(payload: Dict[str, Any]) -> bool:
-    """Best-effort NATS publish of agent.config.reloaded; never blocks PATCH."""
+async def _nats_publish(subject: str, payload: Dict[str, Any]) -> bool:
+    """Best-effort NATS publish; never raises -- callers treat failure as non-fatal."""
     try:
         import nats  # local import: backend still runs if nats-py is missing
     except ImportError:
-        logger.warning("nats-py not installed; config reload message not published")
+        logger.warning(f"nats-py not installed; {subject} not published")
         return False
 
     cfg = _read_config(safe=True)
@@ -1280,7 +1291,7 @@ async def _publish_config_reloaded(payload: Dict[str, Any]) -> bool:
     nats_user = os.getenv("NATS_USER") or root_env.get("NATS_USER", "")
     nats_password = os.getenv("NATS_PASSWORD") or root_env.get("NATS_PASSWORD", "")
     if not nats_user or not nats_password:
-        logger.warning("NATS_USER / NATS_PASSWORD not configured; reload message not published")
+        logger.warning(f"NATS_USER / NATS_PASSWORD not configured; {subject} not published")
         return False
 
     try:
@@ -1291,15 +1302,33 @@ async def _publish_config_reloaded(payload: Dict[str, Any]) -> bool:
             max_reconnect_attempts=1,
             connect_timeout=3,
         )
-        envelope = {"subject": RELOAD_SUBJECT, "source": "admin_backend", "payload": payload}
-        await nc.publish(RELOAD_SUBJECT, json.dumps(envelope, ensure_ascii=False).encode())
+        envelope = {"subject": subject, "source": "admin_backend", "payload": payload}
+        await nc.publish(subject, json.dumps(envelope, ensure_ascii=False).encode())
         await nc.flush(timeout=3)
         await nc.close()
-        logger.info(f"Published {RELOAD_SUBJECT}")
+        logger.info(f"Published {subject}")
         return True
     except Exception as exc:
-        logger.warning(f"Failed to publish {RELOAD_SUBJECT}: {exc}")
+        logger.warning(f"Failed to publish {subject}: {exc}")
         return False
+
+
+async def _publish_config_reloaded(payload: Dict[str, Any]) -> bool:
+    """Best-effort NATS publish of agent.config.reloaded; never blocks PATCH."""
+    return await _nats_publish(RELOAD_SUBJECT, payload)
+
+
+PERSONA_UPDATE_SUBJECT = "agent.persona.update"
+
+
+async def _publish_persona_update(persona_id: str, patch: Dict[str, Any]) -> bool:
+    """Best-effort NATS publish of agent.persona.update; never blocks PATCH.
+
+    Consumed by shared.persona_loader.PersonaLoader.handle_persona_update on
+    the cognitive service, which invalidates its in-memory persona cache so
+    the YAML edit takes effect without a restart.
+    """
+    return await _nats_publish(PERSONA_UPDATE_SUBJECT, {"persona_id": persona_id, **patch})
 
 
 @app.get("/api/admin/config")
