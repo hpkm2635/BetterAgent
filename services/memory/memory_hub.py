@@ -218,6 +218,7 @@ class MemoryHub:
             source_component="memory_hub",
             chat_id=chat_id,
             user_id=user_id,
+            generation_id=payload.generation_id,
             short_term_history=trimmed_history,
             user_profile=profile,
             rag_facts=trimmed_facts,
