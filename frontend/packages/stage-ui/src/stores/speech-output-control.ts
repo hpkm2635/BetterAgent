@@ -2,7 +2,7 @@ import { useLocalStorage } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type SpeechOutputStopReason = 'manual-chat' | 'manual-all' | 'muted'
+export type SpeechOutputStopReason = 'manual-chat' | 'manual-all' | 'muted' | 'server-state-idle'
 
 /**
  * Represents a user-requested stop-speaking command for the stage output host.

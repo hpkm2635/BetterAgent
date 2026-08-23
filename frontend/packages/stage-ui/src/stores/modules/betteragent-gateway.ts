@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { betterAgentWSBridge } from '../../services/betteragent-ws'
 import { useChatStreamStore } from '../chat/stream-store'
 import { useChatSessionStore } from '../chat/session-store'
+import { useSpeechOutputControlStore } from '../speech-output-control'
 import { useSTS2GameStateStore } from './sts2-game-state'
 import { resolveStableChatId } from '../../services/betteragent-ws'
 
@@ -23,6 +24,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const streamStore = useChatStreamStore()
   const chatSession = useChatSessionStore()
   const sts2GameState = useSTS2GameStateStore()
+  const speechOutputControl = useSpeechOutputControlStore()
 
   let streamingWatchdog: ReturnType<typeof setTimeout> | null = null
   let graceTimer: ReturnType<typeof setTimeout> | null = null
@@ -142,11 +144,20 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
           graceTimer = null
         }
         resetStreamingWatchdog()
+        // The CSM reaches idle both on a normal turn end and on a barge-in
+        // cancel (CANCELLING -> PURGE_RESET -> IDLE) -- the frame carries no
+        // flag distinguishing the two. Stopping playback here is idempotent
+        // (a no-op if nothing is queued/playing), so firing it unconditionally
+        // is what actually makes barge-in stop audio immediately instead of
+        // letting already-queued chunks play out.
+        speechOutputControl.requestStopSpeaking('server-state-idle')
       }
     }))
 
     // 3. Audio Chunks
-    unsubs.push(betterAgentWSBridge.onAudioChunk(() => {
+    unsubs.push(betterAgentWSBridge.onAudioChunk((_audioBase64: string, _sampleRate: number, chatId?: number) => {
+      if (!isChatMatch(chatId))
+        return
       isSpeaking.value = true
     }))
 

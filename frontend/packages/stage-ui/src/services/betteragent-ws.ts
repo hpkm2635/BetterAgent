@@ -16,7 +16,7 @@ export interface WSMessage<T = any> {
 
 export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export type EmotionCallback = (emotion: string, action?: string) => void
-export type AudioChunkCallback = (audioBase64: string, sampleRate: number, visemes?: Viseme[]) => void
+export type AudioChunkCallback = (audioBase64: string, sampleRate: number, chatId?: number, visemes?: Viseme[]) => void
 export type StateChangeCallback = (state: string, chatId?: number) => void
 export type STTTranscriptCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export interface GameStatePayload {
@@ -114,6 +114,10 @@ export class BetterAgentWSBridge {
   private emotionListeners: Set<EmotionCallback> = new Set()
   private emotionStateListeners: Set<EmotionStateCallback> = new Set()
   private audioChunkListeners: Set<AudioChunkCallback> = new Set()
+  // Highest binary-frame generation seen per chat, so a reordered/obsoleted
+  // frame from a barge-in'd generation can't play after the WebGateway has
+  // already moved on (see protocol.go's AUDI header: bytes 12-20).
+  private latestGenerationByChat: Map<number, bigint> = new Map()
   private sttTranscriptListeners: Set<STTTranscriptCallback> = new Set()
   private stateChangeListeners: Set<StateChangeCallback> = new Set()
   private gameStateListeners: Set<GameStateCallback> = new Set()
@@ -265,9 +269,22 @@ export class BetterAgentWSBridge {
     if (magic !== 'AUDI')
       return
 
+    const chatId = Number(view.getBigInt64(4, false))
+    const generationId = view.getBigUint64(12, false)
+
+    const latestGen = this.latestGenerationByChat.get(chatId) ?? 0n
+    if (generationId < latestGen) {
+      // Stale frame from a generation that's already been superseded
+      // (barge-in / new message) -- drop it instead of playing it late.
+      return
+    }
+    if (generationId > latestGen) {
+      this.latestGenerationByChat.set(chatId, generationId)
+    }
+
     const rawAudio = buf.slice(20)
     const base64Audio = uint8ArrayToBase64(new Uint8Array(rawAudio))
-    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000))
+    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000, chatId))
   }
 
   public sendUserText(text: string, chatId?: number): void {
