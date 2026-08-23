@@ -55,7 +55,12 @@ func TestHandleActionDecisionMsg_WebChannel_ProcessedNoMismatchLog(t *testing.T)
 	b, logs := newTestNatsBridge(t)
 	text := "hello"
 	b.handleActionDecisionMsg(actionDecisionMsg(t, schema.ActionDecisionPayload{
-		ChatID:        1001,
+		ChatID: 1001,
+		// A fresh CentralStateMachine chat starts at generation 1 (see
+		// state_machine.go); this must match or the generation-id filter
+		// drops the message before it's ever "processed", defeating what
+		// this test is actually meant to exercise.
+		GenerationID:  1,
 		SourceChannel: "web",
 		ActionType:    "send_message",
 		TextContent:   &text,
@@ -79,6 +84,7 @@ func TestHandleActionDecisionMsg_MismatchedSourceChannel_ProcessedWithLogNotDrop
 	text := "hello"
 	b.handleActionDecisionMsg(actionDecisionMsg(t, schema.ActionDecisionPayload{
 		ChatID:        1001,
+		GenerationID:  1,          // matches the fresh chat's starting generation
 		SourceChannel: "telegram", // mismatched on purpose
 		ActionType:    "send_message",
 		TextContent:   &text,
@@ -98,6 +104,34 @@ func TestHandleActionDecisionMsg_MismatchedSourceChannel_ProcessedWithLogNotDrop
 	// never have been touched via TouchWatchdogChat -- IsFinal + no urgeEngine
 	// panic is the main risk here, so completing this call without a panic
 	// while producing the log line above is the meaningful assertion.
+}
+
+func TestHandleActionDecisionMsg_ZeroGenerationID_TreatedAsStaleAndDropped(t *testing.T) {
+	// A chat's generationID starts at 1 and only increments (state_machine.go),
+	// so it is never legitimately 0 -- a decision arriving with GenerationID
+	// unset/0 must be dropped as stale, not specially let through. This pins
+	// the fix for the gap where "GenerationID != 0" bypassed the staleness
+	// check entirely for zero-valued payloads.
+	b, logs := newTestNatsBridge(t)
+	text := "hello"
+	b.handleActionDecisionMsg(actionDecisionMsg(t, schema.ActionDecisionPayload{
+		ChatID: 1002,
+		// GenerationID intentionally left at its zero value.
+		SourceChannel: "web",
+		ActionType:    "send_message",
+		TextContent:   &text,
+		IsFinal:       true,
+	}))
+
+	found := false
+	for _, entry := range logs.All() {
+		if entry.Level == zapcore.WarnLevel && entry.Message != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'dropped stale ActionDecision' warning for a zero-value GenerationID")
+	}
 }
 
 func TestHandleGameStartStopCommand_GameStart_ActivatesAndIntercepts(t *testing.T) {

@@ -684,8 +684,13 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 			zap.Int64("chat_id", decision.ChatID), zap.String("source_channel", decision.SourceChannel))
 	}
 
-	// Static Generation ID Filter: Drop stale action decisions from past turns
-	if decision.GenerationID != 0 && b.csm != nil {
+	// Static Generation ID Filter: Drop stale action decisions from past turns.
+	// Every chat's generationID starts at 1 and only increments (see
+	// ChatStateMachine.generationID in state_machine.go), so it is never
+	// legitimately 0 -- a zero value only means the field was missing from
+	// the publisher's payload, which is itself stale/malformed and must not
+	// be let through unchecked.
+	if b.csm != nil {
 		activeGen := b.csm.GetGenerationChat(decision.ChatID)
 		if decision.GenerationID != activeGen {
 			b.logger.Warn("⚠️ Dropped stale ActionDecision from old generation", zap.Int64("chat_id", decision.ChatID), zap.Uint64("decision_gen", decision.GenerationID), zap.Uint64("active_gen", activeGen))
@@ -767,7 +772,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 			emotionStr = *decision.ReactionEmoji
 		}
 		outBytes, _ := json.Marshal(WSMessage{
-			Type: "agent.emotion",
+			Type:    "agent.emotion",
 			Payload: marshalRaw(b.buildAgentEmotionPayload(decision.ChatID, emotionStr, "")),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)
