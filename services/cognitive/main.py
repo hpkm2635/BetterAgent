@@ -15,6 +15,7 @@ from shared.subjects import (
 )
 from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload, EmotionDeltaPayload
 from shared.logger import setup_logger
+from shared.persona_loader import PersonaLoader
 from services.cognitive.cognitive_engine import CognitiveEngine
 
 load_dotenv()
