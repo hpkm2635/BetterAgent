@@ -71,6 +71,12 @@ type AgentAudioChunkPayload struct {
 	Format      string   `json:"format,omitempty"`
 	Visemes     []Viseme `json:"visemes,omitempty"`
 	EmotionTag  string   `json:"emotion_tag,omitempty"`
+	// TextSegment is this specific chunk's own slice of the sentence being
+	// spoken (see allocate_viseme_text_slice in services/tts), used by the
+	// frontend to reveal captions paced by real chunk playback time. Not to
+	// be confused with the separate "agent.text_delta" WS message type,
+	// which carries a full sentence's text synced to its first audio chunk.
+	TextSegment string `json:"text_segment,omitempty"`
 }
 
 type Viseme struct {

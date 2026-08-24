@@ -839,23 +839,33 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 
 	p := env.Payload
 
-	// Flush deferred text if audio chunk arrives
 	genID := p.GenerationID
 	if genID == 0 && b.csm != nil {
 		genID = b.csm.GetGenerationChat(p.ChatID)
 	}
-	if deferredText, isFinal, popped := b.getDeferredTexts().PopAndStop(p.ChatID, genID); popped && deferredText != "" {
-		b.logger.Info("🎙️ Synchronized audio arrival - Flushing deferred text to WS",
-			zap.Int64("chat_id", p.ChatID), zap.Uint64("gen_id", genID), zap.String("text", deferredText), zap.Bool("is_final", isFinal))
-		outTextBytes, _ := json.Marshal(WSMessage{
-			Type: "agent.text_delta",
-			Payload: marshalRaw(AgentTextDeltaPayload{
-				Text:       deferredText,
-				EmotionTag: b.getMoodTagForChat(p.ChatID),
-				IsFinal:    isFinal,
-			}),
-		})
-		b.sessions.SendTextToChat(p.ChatID, outTextBytes)
+
+	// Flush deferred text only on the first audio chunk of a new sentence --
+	// GPT-SoVITS streams dozens of small audio sub-chunks per sentence, and
+	// popping the FIFO on every one of them (instead of just is_sentence_start)
+	// drains it far faster than sentences are actually spoken: a later
+	// sentence's ActionDecision usually arrives well before the current
+	// sentence's audio has finished streaming, so a later sub-chunk of the
+	// CURRENT sentence would pop and flush the NEXT sentence's text early,
+	// visibly racing ahead of what's actually audible.
+	if p.IsSentenceStart {
+		if deferredText, isFinal, popped := b.getDeferredTexts().PopAndStop(p.ChatID, genID); popped && deferredText != "" {
+			b.logger.Info("🎙️ Synchronized audio arrival - Flushing deferred text to WS",
+				zap.Int64("chat_id", p.ChatID), zap.Uint64("gen_id", genID), zap.String("text", deferredText), zap.Bool("is_final", isFinal))
+			outTextBytes, _ := json.Marshal(WSMessage{
+				Type: "agent.text_delta",
+				Payload: marshalRaw(AgentTextDeltaPayload{
+					Text:       deferredText,
+					EmotionTag: b.getMoodTagForChat(p.ChatID),
+					IsFinal:    isFinal,
+				}),
+			})
+			b.sessions.SendTextToChat(p.ChatID, outTextBytes)
+		}
 	}
 
 	// 1. Standard JSON WebSocket Message (for stage-web compat)
@@ -876,6 +886,7 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 			Format:      p.Format,
 			Visemes:     visemes,
 			EmotionTag:  b.getMoodTagForChat(p.ChatID),
+			TextSegment: p.TextDelta,
 		}),
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)

@@ -202,6 +202,136 @@ func TestHandleAudioChunkMsg_BinaryFrameTaggedWithChunksOwnGeneration_NotCurrent
 	}
 }
 
+func drainSentFrames(session *ClientSession) []WSFrame {
+	var frames []WSFrame
+	for {
+		select {
+		case frame := <-session.sendChan:
+			frames = append(frames, frame)
+		default:
+			return frames
+		}
+	}
+}
+
+// TestHandleAudioChunkMsg_NonSentenceStartChunk_DoesNotFlushDeferredText pins
+// the fix for a real caption-ordering bug: PopAndStop must only fire on a
+// sentence's *first* audio chunk (IsSentenceStart), not on every one of the
+// dozens of sub-chunks GPT-SoVITS streams per sentence -- otherwise a later
+// sentence's already-queued text gets flushed to the browser while the
+// current sentence's audio is still only partway through playing, making
+// the live caption visibly race ahead of what's actually audible.
+func TestHandleAudioChunkMsg_NonSentenceStartChunk_DoesNotFlushDeferredText(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(7777)
+	genID := uint64(1)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	b.getDeferredTexts().Add(chatID, genID, "下一句还没到该说的时候", true, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		t.Errorf("expected watchdog timeout not to fire during this test")
+	})
+
+	b.handleAudioChunkMsg(audioChunkMsg(t, schema.StreamAudioChunkPayload{
+		ChatID:          chatID,
+		GenerationID:    genID,
+		AudioBase64:     "AQIDBA==",
+		SampleRate:      32000,
+		Format:          "wav",
+		IsSentenceStart: false,
+	}))
+
+	for _, frame := range drainSentFrames(session) {
+		if frame.MessageType != websocket.MessageText {
+			continue
+		}
+		var wsMsg WSMessage
+		if err := json.Unmarshal(frame.Data, &wsMsg); err != nil {
+			t.Fatalf("failed to unmarshal WS frame: %v", err)
+		}
+		if wsMsg.Type == "agent.text_delta" {
+			t.Fatalf("expected no agent.text_delta frame for a non-sentence-start chunk, got one")
+		}
+	}
+
+	if poppedText, _, popped := b.getDeferredTexts().PopAndStop(chatID, genID); !popped || poppedText == "" {
+		t.Errorf("expected the deferred text to still be queued (never flushed) after a non-sentence-start chunk")
+	}
+}
+
+// TestHandleAudioChunkMsg_SentenceStartChunk_FlushesDeferredTextAndForwardsTextSegment
+// covers the other half: a sentence's first chunk (IsSentenceStart=true)
+// must flush its deferred full-sentence text as before, AND the chunk's own
+// TextDelta (now repurposed as this chunk's own text slice, see
+// allocate_viseme_text_slice) must be forwarded into the agent.audio_chunk
+// WS message's new text_segment field for the frontend's typewriter reveal.
+func TestHandleAudioChunkMsg_SentenceStartChunk_FlushesDeferredTextAndForwardsTextSegment(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(7778)
+	genID := uint64(1)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	b.getDeferredTexts().Add(chatID, genID, "这句话终于轮到你了", true, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+		t.Errorf("expected watchdog timeout not to fire during this test")
+	})
+
+	b.handleAudioChunkMsg(audioChunkMsg(t, schema.StreamAudioChunkPayload{
+		ChatID:          chatID,
+		GenerationID:    genID,
+		AudioBase64:     "AQIDBA==",
+		SampleRate:      32000,
+		Format:          "wav",
+		TextDelta:       "这块音频自己的字",
+		IsSentenceStart: true,
+	}))
+
+	var sawTextDelta, sawAudioChunk bool
+	for _, frame := range drainSentFrames(session) {
+		if frame.MessageType != websocket.MessageText {
+			continue
+		}
+		var wsMsg WSMessage
+		if err := json.Unmarshal(frame.Data, &wsMsg); err != nil {
+			t.Fatalf("failed to unmarshal WS frame: %v", err)
+		}
+		switch wsMsg.Type {
+		case "agent.text_delta":
+			sawTextDelta = true
+			var payload AgentTextDeltaPayload
+			if err := json.Unmarshal(wsMsg.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal AgentTextDeltaPayload: %v", err)
+			}
+			if payload.Text != "这句话终于轮到你了" {
+				t.Errorf("expected deferred sentence text to be flushed, got %q", payload.Text)
+			}
+		case "agent.audio_chunk":
+			sawAudioChunk = true
+			var payload AgentAudioChunkPayload
+			if err := json.Unmarshal(wsMsg.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal AgentAudioChunkPayload: %v", err)
+			}
+			if payload.TextSegment != "这块音频自己的字" {
+				t.Errorf("expected text_segment to forward this chunk's own TextDelta, got %q", payload.TextSegment)
+			}
+		}
+	}
+	if !sawTextDelta {
+		t.Errorf("expected an agent.text_delta frame to be flushed on the sentence's first chunk")
+	}
+	if !sawAudioChunk {
+		t.Fatalf("expected an agent.audio_chunk frame to be sent")
+	}
+
+	if _, _, popped := b.getDeferredTexts().PopAndStop(chatID, genID); popped {
+		t.Errorf("expected the deferred text queue to be empty after being flushed")
+	}
+}
+
 func sttTranscriptMsg(t *testing.T, payload schema.STTFinalTranscriptPayload) *nats.Msg {
 	t.Helper()
 	env := struct {
