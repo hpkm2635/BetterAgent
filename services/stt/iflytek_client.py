@@ -158,7 +158,7 @@ class IFlytekSession:
             logger.info(f"iFLYTEK raw response: {raw}")
 
             # v2 successful responses nest the result under data.result.
-            payload = msg.get("data") or msg.get("payload")
+            payload = msg.get("data") or {}
             if not payload:
                 continue
 
@@ -181,6 +181,7 @@ class IFlytekSession:
                 continue
 
             # status == 2 from iFLYTEK means the final result for this utterance.
+            status = payload.get("status")
             is_final = status == 2
             yield {"text": transcript, "is_final": is_final}
 
