@@ -1103,11 +1103,19 @@ def health():
 # ---------------------------------------------------------------------------
 @app.get("/api/admin/schedules")
 async def list_schedules(chat_id: int = Query(0)):
-    """列出某 chat_id 下的所有日程（透传 companion /api/schedule/list）。"""
+    """列出某 chat_id 下的所有日程（透传 companion /api/schedule/list）。
+
+    与 sessions/用户画像等端点同样的约定：管理界面里的 chat_id 是"友好的"
+    原始编号，落到 companion 存储前要套上 WebNamespaceOffset（见
+    _to_web_chat_id）。此前这里漏做了这一步，导致管理面板新建/查询的日程
+    跟真实 Web 会话用的 chat_id 对不上——不只是面板看不到浏览器里创建的日程，
+    companion 的 ScheduleService._fire 到点触发提醒时还会拿"< WebNamespaceOffset"
+    误判成 Telegram 频道，把提醒推错地方（见 services/companion/schedule_service.py）。
+    """
     if not chat_id:
         chat_id = 1001
     return await _forward(
-        COMPANION_URL, "companion", "GET", f"/api/schedule/list?chat_id={chat_id}"
+        COMPANION_URL, "companion", "GET", f"/api/schedule/list?chat_id={_to_web_chat_id(chat_id)}"
     )
 
 
@@ -1117,9 +1125,13 @@ async def add_schedule(payload: Optional[Dict[str, Any]] = Body(None)):
 
     由 companion 侧完成持久化 + APScheduler 到期注册，Admin 只做反向代理，
     直接写 companion.db 会导致 APScheduler 不知道新日程、提醒不会触发。
+
+    chat_id 同 list_schedules 一样需要套上 WebNamespaceOffset 再转发。
     """
     if not payload:
         return _error(400, "empty body")
+    if payload.get("chat_id"):
+        payload = {**payload, "chat_id": _to_web_chat_id(payload["chat_id"])}
     return await _forward(COMPANION_URL, "companion", "POST", "/api/schedule/add", payload)
 
 
