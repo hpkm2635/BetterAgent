@@ -83,30 +83,33 @@ class IFlytekSession:
         return f"{self._endpoint}?{urlencode(params)}"
 
     def _build_frame(self, audio_b64: str, status: int) -> Dict[str, Any]:
-        return {
-            "header": {
-                "status": status,
-                "app_id": self._app_id,
-            },
-            "parameter": {
-                "iat": {
-                    "domain": "slm",
+        # iFLYTEK WebAPI v2 expects a different frame shape than the v1 protocol:
+        # {common, business, data} instead of {header, parameter, payload}.
+        # Reference: official iFLYTEK streaming ASR WebAPI v2 docs.
+        if status == STATUS_FIRST_FRAME:
+            return {
+                "common": {
+                    "app_id": self._app_id,
+                },
+                "business": {
                     "language": self._language,
                     "accent": self._accent,
+                    "domain": "slm",
                     "dwa": "wpgs",
-                    "result": {
-                        "encoding": "utf8",
-                        "compress": "raw",
-                        "format": "plain",
-                    },
                 },
-            },
-            "payload": {
-                "audio": {
-                    "audio": audio_b64,
-                    "sample_rate": self._sample_rate,
+                "data": {
+                    "status": status,
+                    "format": f"audio/L16;rate={self._sample_rate}",
                     "encoding": "raw",
+                    "audio": audio_b64,
                 },
+            }
+        return {
+            "data": {
+                "status": status,
+                "format": f"audio/L16;rate={self._sample_rate}",
+                "encoding": "raw",
+                "audio": audio_b64,
             },
         }
 
@@ -145,18 +148,19 @@ class IFlytekSession:
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            header = msg.get("header", {})
-            code = header.get("code")
-            status = header.get("status")
-            if code != 0:
-                logger.warning(f"iFLYTEK STT error: code={code}, message={header.get('message')}, raw_msg={raw}")
+            # v2 errors are top-level, not nested under header.
+            code = msg.get("code")
+            if code is not None and code != 0:
+                logger.warning(f"iFLYTEK STT error: code={code}, message={msg.get('message')}, raw_msg={raw}")
                 break
 
-            payload = msg.get("payload")
+            # v2 successful responses nest the result under data.result.
+            payload = msg.get("data") or msg.get("payload")
             if not payload:
                 continue
 
-            text_b64 = payload.get("result", {}).get("text")
+            result = payload.get("result", {}) or {}
+            text_b64 = result.get("text") if isinstance(result, dict) else None
             if not text_b64:
                 continue
 
