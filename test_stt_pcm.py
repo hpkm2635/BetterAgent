@@ -32,7 +32,7 @@ def generate_pcm() -> bytes:
 def speech_start_payload(chat_id: int) -> dict:
     return {
         "id": "test-event-1",
-        "subject": "agent.speech_start",
+        "subject": "agent.speech.start",
         "source": "test_script",
         "payload": {
             "chat_id": chat_id,
@@ -60,7 +60,7 @@ def stream_chunk_payload(chat_id: int, audio_bytes: bytes) -> dict:
 def speech_end_payload(chat_id: int) -> dict:
     return {
         "id": "test-event-3",
-        "subject": "agent.speech_end",
+        "subject": "agent.speech.end",
         "source": "test_script",
         "payload": {
             "chat_id": chat_id,
@@ -88,14 +88,14 @@ async def main():
         except Exception as e:
             print("[ERROR parsing partial]", e)
 
-    await nc.subscribe("agent.stt.stream_final", cb=on_final)
-    await nc.subscribe("agent.stt.stream_partial", cb=on_partial)
+    await nc.subscribe("agent.stt.stream.final", cb=on_final)
+    await nc.subscribe("agent.stt.stream.partial", cb=on_partial)
 
     pcm = generate_pcm()
     print(f"Generated {len(pcm)} bytes of PCM audio")
 
     # Send speech_start
-    await nc.publish("agent.speech_start", json.dumps(speech_start_payload(CHAT_ID)).encode())
+    await nc.publish("agent.speech.start", json.dumps(speech_start_payload(CHAT_ID)).encode())
     print("Sent speech_start")
 
     # Send audio chunks
@@ -108,7 +108,7 @@ async def main():
     print("Sent audio chunks")
 
     # Send speech_end
-    await nc.publish("agent.speech_end", json.dumps(speech_end_payload(CHAT_ID)).encode())
+    await nc.publish("agent.speech.end", json.dumps(speech_end_payload(CHAT_ID)).encode())
     print("Sent speech_end")
 
     # Wait for results
