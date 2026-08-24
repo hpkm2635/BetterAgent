@@ -88,8 +88,8 @@ async def main():
         except Exception as e:
             print("[ERROR parsing partial]", e)
 
-    await nc.subscribe("agent.stt.stream.final", cb=on_final)
-    await nc.subscribe("agent.stt.stream.partial", cb=on_partial)
+    await nc.subscribe("agent.stt.stream_final", cb=on_final)
+    await nc.subscribe("agent.stt.stream_partial", cb=on_partial)
 
     pcm = generate_pcm()
     print(f"Generated {len(pcm)} bytes of PCM audio")
