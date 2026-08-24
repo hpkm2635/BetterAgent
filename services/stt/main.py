@@ -166,7 +166,9 @@ async def main():
                 return
 
             pcm_bytes = base64.b64decode(audio_b64)
+            logger.info(f"Forwarding {len(pcm_bytes)} bytes to {type(session).__name__}")
             await session.send_audio(pcm_bytes)
+            logger.info("Forwarded audio chunk successfully")
         except Exception as e:
             logger.error(f"Error forwarding audio chunk to STT provider: {e}", exc_info=True)
 
