@@ -1,11 +1,88 @@
 package engine
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 )
+
+// TestAddTimeoutCallback_MultipleSubscribersAllInvoked pins the fix for the
+// old SetTimeoutCallback's overwrite semantics: two independent packages
+// (Telegram's typing-heartbeat cleanup, WebGateway's browser idle
+// broadcast) both need their own notification when a chat's watchdog
+// fires, and registering the second must not silently drop the first.
+func TestAddTimeoutCallback_MultipleSubscribersAllInvoked(t *testing.T) {
+	sm := NewCentralStateMachine(zap.NewNop())
+
+	var mu sync.Mutex
+	var calledA, calledB bool
+
+	sm.AddTimeoutCallback(func(chatID int64, state State) {
+		mu.Lock()
+		calledA = true
+		mu.Unlock()
+	})
+	sm.AddTimeoutCallback(func(chatID int64, state State) {
+		mu.Lock()
+		calledB = true
+		mu.Unlock()
+	})
+
+	chatID := int64(9001)
+	csm := sm.getOrCreateChatSM(chatID)
+	csm.mu.Lock()
+	csm.currentState = StateTalking
+	csm.mu.Unlock()
+
+	sm.TouchWatchdogChat(chatID, 20*time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !calledA || !calledB {
+		t.Errorf("expected both registered callbacks to be invoked on watchdog timeout, got calledA=%v calledB=%v", calledA, calledB)
+	}
+}
+
+// TestAddTimeoutCallback_DoesNotFireAfterStateChangedBeforeTimeout confirms
+// the new dispatch-based callback still respects ChatStateMachine's
+// existing "state changed since the watchdog was set" guard (TransitionTo
+// -> resetWatchdog stops the in-flight timer) -- a real transition (e.g.
+// barge-in) before the deadline must suppress the notification, not just
+// registering a callback in the first place.
+func TestAddTimeoutCallback_DoesNotFireAfterStateChangedBeforeTimeout(t *testing.T) {
+	sm := NewCentralStateMachine(zap.NewNop())
+
+	var mu sync.Mutex
+	fired := false
+	sm.AddTimeoutCallback(func(chatID int64, state State) {
+		mu.Lock()
+		fired = true
+		mu.Unlock()
+	})
+
+	chatID := int64(9002)
+	csm := sm.getOrCreateChatSM(chatID)
+	csm.mu.Lock()
+	csm.currentState = StateTalking
+	csm.mu.Unlock()
+
+	sm.TouchWatchdogChat(chatID, 30*time.Millisecond)
+
+	if ok := sm.TransitionToChat(chatID, StateCancelling, "barge_in"); !ok {
+		t.Fatalf("test setup: expected StateTalking -> StateCancelling to be a valid transition")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fired {
+		t.Errorf("expected the timeout callback not to fire after a real state transition invalidated the watchdog")
+	}
+}
 
 func TestPruneInactive_EvictsOnlyIdleAndStaleChats(t *testing.T) {
 	sm := NewCentralStateMachine(zap.NewNop())

@@ -267,7 +267,7 @@ type CentralStateMachine struct {
 	mu               sync.RWMutex
 	chatStates       map[int64]*ChatStateMachine
 	logger           *zap.Logger
-	timeoutCb        func(chatID int64, state State)
+	timeoutCbs       []func(chatID int64, state State)
 	lastActiveChatID int64
 	lastActiveAt     time.Time
 }
@@ -279,15 +279,31 @@ func NewCentralStateMachine(logger *zap.Logger) *CentralStateMachine {
 	}
 }
 
-func (sm *CentralStateMachine) SetTimeoutCallback(cb func(chatID int64, state State)) {
+// AddTimeoutCallback registers an additional watchdog-timeout subscriber.
+// Telegram's typing-heartbeat cleanup (gotd/adapter.go) and WebGateway's
+// browser-facing idle broadcast are two independent consumers of the same
+// per-chat watchdog; callbacks accumulate rather than overwrite each other
+// (unlike the old single-callback SetTimeoutCallback this replaces), so
+// registering one doesn't silently break the other.
+func (sm *CentralStateMachine) AddTimeoutCallback(cb func(chatID int64, state State)) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.timeoutCb = cb
-	// Dynamically refresh onTimeout callback across all active ChatStateMachine instances
+	sm.timeoutCbs = append(sm.timeoutCbs, cb)
+	// Dynamically refresh onTimeout dispatch across all active ChatStateMachine instances
 	for _, csm := range sm.chatStates {
 		csm.mu.Lock()
-		csm.onTimeout = cb
+		csm.onTimeout = sm.dispatchTimeout
 		csm.mu.Unlock()
+	}
+}
+
+func (sm *CentralStateMachine) dispatchTimeout(chatID int64, state State) {
+	sm.mu.RLock()
+	cbs := make([]func(int64, State), len(sm.timeoutCbs))
+	copy(cbs, sm.timeoutCbs)
+	sm.mu.RUnlock()
+	for _, cb := range cbs {
+		cb(chatID, state)
 	}
 }
 
@@ -297,7 +313,7 @@ func (sm *CentralStateMachine) getOrCreateChatSM(chatID int64) *ChatStateMachine
 
 	csm, exists := sm.chatStates[chatID]
 	if !exists {
-		csm = newChatStateMachine(chatID, sm.logger, sm.timeoutCb)
+		csm = newChatStateMachine(chatID, sm.logger, sm.dispatchTimeout)
 		sm.chatStates[chatID] = csm
 	}
 	return csm

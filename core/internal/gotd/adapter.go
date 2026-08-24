@@ -105,7 +105,7 @@ func NewGotdAdapter(
 
 	adapter.typingMgr = NewTypingHeartbeatManager(adapter, adapter.antiSpam, logger)
 
-	csm.SetTimeoutCallback(func(chatID int64, state engine.State) {
+	csm.AddTimeoutCallback(func(chatID int64, state engine.State) {
 		logger.Warn("State machine watchdog callback triggered: stopping typing heartbeat", zap.Int64("chat_id", chatID), zap.String("stuck_state", string(state)))
 		adapter.typingMgr.StopHeartbeat(chatID)
 		// Also drop any partially-buffered stream text: if IsFinal never
