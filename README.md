@@ -7,7 +7,7 @@
 
 ## 🌟 核心特性 (Key Features)
 
-- **🎭 多模态数字人交互**：支持基于 WebSockets (`:8080`) 的全双工音视频流传输、实时 PCM 音频切片播放与 Live2D 口型（Viseme Lip-sync）高精度驱动。
+- **🎭 多模态数字人交互**：支持基于 WebSockets (`:8080`) 的全双工音视频流传输与实时 PCM 音频切片播放；Live2D 口型目前由播放中音频的实时频谱分析驱动，TTS 音频切片已内嵌 Viseme 时间轴数据并传输到前端，但尚未接入消费（后续工作项，见 [ARCHITECTURE.md §6.2](docs/ARCHITECTURE.md)）。
 - **⚡ 毫秒级打断 (Barge-in)**：支持用户中途打断与语音重推，基于原子 `generation_id` 代际防护机制自动清空在途过期的音频切片与口型帧。
 - **🧠 异步并发状态机**：Go 实现的 `CentralStateMachine`，拥有 45 秒 Deadman Switch Watchdog 超时自愈、2小时空闲自动 Evict 回收与多维度会话隔离。
 - **🧬 心理与生理计算引擎**：内建 3D VAD 情感模型（Valence/Arousal/Dominance）、生理指标（Energy/SocialBattery/Affection）、`CircadianRhythm` 昼夜生物钟与 `UrgeEngine` 枯燥度主动开口触发器。
@@ -129,7 +129,7 @@ cp .env.example .env
 
 ### 3. 一键拉起后端微服务矩阵
 
-使用内置的进程守护编排脚本 `runner.py`（支持自动拉起 Go Core、NATS、Cognitive、Memory 与 TTS 微服务）：
+使用内置的进程守护编排脚本 `runner.py`（自动拉起 NATS、Go Core、Cognitive、Memory、TTS、STT、Campus KB、Admin 后端/前端、Companion、Game Watcher 等全部微服务与前端开发服务器）：
 
 ```bash
 python runner.py
