@@ -234,19 +234,29 @@ class KnowledgeStore:
         points (see ingest()'s write-then-delete ordering), so exclude_ids
         is exactly "the points this ingest call just wrote for this
         source" -- without it, this would delete the points it just wrote.
+
+        Never raises: this is stale-point cleanup for a source whose new
+        points are already written and counted as ingested, so a failure
+        here must not abort the rest of the batch (ingest() calls this once
+        per source, outside any per-document try/except) or misreport
+        already-successful writes as failed.
         """
         exclude_ids = exclude_ids or set()
 
-        # The in-memory _source_ids map is rebuilt from Qdrant on startup, but
-        # if Qdrant was unavailable the map may be empty or stale. Scan the
-        # whole in-memory document set to guarantee no old chunks survive.
-        old_ids = {
-            point_id for point_id, doc in self._docs.items()
-            if doc.get("source") == source and point_id not in exclude_ids
-        }
-        for point_id in old_ids:
-            self._docs.pop(point_id, None)
-        self._source_ids[source] = set(exclude_ids)
+        try:
+            # The in-memory _source_ids map is rebuilt from Qdrant on startup,
+            # but if Qdrant was unavailable the map may be empty or stale.
+            # Scan the whole in-memory document set to guarantee no old
+            # chunks survive.
+            old_ids = {
+                point_id for point_id, doc in self._docs.items()
+                if doc.get("source") == source and point_id not in exclude_ids
+            }
+            for point_id in old_ids:
+                self._docs.pop(point_id, None)
+            self._source_ids[source] = set(exclude_ids)
+        except Exception as exc:
+            logger.warning("failed to clean up in-memory index for source=%r: %s", source, exc)
 
         if self.client is not None:
             try:

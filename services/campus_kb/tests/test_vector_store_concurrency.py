@@ -55,6 +55,34 @@ async def test_concurrent_ingest_same_source_does_not_duplicate_or_lose_docs():
 
 
 @pytest.mark.asyncio
+async def test_delete_by_source_cleanup_failure_does_not_abort_the_batch():
+    """A failure in _delete_by_source's in-memory cleanup step (called once
+    per source, after that source's new points are already written and
+    counted as ingested) must not propagate out of ingest() and abort
+    processing of later sources in the same batch -- write-then-delete
+    moved this call outside the per-document try/except that used to catch
+    it, so _delete_by_source itself must now be exception-safe.
+    """
+    store = KnowledgeStore(HashedNgramEmbedder(dim=64))
+
+    class _PoisonedDocs(dict):
+        def items(self):
+            raise RuntimeError("boom")
+
+    store._docs = _PoisonedDocs()
+
+    ingested, failed = await store.ingest([
+        IngestDocument(content="图书馆周一至周五开放至22:00。", source="faq.md"),
+        IngestDocument(content="超市营业时间07:00-23:00。", source="market.md"),
+    ])
+
+    # Both documents' embed/write steps succeeded -- only the (poisoned)
+    # stale-cleanup step failed, for both sources, which must be swallowed
+    # rather than counted as a document failure or abort the second source.
+    assert (ingested, failed) == (2, 0)
+
+
+@pytest.mark.asyncio
 async def test_reingest_fully_replaces_old_content_not_a_union():
     """A source re-ingest must end up with *only* the new content -- this is
     the correctness property ingest()'s write-then-delete reordering has to
