@@ -9,12 +9,20 @@ export interface Viseme {
   shape: string
 }
 
+// Mirrors campus_kb_tool.py's fact shape / Go's webgateway.Citation. Only
+// ever present on the agent.text_delta message carrying is_final=true.
+export interface Citation {
+  content: string
+  source: string
+  relevance_score?: number
+}
+
 export interface WSMessage<T = any> {
   type: string
   payload?: T
 }
 
-export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number) => void
+export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number, citations?: Citation[]) => void
 export type EmotionCallback = (emotion: string, action?: string) => void
 export type AudioChunkCallback = (audioBase64: string, sampleRate: number, chatId?: number, visemes?: Viseme[], textSegment?: string) => void
 export type StateChangeCallback = (state: string, chatId?: number, reason?: string) => void
@@ -227,7 +235,8 @@ export class BetterAgentWSBridge {
       switch (msg.type) {
         case 'agent.text_delta':
           if (msg.payload?.text) {
-            this.textDeltaListeners.forEach(cb => cb(msg.payload.text, !!msg.payload.is_final, msg.payload.chat_id))
+            const citations: Citation[] | undefined = Array.isArray(msg.payload.citations) ? msg.payload.citations : undefined
+            this.textDeltaListeners.forEach(cb => cb(msg.payload.text, !!msg.payload.is_final, msg.payload.chat_id, citations))
           }
           break
 

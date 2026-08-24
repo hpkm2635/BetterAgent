@@ -7,7 +7,7 @@ import { useSpeechOutputControlStore } from '../speech-output-control'
 import { useSTS2GameStateStore } from './sts2-game-state'
 import { resolveStableChatId } from '../../services/betteragent-ws'
 
-import type { EmotionalStatePayload } from '../../services/betteragent-ws'
+import type { Citation, EmotionalStatePayload } from '../../services/betteragent-ws'
 
 export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () => {
   const currentChatId = ref<number | null>(null)
@@ -30,6 +30,10 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   // turn (resetRevealedCaption), accumulates across all sentences within
   // one turn.
   const revealedCaption = ref('')
+  // Campus KB citations for the current turn's final reply, if any --
+  // replaced (not accumulated) each time a text_delta carries some, reset
+  // to empty at the start of each new turn alongside revealedCaption.
+  const citations = ref<Citation[]>([])
 
   const streamStore = useChatStreamStore()
   const chatSession = useChatSessionStore()
@@ -125,7 +129,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     betterAgentWSBridge.connect()
 
     // 1. Text Delta & Stream Life Cycle
-    unsubs.push(betterAgentWSBridge.onTextDelta((text: string, isFinal?: boolean, chatId?: number) => {
+    unsubs.push(betterAgentWSBridge.onTextDelta((text: string, isFinal?: boolean, chatId?: number, msgCitations?: Citation[]) => {
       if (!isChatMatch(chatId))
         return
 
@@ -134,8 +138,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
         isStreaming.value = true
         streamStore.beginStream()
         resetRevealedCaption()
+        citations.value = []
       }
       streamStore.appendStreamLiteral(text)
+
+      if (msgCitations?.length)
+        citations.value = msgCitations
 
       if (isFinal) {
         resetStreamingWatchdog()
@@ -238,6 +246,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     emotionalState,
     partialTranscript,
     revealedCaption,
+    citations,
     scheduleDialogOpen,
     emotionDialogOpen,
     initialize,

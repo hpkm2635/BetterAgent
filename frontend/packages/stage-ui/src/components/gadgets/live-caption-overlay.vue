@@ -8,7 +8,7 @@ import { useSpeechOutputControlStore } from '../../stores/speech-output-control'
 
 const streamStore = useChatStreamStore()
 const gatewayStore = useBetterAgentGatewayStore()
-const { isSpeaking, csmState, isStreaming, isGracePeriodActive, revealedCaption } = storeToRefs(gatewayStore)
+const { isSpeaking, csmState, isStreaming, isGracePeriodActive, revealedCaption, citations } = storeToRefs(gatewayStore)
 const { speechMuted } = storeToRefs(useSpeechOutputControlStore())
 // Stage.vue keeps this true for as long as it still has BetterAgent audio
 // queued/playing on audioContext's own clock (see betterAgentSilenceTimer),
@@ -110,6 +110,13 @@ function onPointerUp(e: PointerEvent) {
 function resetPosition() {
   dragOffset.value = null
 }
+
+// Collapsed by default -- citations are a supplementary "how do you know
+// that" detail, not something that should compete with the caption text
+// for attention. Not reset on its own; citations.value itself clears at
+// the start of each new turn (betteragent-gateway.ts), which naturally
+// hides the whole section again regardless of this toggle's state.
+const citationsExpanded = ref(false)
 </script>
 
 <template>
@@ -165,6 +172,32 @@ function resetPosition() {
         <!-- Subtitle Content -->
         <div class="break-words px-5 pb-3.5 pt-1 text-sm font-medium leading-relaxed tracking-wide text-neutral-800 md:text-base dark:text-neutral-100">
           {{ lastNonEmptyText }}
+        </div>
+
+        <!-- Campus KB Citations (collapsed by default) -->
+        <div v-if="citations.length" class="border-t border-neutral-200/50 px-5 py-2 dark:border-white/10">
+          <button
+            type="button"
+            class="flex items-center gap-1 text-[11px] font-medium text-neutral-400 transition-colors hover:text-pink-500 dark:text-neutral-500"
+            @click.stop="citationsExpanded = !citationsExpanded"
+          >
+            参考资料 ({{ citations.length }})
+            <div :class="citationsExpanded ? 'i-carbon-chevron-up' : 'i-carbon-chevron-down'" />
+          </button>
+          <ul v-if="citationsExpanded" class="mt-2 flex flex-col gap-2">
+            <li
+              v-for="(c, i) in citations"
+              :key="i"
+              class="rounded-lg bg-neutral-100/70 p-2 text-xs text-neutral-600 dark:bg-neutral-800/60 dark:text-neutral-300"
+            >
+              <div class="mb-1 text-[10px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+                {{ c.source }}
+              </div>
+              <div class="line-clamp-3 leading-relaxed">
+                {{ c.content }}
+              </div>
+            </li>
+          </ul>
         </div>
       </div>
     </div>
