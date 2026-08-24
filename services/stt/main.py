@@ -154,6 +154,7 @@ async def main():
             payload_dict = data.get("payload", {})
             chat_id = payload_dict.get("chat_id", 0)
             audio_b64 = payload_dict.get("audio_base64")
+            logger.info(f"STT stream_chunk received chat_id={chat_id} audio_len={len(audio_b64) if audio_b64 else 0} session_exists={chat_id in sessions}")
             if not chat_id or not audio_b64:
                 return
 
