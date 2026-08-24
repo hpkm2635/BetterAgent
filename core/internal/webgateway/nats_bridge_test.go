@@ -202,6 +202,69 @@ func TestHandleAudioChunkMsg_BinaryFrameTaggedWithChunksOwnGeneration_NotCurrent
 	}
 }
 
+func sttTranscriptMsg(t *testing.T, payload schema.STTFinalTranscriptPayload) *nats.Msg {
+	t.Helper()
+	env := struct {
+		Payload schema.STTFinalTranscriptPayload `json:"payload"`
+	}{Payload: payload}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("failed to marshal test STTFinalTranscriptPayload: %v", err)
+	}
+	return &nats.Msg{Data: data}
+}
+
+// TestHandleSTTPartialMsg_RelaysToWSButNeverTriggersReasoning covers wiring
+// up agent.stt.stream_partial (previously never subscribed at all, so
+// mid-utterance transcripts never reached the browser -- see
+// handleSTTPartialMsg's doc comment). Confirms both halves: the browser
+// gets an is_final:false preview frame, and -- unlike handleSTTFinalMsg --
+// the chat is never pushed into a reasoning turn over a partial result.
+func TestHandleSTTPartialMsg_RelaysToWSButNeverTriggersReasoning(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(6666)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	if got := b.csm.GetChatState(chatID); got != engine.StateIdle {
+		t.Fatalf("test setup: expected chat to start IDLE, got %s", got)
+	}
+
+	b.handleSTTPartialMsg(sttTranscriptMsg(t, schema.STTFinalTranscriptPayload{
+		ChatID: chatID,
+		Text:   "帮我查一下图书",
+	}))
+
+	select {
+	case frame := <-session.sendChan:
+		var wsMsg WSMessage
+		if err := json.Unmarshal(frame.Data, &wsMsg); err != nil {
+			t.Fatalf("failed to unmarshal WS frame: %v", err)
+		}
+		if wsMsg.Type != "agent.stt_transcript" {
+			t.Fatalf("expected agent.stt_transcript frame, got %q", wsMsg.Type)
+		}
+		var payload AgentSTTTranscriptPayload
+		if err := json.Unmarshal(wsMsg.Payload, &payload); err != nil {
+			t.Fatalf("failed to unmarshal AgentSTTTranscriptPayload: %v", err)
+		}
+		if payload.IsFinal {
+			t.Errorf("expected IsFinal=false for a partial transcript, got true")
+		}
+		if payload.Text != "帮我查一下图书" {
+			t.Errorf("expected text to be relayed unchanged, got %q", payload.Text)
+		}
+	default:
+		t.Fatal("expected a WS frame to be sent to the session, got none")
+	}
+
+	if got := b.csm.GetChatState(chatID); got != engine.StateIdle {
+		t.Errorf("expected chat to remain IDLE after a partial transcript (must not trigger a reasoning turn), got %s", got)
+	}
+}
+
 func TestHandleGameStartStopCommand_GameStart_ActivatesAndIntercepts(t *testing.T) {
 	b, _ := newTestNatsBridge(t)
 	handled := b.handleGameStartStopCommand(1001, "/game_start")

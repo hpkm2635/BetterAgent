@@ -271,6 +271,13 @@ func (b *NatsBridge) StartSubscriptions() error {
 	_, _ = b.bus.Subscribe(bus.SubjectSTTStreamFinal, func(msg *nats.Msg) {
 		b.handleSTTFinalMsg(msg)
 	})
+	// Mid-utterance (unpunctuated) partial transcripts -- echoed to the
+	// browser as a live "recognizing" preview, but never fed into
+	// publishInboundMessage: only a final transcript may trigger a
+	// reasoning turn.
+	_, _ = b.bus.Subscribe(bus.SubjectSTTStreamPartial, func(msg *nats.Msg) {
+		b.handleSTTPartialMsg(msg)
+	})
 
 	// 5. Subscribe to TTS Stream End & Stream Cancel Ack to broadcast CSM IDLE state to browser
 	_, _ = b.bus.Subscribe(bus.SubjectTTSStreamEnd, func(msg *nats.Msg) {
@@ -993,6 +1000,38 @@ func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 
 	b.publishInboundMessage(p.ChatID, p.Text, "voice", &transcript)
+}
+
+// handleSTTPartialMsg relays a mid-utterance (unpunctuated) transcript to the
+// browser as a live preview. Reuses schema.STTFinalTranscriptPayload to
+// decode -- services/stt publishes the exact same payload shape on both
+// SUBJECT_STT_STREAM_PARTIAL and SUBJECT_STT_STREAM_FINAL (see
+// shared/schema/payloads.py's STTTranscriptPayload docstring), the subject
+// alone is what distinguishes them. Unlike handleSTTFinalMsg, this never
+// calls publishInboundMessage -- a partial result is provisional and must
+// not trigger a reasoning turn.
+func (b *NatsBridge) handleSTTPartialMsg(msg *nats.Msg) {
+	var env struct {
+		Payload schema.STTFinalTranscriptPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		return
+	}
+
+	p := env.Payload
+	if p.ChatID == 0 || p.Text == "" {
+		return
+	}
+
+	outBytes, _ := json.Marshal(WSMessage{
+		Type: "agent.stt_transcript",
+		Payload: marshalRaw(AgentSTTTranscriptPayload{
+			Text:    p.Text,
+			IsFinal: false,
+			ChatID:  p.ChatID,
+		}),
+	})
+	b.sessions.SendTextToChat(p.ChatID, outBytes)
 }
 
 func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {

@@ -35,6 +35,7 @@ const (
 
 	// 7 Realtime Cancelable Streaming Subjects
 	SubjectSTTStreamChunk    = "agent.stt.stream_chunk"
+	SubjectSTTStreamPartial  = "agent.stt.stream_partial"
 	SubjectSTTStreamFinal    = "agent.stt.stream_final"
 	SubjectTTSStreamChunk    = "agent.tts.stream_chunk"
 	SubjectTTSStreamEnd      = "agent.tts.stream_end"
