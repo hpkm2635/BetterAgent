@@ -23,6 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v1.9.0] - 2026-08-24
+
+针对 `docs/ARCHITECTURE.md` 的一轮完整代码审查发现的严重缺陷、并发缺陷与死代码，分四轮修复：核心链路 Bug 修复、剩余缺陷与死代码清理、STT 中间转写全链路打通、文档同步。
+
+### Added
+- **BYOK Provider 配置热更新消费端 (`services/cognitive/`)**：订阅 Admin 后端发布的 `agent.config.reloaded`，调用 `ProviderFactory.invalidate_cache()` + `CognitiveEngine.refresh_default_provider()`，切换 LLM Provider/API Key 无需重启服务。
+- **STT 中间转写结果（partial transcript）全链路打通**：Go `nats_bridge.go` 新增订阅 `agent.stt.stream_partial` 并转发为 WS `agent.stt_transcript`（`is_final:false`）；前端 `betteragent-gateway.ts` store 新增 `partialTranscript` 响应式状态（UI 展示留待后续实现）。
+
+### Fixed
+- **人设热更新链路打通**：修复 `admin/backend/main.py` 的 `.env` 加载顺序崩溃；`patch_persona` 补上写盘成功后向 NATS 发布 `agent.persona.update`（响应体新增 `hot_reload` 字段）；修复 `services/cognitive/main.py` 缺失的 `PersonaLoader` 导入（此前每次热更新消息都会静默抛 `NameError`）。
+- **Barge-in 打断正确性**：去掉 `generation_id == 0` 时跳过过期校验的漏洞；修复 `memory_hub.py` 未转发 `generation_id` 导致被 pydantic 默认值重置的问题；前端追踪逐 chat 的 `generation_id` 并丢弃过期二进制音频帧；`agent.state_change` 的 idle 事件新增 `reason` 字段以区分"正常说完"与"被打断"，避免误伤正常收尾的音频；二进制音频帧改为携带该帧自身的 generation（而非当前 generation）。
+- **Companion 推荐接口时区 Bug**：修复 `recommendation.py` 时区朴素时间戳与带时区时间戳相减抛未捕获 `TypeError`（导致 `/api/companion/recommendations` 500）的问题，统一按 `Asia/Shanghai` 解释朴素时间戳。
+- **Go 情绪状态数据竞争与跨会话状态错用**：新增 `EmotionalState.GetMoodTag()`/`GetAffectionLevel()` 加锁 getter 替换多处锁外裸读；修复 `game_event_handler.go` 与 `game_turn_handler.go` 两处濒死/胜负事件误用全局兜底情绪状态而非目标会话专属状态的问题。
+- **campus_kb 并发 ingest 缺陷**：`KnowledgeStore.ingest()` 新增 `asyncio.Lock`，改为写入后再排除新写入 ID 删除旧内容（write-before-delete），修复并发重复入库、重新入库时短暂出现空窗口、以及批量入库中单个来源清理失败会中止整批处理的问题。
+- **跨会话记忆泄漏**：`AgentSelfMemory.self_events` 由进程级扁平列表改为按 `chat_id` 分桶，避免不同会话的自我事件互相串场。
+- **admin 后端 `.env` 加载崩溃**、**runner.py 误杀 Docker 托管端口进程**（端口列表移除 Docker 管理的 `10095`/已废弃的 `50000`，加入 companion 服务的 `8096`）。
+
+### Changed
+- 清理一批确认无调用点、无架构文档依据的死代码（Go：`CentralStateMachine.GetCurrentState`/`TransitionTo` 旧接口、`SessionManager.BroadcastText`、`MediaManager.CleanOldFiles`、重复的 `SubjectWebUserInterrupt`；Python：`campus_kb/retrieval.py` 的 `rrf_fusion()`、若干未使用的 import），对"没有调用点但看起来是预留接口"的代码保守保留不删。
+
+---
+
 ## [v1.8.0] - 2026-08-22
 
 ### Added (Supervisor、Admin Panel & Companion 全面集成)
