@@ -52,10 +52,14 @@ def preprocess_text(text: str) -> str:
     return "".join(res)
 
 
-# Rough Chinese speech-rate estimate, used only to decide roughly how much
-# of the sentence's remaining text each streamed TTS sub-chunk "covers" for
-# viseme purposes -- not meant to be precise, tune after real-world testing.
-DEFAULT_VISEME_CHARS_PER_SEC = 4.5
+# Cold-start Chinese speech-rate guess, used only until VisemeRateEstimator
+# has observed real utterances to calibrate against. Deliberately biased
+# slow/conservative: the two failure modes aren't symmetric -- guessing too
+# fast burns through remaining_text before the sentence's audio actually
+# finishes, freezing the mouth for the rest of playback (very visible);
+# guessing too slow just leaves a few unused trailing characters when the
+# sentence ends (invisible, no missing playback time).
+DEFAULT_VISEME_CHARS_PER_SEC = 3.0
 
 
 def allocate_viseme_text_slice(
@@ -75,6 +79,53 @@ def allocate_viseme_text_slice(
     est_chars = max(1, round(duration_sec * chars_per_sec))
     est_chars = min(est_chars, len(remaining_text))
     return remaining_text[:est_chars], remaining_text[est_chars:]
+
+
+class VisemeRateEstimator:
+    """Self-calibrating chars/sec speech-rate estimate.
+
+    A single fixed chars_per_sec guess can't stay accurate across different
+    TTS voices/providers or speaking styles -- each completed (non-
+    interrupted) utterance's *real* total audio duration reveals its real
+    pace, which is a much better estimate for the *next* utterance than any
+    static constant. Keyed by an arbitrary caller key (e.g. the TTS provider
+    class name) so switching voices doesn't corrupt another voice's learned
+    pace.
+    """
+
+    def __init__(
+        self,
+        default_rate: float = DEFAULT_VISEME_CHARS_PER_SEC,
+        alpha: float = 0.3,
+        min_rate: float = 1.0,
+        max_rate: float = 15.0,
+    ) -> None:
+        self._default_rate = default_rate
+        self._alpha = alpha
+        self._min_rate = min_rate
+        self._max_rate = max_rate
+        self._rates: Dict[str, float] = {}
+
+    def get(self, key: str) -> float:
+        """Current best chars/sec estimate for `key` (the cold-start default
+        until at least one utterance has been observed for it)."""
+        return self._rates.get(key, self._default_rate)
+
+    def observe(self, key: str, text_len: int, total_duration_sec: float) -> None:
+        """Feed in one utterance's real total text length and real total
+        audio duration, nudging the EMA for `key` toward the observed pace.
+
+        No-ops on invalid input. Callers must only pass a *completed*
+        utterance's true total duration -- an interrupted/cancelled one's
+        duration doesn't correspond to its full text length and would skew
+        the estimate.
+        """
+        if text_len <= 0 or total_duration_sec <= 0:
+            return
+        observed_rate = text_len / total_duration_sec
+        observed_rate = min(max(observed_rate, self._min_rate), self._max_rate)
+        prior = self.get(key)
+        self._rates[key] = self._alpha * observed_rate + (1 - self._alpha) * prior
 
 
 def text_to_visemes(text: str, duration_seconds: float = 1.0) -> List[Dict[str, Any]]:

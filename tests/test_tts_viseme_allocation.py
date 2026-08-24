@@ -1,6 +1,6 @@
 import pytest
 
-from services.tts.viseme_generator import allocate_viseme_text_slice, text_to_visemes
+from services.tts.viseme_generator import allocate_viseme_text_slice, text_to_visemes, VisemeRateEstimator
 
 
 def test_allocate_viseme_text_slice_empty_text_returns_empty():
@@ -57,3 +57,55 @@ def test_allocate_viseme_text_slice_feeds_text_to_visemes_scoped_to_chunk():
     full_sentence_visemes = text_to_visemes(sentence, 0.1)
     assert len(visemes) < len(full_sentence_visemes)
     assert len(visemes) == len(chunk_text)
+
+
+def test_viseme_rate_estimator_returns_default_for_unseen_key():
+    estimator = VisemeRateEstimator(default_rate=3.0)
+    assert estimator.get("GPTSoVITSClient") == 3.0
+
+
+def test_viseme_rate_estimator_moves_toward_observed_rate():
+    # Sentence of 10 chars that really took 5 real seconds to speak -> a
+    # true rate of 2.0 chars/sec, much slower than the 4.5 cold-start guess
+    # this is regression-testing against (the bug the estimator exists to
+    # self-correct for: guessing too fast runs out of text before the
+    # audio finishes and freezes the mouth for the remainder of playback).
+    estimator = VisemeRateEstimator(default_rate=4.5, alpha=0.3)
+    before = estimator.get("GPTSoVITSClient")
+
+    estimator.observe("GPTSoVITSClient", text_len=10, total_duration_sec=5.0)
+    after = estimator.get("GPTSoVITSClient")
+
+    assert after < before  # moved down, toward the slower observed rate
+    assert after == pytest.approx(0.3 * 2.0 + 0.7 * 4.5)
+
+
+def test_viseme_rate_estimator_converges_toward_repeated_observations():
+    estimator = VisemeRateEstimator(default_rate=4.5, alpha=0.3)
+    for _ in range(30):
+        estimator.observe("GPTSoVITSClient", text_len=10, total_duration_sec=5.0)
+    assert estimator.get("GPTSoVITSClient") == pytest.approx(2.0, abs=0.05)
+
+
+def test_viseme_rate_estimator_ignores_invalid_observations():
+    estimator = VisemeRateEstimator(default_rate=3.0)
+    estimator.observe("GPTSoVITSClient", text_len=0, total_duration_sec=5.0)
+    estimator.observe("GPTSoVITSClient", text_len=10, total_duration_sec=0.0)
+    estimator.observe("GPTSoVITSClient", text_len=10, total_duration_sec=-1.0)
+    assert estimator.get("GPTSoVITSClient") == 3.0  # unchanged, still the default
+
+
+def test_viseme_rate_estimator_clamps_extreme_observations():
+    estimator = VisemeRateEstimator(default_rate=3.0, alpha=1.0, min_rate=1.0, max_rate=15.0)
+    # A single garbled/edge-case observation (e.g. a near-instant chunk)
+    # shouldn't be able to push the estimate outside sane bounds.
+    estimator.observe("GPTSoVITSClient", text_len=1000, total_duration_sec=0.001)
+    assert estimator.get("GPTSoVITSClient") == 15.0
+
+
+def test_viseme_rate_estimator_keys_are_independent():
+    estimator = VisemeRateEstimator(default_rate=3.0, alpha=1.0)
+    estimator.observe("GPTSoVITSClient", text_len=10, total_duration_sec=2.0)  # rate 5.0
+    estimator.observe("CosyVoiceClient", text_len=10, total_duration_sec=10.0)  # rate 1.0
+    assert estimator.get("GPTSoVITSClient") == pytest.approx(5.0)
+    assert estimator.get("CosyVoiceClient") == pytest.approx(1.0)

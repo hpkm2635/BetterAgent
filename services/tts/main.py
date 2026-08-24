@@ -19,7 +19,7 @@ from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayloa
 from shared.logger import setup_logger
 from shared.text_utils import clean_tts_text
 from services.tts.cosyvoice_client import CosyVoiceClient
-from services.tts.viseme_generator import text_to_visemes, allocate_viseme_text_slice
+from services.tts.viseme_generator import text_to_visemes, allocate_viseme_text_slice, VisemeRateEstimator
 from services.tts.audio_normalizer import add_wav_header, smooth_pcm_chunk_edges
 
 load_dotenv()
@@ -36,6 +36,12 @@ from shared.config_loader import get_config_val
 from shared.persona_loader import PersonaLoader
 from services.tts.gpt_sovits_client import GPTSoVITSClient
 from services.tts.cosyvoice_client import CosyVoiceClient
+
+# Process-lifetime, per-provider viseme pacing estimate -- see
+# VisemeRateEstimator's docstring. Not persisted across restarts; re-seeds
+# from the conservative default and re-calibrates within a few utterances.
+_viseme_rate_estimator = VisemeRateEstimator()
+
 
 async def get_tts_client():
     persona_data = PersonaLoader.load_active_persona()
@@ -103,19 +109,24 @@ async def main():
                 return
 
             client = await get_tts_client()
+            provider_key = client.__class__.__name__
+            viseme_rate = _viseme_rate_estimator.get(provider_key)
             logger.info(f"🎙️ Synthesizing TTS audio ({client.__class__.__name__}) for sentence: '{text[:20]}' (chat_id={chat_id}, gen_id={gen_id})")
 
             chunk_idx = 0
             accumulated_pcm = bytearray()
             remaining_viseme_text = text
+            tts_interrupted = False
             async for audio_bytes, fmt in client.synthesize_stream(text, cancel_event=cancel_event):
                 if cancel_event.is_set():
                     logger.info(f"⚡ TTS synthesis interrupted mid-stream for chat_id={chat_id}")
+                    tts_interrupted = True
                     break
 
                 # Re-check GPU Conservation Gate during streaming
                 if gen_id < active_generations.get(chat_id, 0):
                     logger.info(f"🛡️ GPU Gate: Dropped mid-stream TTS chunk for chat_id={chat_id} (stale gen_id={gen_id})")
+                    tts_interrupted = True
                     break
 
                 # Collect raw PCM (strip WAV header if present) for debug dumping
@@ -129,7 +140,7 @@ async def main():
                 # docstring for why using the full sentence text on every
                 # sub-chunk produces meaningless, garbled viseme timing.
                 chunk_viseme_text, remaining_viseme_text = allocate_viseme_text_slice(
-                    remaining_viseme_text, duration_sec
+                    remaining_viseme_text, duration_sec, chars_per_sec=viseme_rate
                 )
                 visemes = text_to_visemes(chunk_viseme_text, duration_sec)
 
@@ -167,6 +178,13 @@ async def main():
 
             if chunk_idx > 0:
                 logger.info(f"✅ Completed TTS Audio Synthesis for sentence '{text[:15]}...' ({chunk_idx} chunks) for chat_id={chat_id}")
+                if not tts_interrupted and accumulated_pcm:
+                    # Only calibrate off a *completed* utterance -- an
+                    # interrupted one's real duration doesn't correspond to
+                    # its full text length and would skew the estimate.
+                    bytes_per_sec = float(getattr(client, "sample_rate", 32000) * 2)
+                    total_duration_sec = len(accumulated_pcm) / bytes_per_sec
+                    _viseme_rate_estimator.observe(provider_key, len(text), total_duration_sec)
                 if accumulated_pcm:
                     try:
                         debug_dir = os.path.join("temp", "tts", "debug")
