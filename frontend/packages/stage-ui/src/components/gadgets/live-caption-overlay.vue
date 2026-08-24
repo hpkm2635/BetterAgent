@@ -3,12 +3,26 @@ import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { useChatStreamStore } from '../../stores/chat/stream-store'
 import { useBetterAgentGatewayStore } from '../../stores/modules/betteragent-gateway'
+import { useSpeechOutputControlStore } from '../../stores/speech-output-control'
 
 const streamStore = useChatStreamStore()
 const gatewayStore = useBetterAgentGatewayStore()
-const { isSpeaking, csmState, isStreaming, isGracePeriodActive } = storeToRefs(gatewayStore)
+const { isSpeaking, csmState, isStreaming, isGracePeriodActive, revealedCaption } = storeToRefs(gatewayStore)
+const { speechMuted } = storeToRefs(useSpeechOutputControlStore())
 
+// Normally the typewriter-paced revealedCaption (Stage.vue reveals it chunk
+// by chunk as each chunk's audio actually starts playing) is the source of
+// truth. When muted, Stage.vue's audio-chunk-scheduling path never runs
+// (playBetterAgentAudioChunk returns immediately), so no reveal data ever
+// arrives -- fall back to showing the full accumulated text immediately, so
+// captions still work as a silent-mode substitute for audio. Gating on
+// speechMuted (a stable flag) rather than "is revealedCaption empty" avoids
+// a flicker: revealedCaption is legitimately empty for a brief moment at
+// the start of every turn, before the first chunk's reveal timer fires.
 const displayText = computed(() => {
+  if (!speechMuted.value)
+    return revealedCaption.value
+
   const rawContent = streamStore.streamingMessage?.content
   if (typeof rawContent === 'string' && rawContent.trim()) {
     return rawContent.trim()

@@ -24,6 +24,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const partialTranscript = ref('')
   const scheduleDialogOpen = ref(false)
   const emotionDialogOpen = ref(false)
+  // Typewriter-style live caption text, revealed incrementally by
+  // Stage.vue as each audio chunk's own text_segment actually starts
+  // playing (see appendRevealedCaption). Reset at the start of each new
+  // turn (resetRevealedCaption), accumulates across all sentences within
+  // one turn.
+  const revealedCaption = ref('')
 
   const streamStore = useChatStreamStore()
   const chatSession = useChatSessionStore()
@@ -32,6 +38,15 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
 
   let streamingWatchdog: ReturnType<typeof setTimeout> | null = null
   let graceTimer: ReturnType<typeof setTimeout> | null = null
+
+  function appendRevealedCaption(segment: string) {
+    if (segment)
+      revealedCaption.value += segment
+  }
+
+  function resetRevealedCaption() {
+    revealedCaption.value = ''
+  }
 
   function resetStreamingWatchdog() {
     if (streamingWatchdog) {
@@ -118,6 +133,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
       if (!isStreaming.value) {
         isStreaming.value = true
         streamStore.beginStream()
+        resetRevealedCaption()
       }
       streamStore.appendStreamLiteral(text)
 
@@ -221,9 +237,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     lastAction,
     emotionalState,
     partialTranscript,
+    revealedCaption,
     scheduleDialogOpen,
     emotionDialogOpen,
     initialize,
     getResolvedChatId,
+    appendRevealedCaption,
+    resetRevealedCaption,
   }
 })

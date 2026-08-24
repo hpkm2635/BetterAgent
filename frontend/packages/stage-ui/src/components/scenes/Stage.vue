@@ -49,6 +49,7 @@ import { useBackgroundStore } from '../../stores/background'
 import { useChatOrchestratorStore } from '../../stores/chat'
 import { useLlmStreamingControlStore } from '../../stores/llm-streaming-control'
 import { useAiriCardStore } from '../../stores/modules'
+import { useBetterAgentGatewayStore } from '../../stores/modules/betteragent-gateway'
 import { useSpeechStore } from '../../stores/modules/speech'
 import { useProvidersStore } from '../../stores/providers'
 import { useSettings } from '../../stores/settings'
@@ -107,6 +108,7 @@ const { audioContext } = useAudioContext()
 const currentAudioSource = ref<AudioBufferSourceNode>()
 const speechOutputControlStore = useSpeechOutputControlStore()
 const { latestStopRequest, speechMuted } = storeToRefs(speechOutputControlStore)
+const betterAgentGatewayStore = useBetterAgentGatewayStore()
 const lastVrmInteractionAt = new Map<VrmInteractionTarget, number>()
 const VRM_INTERACTION_COOLDOWN_MS = 450
 
@@ -427,6 +429,14 @@ interface BetterAgentScheduledViseme { absTime: number, openness: number }
 // scheduled (but not yet fully played) chunks, in audioContext-clock time.
 let betterAgentVisemeSchedule: BetterAgentScheduledViseme[] = []
 
+// Typewriter caption reveal: one pending setTimeout per scheduled chunk,
+// firing at that chunk's real playback start time to append its
+// text_segment. Independent of the lip-sync rAF loop below on purpose --
+// that loop only runs for the Live2D renderer (see setupLipSync's guard),
+// and captions are a plain text overlay that must keep working regardless
+// of which 3D renderer is active.
+const betterAgentCaptionTimers = new Set<ReturnType<typeof setTimeout>>()
+
 // Chunks arrive rapidly (dozens per sentence) and decoding is async, so
 // naive fire-and-forget playback can decode/schedule chunk N+1 before
 // chunk N if the browser's audio decoder happens to resolve them out of
@@ -455,11 +465,14 @@ function stopBetterAgentAudio(_reason: string) {
   betterAgentActiveSources.clear()
   betterAgentNextChunkStartTime = 0
   betterAgentVisemeSchedule = []
+  for (const timer of betterAgentCaptionTimers)
+    clearTimeout(timer)
+  betterAgentCaptionTimers.clear()
   if (nowSpeaking.value)
     resetSpeakingState()
 }
 
-async function playBetterAgentAudioChunk(audioBase64: string, generation: number, visemes?: Viseme[]) {
+async function playBetterAgentAudioChunk(audioBase64: string, generation: number, visemes?: Viseme[], textSegment?: string) {
   if (!audioContext || speechMuted.value)
     return
 
@@ -513,6 +526,17 @@ async function playBetterAgentAudioChunk(audioBase64: string, generation: number
       betterAgentVisemeSchedule.push({ absTime: startTime + v.time_offset, openness: BETTERAGENT_VISEME_OPENNESS[v.shape] ?? 0.5 })
   }
 
+  if (textSegment) {
+    const delayMs = Math.max(0, (startTime - audioContext.currentTime) * 1000)
+    const timer = setTimeout(() => {
+      betterAgentCaptionTimers.delete(timer)
+      if (generation !== betterAgentGeneration)
+        return // stale -- a barge-in/new turn happened before this chunk started playing
+      betterAgentGatewayStore.appendRevealedCaption(textSegment)
+    }, delayMs)
+    betterAgentCaptionTimers.add(timer)
+  }
+
   betterAgentActiveSources.add(source)
   source.onended = () => {
     betterAgentActiveSources.delete(source)
@@ -538,13 +562,13 @@ async function playBetterAgentAudioChunk(audioBase64: string, generation: number
   }, BETTERAGENT_SILENCE_TIMEOUT_MS)
 }
 
-function queueBetterAgentAudioChunk(audioBase64: string, visemes?: Viseme[]) {
+function queueBetterAgentAudioChunk(audioBase64: string, visemes?: Viseme[], textSegment?: string) {
   const generation = betterAgentGeneration
   betterAgentProcessingChain = betterAgentProcessingChain
     .then(() => {
       if (generation !== betterAgentGeneration)
         return
-      return playBetterAgentAudioChunk(audioBase64, generation, visemes)
+      return playBetterAgentAudioChunk(audioBase64, generation, visemes, textSegment)
     })
     .catch((error) => {
       console.error('[Stage] Failed to decode/play BetterAgent audio chunk', error)
@@ -557,8 +581,8 @@ if (typeof window !== 'undefined') {
     if (bridge) {
       clearInterval(betterAgentBridgePollId)
       betterAgentBridgePollId = undefined
-      betterAgentAudioUnsub = bridge.onAudioChunk((audioBase64: string, _sampleRate: number, _chatId?: number, visemes?: Viseme[]) => {
-        queueBetterAgentAudioChunk(audioBase64, visemes)
+      betterAgentAudioUnsub = bridge.onAudioChunk((audioBase64: string, _sampleRate: number, _chatId?: number, visemes?: Viseme[], textSegment?: string) => {
+        queueBetterAgentAudioChunk(audioBase64, visemes, textSegment)
       })
       // eslint-disable-next-line no-console
       console.log('[BetterAgent] Hooked BetterAgent WS Bridge audio chunks to Stage gapless player!')

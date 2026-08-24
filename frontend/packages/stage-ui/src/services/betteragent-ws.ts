@@ -16,7 +16,7 @@ export interface WSMessage<T = any> {
 
 export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export type EmotionCallback = (emotion: string, action?: string) => void
-export type AudioChunkCallback = (audioBase64: string, sampleRate: number, chatId?: number, visemes?: Viseme[]) => void
+export type AudioChunkCallback = (audioBase64: string, sampleRate: number, chatId?: number, visemes?: Viseme[], textSegment?: string) => void
 export type StateChangeCallback = (state: string, chatId?: number, reason?: string) => void
 export type STTTranscriptCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export interface GameStatePayload {
@@ -118,11 +118,12 @@ export class BetterAgentWSBridge {
   // frame from a barge-in'd generation can't play after the WebGateway has
   // already moved on (see protocol.go's AUDI header: bytes 12-20).
   private latestGenerationByChat: Map<number, bigint> = new Map()
-  // The JSON agent.audio_chunk message (carrying visemes) is always sent
-  // immediately before the binary AUDI frame for the same chunk, over the
-  // same ordered WS connection -- stash it here and pair it with the next
-  // binary frame that actually plays.
+  // The JSON agent.audio_chunk message (carrying visemes and this chunk's
+  // own text_segment) is always sent immediately before the binary AUDI
+  // frame for the same chunk, over the same ordered WS connection -- stash
+  // them here and pair them with the next binary frame that actually plays.
   private pendingVisemes: Viseme[] | undefined
+  private pendingTextSegment: string | undefined
   private sttTranscriptListeners: Set<STTTranscriptCallback> = new Set()
   private stateChangeListeners: Set<StateChangeCallback> = new Set()
   private gameStateListeners: Set<GameStateCallback> = new Set()
@@ -252,6 +253,9 @@ export class BetterAgentWSBridge {
           if (Array.isArray(msg.payload?.visemes)) {
             this.pendingVisemes = msg.payload.visemes
           }
+          if (typeof msg.payload?.text_segment === 'string' && msg.payload.text_segment) {
+            this.pendingTextSegment = msg.payload.text_segment
+          }
           break
 
         case 'agent.stt_transcript':
@@ -291,9 +295,11 @@ export class BetterAgentWSBridge {
     if (generationId < latestGen) {
       // Stale frame from a generation that's already been superseded
       // (barge-in / new message) -- drop it instead of playing it late.
-      // Also discard any visemes that arrived paired with this dropped
-      // frame, so they don't get attached to the next (unrelated) chunk.
+      // Also discard any visemes/text_segment that arrived paired with this
+      // dropped frame, so they don't get attached to the next (unrelated)
+      // chunk.
       this.pendingVisemes = undefined
+      this.pendingTextSegment = undefined
       return
     }
     if (generationId > latestGen) {
@@ -303,8 +309,10 @@ export class BetterAgentWSBridge {
     const rawAudio = buf.slice(20)
     const base64Audio = uint8ArrayToBase64(new Uint8Array(rawAudio))
     const visemes = this.pendingVisemes
+    const textSegment = this.pendingTextSegment
     this.pendingVisemes = undefined
-    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000, chatId, visemes))
+    this.pendingTextSegment = undefined
+    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000, chatId, visemes, textSegment))
   }
 
   public sendUserText(text: string, chatId?: number): void {
