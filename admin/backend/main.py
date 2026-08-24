@@ -1295,16 +1295,21 @@ async def _nats_publish(subject: str, payload: Dict[str, Any]) -> bool:
         return False
 
     try:
+        # NATS is always local (127.0.0.1, see docs/SECURITY.md §2.8) -- a
+        # healthy broker responds in milliseconds, so a short timeout still
+        # comfortably covers real connectivity while keeping the worst case
+        # (broker down/unreachable) from blocking the calling PATCH request
+        # for several seconds.
         nc = await nats.connect(
             nats_url,
             user=nats_user,
             password=nats_password,
             max_reconnect_attempts=1,
-            connect_timeout=3,
+            connect_timeout=1,
         )
         envelope = {"subject": subject, "source": "admin_backend", "payload": payload}
         await nc.publish(subject, json.dumps(envelope, ensure_ascii=False).encode())
-        await nc.flush(timeout=3)
+        await nc.flush(timeout=1)
         await nc.close()
         logger.info(f"Published {subject}")
         return True
