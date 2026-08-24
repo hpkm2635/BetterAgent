@@ -180,8 +180,8 @@ sequenceDiagram
     TTS->>TTS: 终止当前在途音频合成线程 / 清空 Chunk 队列
     TTS->>NATS: Publish "agent.stream.cancel_ack"
 
-    GW-->>WebUser: WebSocket 发送 { type: "STREAM_CANCELLED", generation_id: N+1 }
-    Note over WebUser: 前端立刻停止 AudioContext 播放并清空 Viseme 队列
+    GW-->>WebUser: WebSocket 发送 { type: "agent.state_change", payload: { state: "idle", reason: "stream_cancelled" } }
+    Note over WebUser: 前端依据 reason="stream_cancelled" 立刻停止 AudioContext 播放（reason 字段用于区分"被打断"与"正常说完"两种 idle，避免误伤正常收尾的音频）
 
     CSM->>CSM: 状态清空并重新 TransitionTo(THINKING) (带着最新打断文本重新推理)
 ```
@@ -218,7 +218,7 @@ sequenceDiagram
     
     NATS-->>Adapter: Notify "agent.action.telegram.*" (Adapter 专属通道)
     Adapter->>Adapter: 停止 Typing 心跳协程
-    Adapter->>Adapter: HumanizationEngine 模拟拟打字延迟 (min 1.5s, max 8.0s)
+    Adapter->>Adapter: HumanizationEngine 模拟拟打字延迟 (基础值按字数计算, 钳制在 0.5s~8.0s, 媒体附加 +1.5s/+2.0s 后再叠加 ±15% 抖动, 实际观测上限可超过 8.0s)
     Adapter->>User: 发送回复文本 / 音频 / 图片
     Adapter->>NATS: Publish "agent.action_completed" (ActionCompletedPayload)
 
@@ -291,15 +291,15 @@ stateDiagram-v2
 
 | 领域分类 | NATS Subject | 说明 |
 | :--- | :--- | :--- |
-| **基础中枢** | `agent.tick` / `agent.inbound_message` / `agent.error` | 系统心跳 / 上行消息 / 错误告警 |
+| **基础中枢** | `agent.tick` / `agent.inbound_message` | 系统心跳 / 上行消息（`agent.error` 全仓库零引用，未实现，勿依赖此主题） |
 | **记忆与推理** | `agent.enrich_context_req` / `agent.reasoning_request` | 记忆检索请求 / LLM 推理触发 |
 | **决策与执行** | `agent.action.{channel}.{chat_id}` / `agent.action_completed` | 行动决策下发（按渠道分级路由，如 `agent.action.web.1001` / `agent.action.telegram.56789`，各渠道适配器只订阅自己的通配符，NATS 在总线层面完成路由，不再靠 payload 里的 `source_channel` 字段各自过滤）/ 行动完成确认（不分渠道，供 Memory 服务统一记录对话历史） |
 | **VAD 听觉** | `agent.speech.start` / `agent.speech.end` | 麦克风开始/结束说话 |
 | **打断撤销** | `agent.user.interrupt` / `agent.stream.cancel_req` | 用户打断 (Barge-in) 撤销 |
-| **数字人流** | `agent.audio.chunk` / `agent.viseme.data` / `agent.tts.stream_chunk` | TTS 音频切片 / Viseme 口型 |
-| **流式控制** | `agent.stt.stream_chunk` / `agent.stt.stream_final` / `agent.tts.stream_end` | STT 转写流 / TTS 结束 |
-| **流式状态** | `agent.stream.cancel_ack` / `agent.stream.state_change` | 流式撤销确认 / 状态变更广播 |
-| **视觉与感知** | `agent.vision.frame` / `agent.emotion.update` / `agent.emotion.delta` | 画面快照 / 情绪动作更新 / 动态情绪增量回传 (Cognitive -> Go) |
+| **数字人流** | `agent.audio.chunk` | TTS 音频切片，`StreamAudioChunkPayload` 内嵌 `visemes` 字段（口型时间轴数据随音频一起下发；`agent.tts.stream_chunk` / `agent.viseme.data` 两个独立主题代码里从未存在，勿依赖） |
+| **流式控制** | `agent.stt.stream_chunk` / `agent.stt.stream_final` / `agent.stt.stream_partial` / `agent.tts.stream_end` | STT 转写流（含边说边出的中间结果，Go 订阅后转发为 WS `agent.stt_transcript` `is_final:false`） / STT 最终转写 / TTS 结束 |
+| **流式状态** | `agent.stream.cancel_ack` | 流式撤销确认（浏览器端的状态广播走 WS 消息类型 `agent.state_change`，不经过 `agent.stream.state_change` 这个 NATS 主题——该主题代码里从未发布/订阅过，勿依赖） |
+| **视觉与感知** | `agent.vision.frame` / `agent.emotion.delta` | 画面快照 / 动态情绪增量回传 (Cognitive -> Go)（`agent.emotion.update` 目前只有 Go 端订阅、从未有发布方，尚未接通，勿依赖） |
 | **人设与配置** | `agent.persona.update` | 人设热更新广播（YAML 磁盘同步 + PersonaLoader 内存缓存失效） |
 | **游戏感知** | `agent.game_event` | 外部游戏事件广播（稀有圣物、濒死、胜负结算等） |
 
@@ -655,7 +655,7 @@ graph LR
 
         subgraph Render_Engines["Stage UI Engine Canvas"]
             Live2DCanvas["pixi-live2d-display (Live2D 模型渲染器)"]
-            VisemeLipsync["VisemeLipsyncDecoder (口型同步器)"]
+            AudioAnalyser["AudioAnalyser (音频频谱实时分析口型驱动)"]
             AudioPlayback["Web AudioContext (PCM 流式播放器)"]
         end
     end
@@ -663,15 +663,17 @@ graph LR
     WSBridge --"JSON Frame"--> StreamStore
     WSBridge --"Game State Update"--> STS2Store
     StreamStore --"Text Delta"--> ChatUI["聊天窗口 UI"]
-    StreamStore --"Viseme Data"--> VisemeLipsync
     StreamStore --"Base64 PCM Chunk"--> AudioPlayback
-    VisemeLipsync --"ParamMouthOpenY"--> Live2DCanvas
+    AudioPlayback --"实时频谱分析"--> AudioAnalyser
+    AudioAnalyser --"ParamMouthOpenY"--> Live2DCanvas
     EmotionStore --"Expression & Motion"--> Live2DCanvas
 ```
 
+> **设计如此，尚未接入**：`agent.audio.chunk` payload 里的 `visemes` 时间轴数据已经生成并传输到前端，但目前前端直接丢弃，未被任何组件消费——口型驱动实际靠对播放中音频做实时频谱分析（`AudioAnalyser` → `ParamMouthOpenY`），不是精确的音素级 Viseme 同步。上图不再画出一个实际不存在消费方的 `VisemeLipsyncDecoder`，接入 Viseme 数据驱动口型是已知的后续工作项（详见 `docs/implementation plan.md` 中与流式字幕方案共享的前置依赖说明）。
+
 WebGateway 下行 JSON 帧还包括 `agent.stt_transcript`（`{ text, is_final, chat_id }`），
-用于把 `agent.stt.stream_final` 识别结果回显给前端，让语音输入在聊天窗口中显示为普通用户消息；
-STT 识别本身仍通过 `agent.inbound_message` 进入同一推理链路。
+用于把 STT 识别结果回显给前端：`is_final:true` 是 `agent.stt.stream_final` 转发，让语音输入在聊天窗口中显示为普通用户消息；`is_final:false` 是 `agent.stt.stream_partial` 转发的边说边出的中间转写结果，目前只更新 `betteragent-gateway.ts` store 里的 `partialTranscript` 响应式状态，尚无 UI 组件消费。
+STT 识别本身仍通过 `agent.inbound_message` 进入同一推理链路（只有 final 结果会触发）。
 
 ---
 
@@ -732,7 +734,6 @@ sequenceDiagram
     actor Admin as 管理员 (Admin Web :8095)
     participant AR as Admin REST (:8094)
     participant YAML as Persona YAML 磁盘
-    participant GC as Go Core (WebGateway)
     participant NATS as NATS Message Bus
     participant PL as PersonaLoader (Python In-Memory)
     participant Redis as Redis (短时记忆)
@@ -743,12 +744,11 @@ sequenceDiagram
     rect rgb(240, 248, 255)
     note right of Admin: 路径 1：人设 PATCH 热重载
     Admin->>AR: PATCH /api/admin/personas/{id} (字段白名单: name/appearance/base_prompt...)
-    AR->>YAML: ruamel 圆形读写 (保留注释与格式)
-    AR->>GC: WebSocket 下发 admin.persona_update 帧
-    GC->>NATS: Publish "agent.persona.update"
+    AR->>YAML: ruamel 原子写入 (临时文件+fsync+os.replace, 保留注释与格式)
+    AR->>NATS: 直接 Publish "agent.persona.update" (Admin 后端用 nats-py 直连总线, 不经过 Go Core 这一跳)
     NATS-->>PL: Notify "agent.persona.update"
     PL->>PL: 失效 TTL 缓存，重新从磁盘加载 YAML
-    AR-->>Admin: 200 OK {id, name, updated_fields}
+    AR-->>Admin: 200 OK {id, name, updated_fields, hot_reload: "ok"|"failed"} (NATS 推送失败时 hot_reload 如实报告 failed，不静默吞掉)
     end
 
     rect rgb(255, 245, 238)
@@ -789,6 +789,8 @@ sequenceDiagram
     AR-->>Admin: 200 OK
     end
 ```
+
+> **BYOK Provider 配置热更新（`agent.config.reloaded`）现在有真实消费端**：Admin 后端修改 LLM Provider/API Key 配置后会 Publish `agent.config.reloaded`；`services/cognitive/main.py` 订阅该主题后依次调用 `ProviderFactory.invalidate_cache()`（清空缓存的 Provider 实例）与 `CognitiveEngine.refresh_default_provider()`（重新解析默认 Provider 并重建 `self.providers`），使正在运行的 cognitive 服务无需重启即可切换 Provider/Key，与上面路径 1 的人设热更新是同一类"配置变更 → NATS 广播 → 服务内消费"机制。
 
 ---
 
