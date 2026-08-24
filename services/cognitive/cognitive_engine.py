@@ -310,6 +310,22 @@ class CognitiveEngine:
         }
         self.latest_vision_frames: Dict[int, Dict[str, Any]] = {}
 
+    def refresh_default_provider(self, default_provider_name: Optional[str] = None) -> None:
+        """Re-resolve the default LLM provider from current config.
+
+        Call after ProviderFactory.invalidate_cache() (e.g. on
+        agent.config.reloaded) so a BYOK API key / default provider change
+        made in the admin panel takes effect without restarting this
+        service -- self.default_provider is otherwise only ever resolved
+        once, at __init__.
+        """
+        if not default_provider_name:
+            default_provider_name = get_config_val("llm.default_provider", "gemini")
+        self.default_provider = ProviderFactory.get_provider(default_provider_name)
+        self.providers = {
+            default_provider_name: self.default_provider,
+        }
+
     @staticmethod
     def _load_presenter_server_commands() -> Dict[str, List[str]]:
         import sys
