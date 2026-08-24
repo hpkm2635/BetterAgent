@@ -871,8 +871,15 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	}
 
 	// 2. High-Performance Zero-Copy Binary WebSocket Frame (0% Base64 Overhead)
+	//
+	// Must tag the frame with genID (this chunk's own generation, computed
+	// above) and not the chat's *current* generation: a barge-in can bump
+	// the chat to generation N+1 while a generation-N chunk is still queued
+	// for delivery here, and re-stamping it as N+1 would make the client's
+	// staleness filter (which trusts this field) wrongly treat stale audio
+	// as current and play it anyway.
 	if rawAudioBytes, err := base64.StdEncoding.DecodeString(p.AudioBase64); err == nil && len(rawAudioBytes) > 0 {
-		binFrame := EncodeBinaryAudioFrame(p.ChatID, b.csm.GetGenerationChat(p.ChatID), rawAudioBytes)
+		binFrame := EncodeBinaryAudioFrame(p.ChatID, genID, rawAudioBytes)
 		b.sessions.SendBinaryToChat(p.ChatID, binFrame)
 	}
 }

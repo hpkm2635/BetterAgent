@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	"nhooyr.io/websocket"
 
 	"betteragent-core/internal/bus"
 	"betteragent-core/internal/engine"
@@ -131,6 +132,73 @@ func TestHandleActionDecisionMsg_ZeroGenerationID_TreatedAsStaleAndDropped(t *te
 	}
 	if !found {
 		t.Errorf("expected a 'dropped stale ActionDecision' warning for a zero-value GenerationID")
+	}
+}
+
+func audioChunkMsg(t *testing.T, payload schema.StreamAudioChunkPayload) *nats.Msg {
+	t.Helper()
+	env := struct {
+		Payload schema.StreamAudioChunkPayload `json:"payload"`
+	}{Payload: payload}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("failed to marshal test StreamAudioChunkPayload: %v", err)
+	}
+	return &nats.Msg{Data: data}
+}
+
+// TestHandleAudioChunkMsg_BinaryFrameTaggedWithChunksOwnGeneration_NotCurrentChatGeneration
+// pins a bug where the binary AUDI frame was tagged with
+// b.csm.GetGenerationChat(chatID) -- the chat's *current* generation at the
+// moment this handler runs -- instead of the audio chunk's own
+// GenerationID. A barge-in between when TTS produced this chunk and when
+// this handler processes it bumps the chat's current generation, so the
+// stale chunk would get silently re-stamped as current and defeat the
+// client-side staleness filter that trusts this exact field.
+func TestHandleAudioChunkMsg_BinaryFrameTaggedWithChunksOwnGeneration_NotCurrentChatGeneration(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(5555)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	// Chat is already at generation 3 (e.g. two barge-ins happened after
+	// this audio chunk, which belongs to generation 1, was produced).
+	b.csm.IncrementGenerationChat(chatID)
+	b.csm.IncrementGenerationChat(chatID)
+	if got := b.csm.GetGenerationChat(chatID); got != 3 {
+		t.Fatalf("test setup: expected chat generation 3, got %d", got)
+	}
+
+	b.handleAudioChunkMsg(audioChunkMsg(t, schema.StreamAudioChunkPayload{
+		ChatID:       chatID,
+		GenerationID: 1,
+		AudioBase64:  "AQIDBA==", // 4 raw bytes, base64
+		SampleRate:   32000,
+		Format:       "pcm",
+	}))
+
+	// handleAudioChunkMsg sends a JSON text frame (agent.audio_chunk, for
+	// stage-web compat) before the binary AUDI frame -- drain until the
+	// binary one.
+	for {
+		select {
+		case frame := <-session.sendChan:
+			if frame.MessageType != websocket.MessageBinary {
+				continue
+			}
+			_, decodedGenID, _, err := DecodeBinaryAudioFrame(frame.Data)
+			if err != nil {
+				t.Fatalf("failed to decode binary audio frame: %v", err)
+			}
+			if decodedGenID != 1 {
+				t.Errorf("expected binary frame tagged with the chunk's own GenerationID=1, got %d (chat's current generation is 3)", decodedGenID)
+			}
+			return
+		default:
+			t.Fatal("expected a binary frame to be sent to the session, got none")
+		}
 	}
 }
 
