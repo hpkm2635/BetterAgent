@@ -46,9 +46,10 @@ tools:
 tts:
   provider: "gpt_sovits"
   gpt_sovits:
-    endpoint: "http://127.0.0.1:9888/tts"
+    endpoint: "http://127.0.0.1:19880/tts"
     voice: "catgirl_tsundere"
     sample_rate: 32000
+
   cosyvoice:
     endpoint: "http://127.0.0.1:50000/tts"
     voice: "catgirl_tsundere"

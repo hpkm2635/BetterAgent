@@ -1,7 +1,7 @@
 cd D:\projects\GPT-SoVITS
 D:\projects\GPT-SoVITS\.venv\Scripts\Activate.ps1
-python api_v2.py
+python api_v2.py -a 127.0.0.1 -p 19880
 
 cd frontend 
 pnpm --filter @proj-airi/stage-web dev
-pnpm --filter @proj-airi/stage-web build          
+pnpm --filter @proj-airi/stage-web build
