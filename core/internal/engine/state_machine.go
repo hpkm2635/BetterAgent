@@ -382,21 +382,8 @@ func (sm *CentralStateMachine) CountRecentlyActiveChatsExcluding(chatID int64, w
 	return count
 }
 
-func (sm *CentralStateMachine) GetCurrentState() State {
-	sm.logger.Warn("⚠️ GetCurrentState called without explicit ChatID, defaulting to legacy ChatID=0")
-	return sm.GetChatState(0)
-}
-
 func (sm *CentralStateMachine) GetChatState(chatID int64) State {
 	return sm.getOrCreateChatSM(chatID).GetState()
-}
-
-func (sm *CentralStateMachine) TransitionTo(newState State, reason string) bool {
-	sm.logger.Warn("⚠️ TransitionTo called without explicit ChatID, defaulting to legacy ChatID=0",
-		zap.String("to", string(newState)),
-		zap.String("reason", reason),
-	)
-	return sm.TransitionToChat(0, newState, reason)
 }
 
 func (sm *CentralStateMachine) TransitionToChat(chatID int64, newState State, reason string) bool {
