@@ -14,6 +14,7 @@ from qdrant_client.http.models import (
     FieldCondition,
     Filter,
     FilterSelector,
+    HasIdCondition,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -134,97 +135,128 @@ class KnowledgeStore:
 
         ingested = 0
         failed = 0
-        handled_sources: Set[str] = set()
+
+        # Group documents by source (preserving first-seen order) so every
+        # new point for a source gets written *before* that source's old
+        # points are deleted -- write-then-delete instead of the previous
+        # delete-then-write. A concurrent search() (deliberately left
+        # unlocked; see its own docstring) can then never observe an empty
+        # window for a source mid-reingest, only a brief moment where old
+        # and new points coexist, which is a strictly safer failure mode.
+        order: List[str] = []
+        groups: Dict[str, List[IngestDocument]] = {}
+        for document in documents:
+            source = document.source or ""
+            if source not in groups:
+                groups[source] = []
+                order.append(source)
+            groups[source].append(document)
 
         async with self._mutation_lock:
-            for document in documents:
-                try:
-                    source = document.source or ""
-                    if source and source not in handled_sources:
-                        await self._delete_by_source(source)
-                        handled_sources.add(source)
+            for source in order:
+                new_point_ids: Set[str] = set()
+                for document in groups[source]:
+                    try:
+                        questions = [q.strip() for q in (document.questions or []) if q and q.strip()]
+                        points: List[PointStruct] = []
 
-                    questions = [q.strip() for q in (document.questions or []) if q and q.strip()]
-                    points: List[PointStruct] = []
+                        if questions:
+                            vectors = await self.embedder.embed(questions)
+                            for question, vector in zip(questions, vectors):
+                                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:q:{question}"))
+                                payload = {
+                                    "content": document.content,
+                                    "question": question,
+                                    "source": source,
+                                    "category": document.category,
+                                    "metadata": document.metadata,
+                                }
+                                self._docs[point_id] = {
+                                    "id": point_id,
+                                    "content": document.content,
+                                    "question": question,
+                                    "source": source,
+                                    "category": document.category,
+                                    "metadata": document.metadata,
+                                    "vector": vector,
+                                }
+                                self._source_ids.setdefault(source, set()).add(point_id)
+                                new_point_ids.add(point_id)
+                                points.append(PointStruct(id=point_id, vector=vector, payload=payload))
+                        else:
+                            chunks = chunk_text(document.content)
+                            vectors = await self.embedder.embed(chunks)
+                            for chunk, vector in zip(chunks, vectors):
+                                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:chunk:{chunk}"))
+                                payload = {
+                                    "content": chunk,
+                                    "source": source,
+                                    "category": document.category,
+                                    "metadata": document.metadata,
+                                }
+                                self._docs[point_id] = {
+                                    "id": point_id,
+                                    "content": chunk,
+                                    "source": source,
+                                    "category": document.category,
+                                    "metadata": document.metadata,
+                                    "vector": vector,
+                                }
+                                self._source_ids.setdefault(source, set()).add(point_id)
+                                new_point_ids.add(point_id)
+                                points.append(PointStruct(id=point_id, vector=vector, payload=payload))
 
-                    if questions:
-                        vectors = await self.embedder.embed(questions)
-                        for question, vector in zip(questions, vectors):
-                            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:q:{question}"))
-                            payload = {
-                                "content": document.content,
-                                "question": question,
-                                "source": source,
-                                "category": document.category,
-                                "metadata": document.metadata,
-                            }
-                            self._docs[point_id] = {
-                                "id": point_id,
-                                "content": document.content,
-                                "question": question,
-                                "source": source,
-                                "category": document.category,
-                                "metadata": document.metadata,
-                                "vector": vector,
-                            }
-                            self._source_ids.setdefault(source, set()).add(point_id)
-                            points.append(PointStruct(id=point_id, vector=vector, payload=payload))
-                    else:
-                        chunks = chunk_text(document.content)
-                        vectors = await self.embedder.embed(chunks)
-                        for chunk, vector in zip(chunks, vectors):
-                            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:chunk:{chunk}"))
-                            payload = {
-                                "content": chunk,
-                                "source": source,
-                                "category": document.category,
-                                "metadata": document.metadata,
-                            }
-                            self._docs[point_id] = {
-                                "id": point_id,
-                                "content": chunk,
-                                "source": source,
-                                "category": document.category,
-                                "metadata": document.metadata,
-                                "vector": vector,
-                            }
-                            self._source_ids.setdefault(source, set()).add(point_id)
-                            points.append(PointStruct(id=point_id, vector=vector, payload=payload))
+                        if self.client is not None:
+                            try:
+                                await self.client.upsert(
+                                    collection_name=self.collection_name,
+                                    points=points,
+                                )
+                            except Exception:
+                                # A Qdrant outage is non-fatal: the in-memory index
+                                # already contains this document and search falls back.
+                                pass
 
-                    if self.client is not None:
-                        try:
-                            await self.client.upsert(
-                                collection_name=self.collection_name,
-                                points=points,
-                            )
-                        except Exception:
-                            # A Qdrant outage is non-fatal: the in-memory index
-                            # already contains this document and search falls back.
-                            pass
+                        ingested += 1
+                    except Exception:
+                        failed += 1
 
-                    ingested += 1
-                except Exception:
-                    failed += 1
+                if source:
+                    await self._delete_by_source(source, exclude_ids=new_point_ids)
 
         logger.info("campus_kb ingest finished: ingested=%d failed=%d", ingested, failed)
         return ingested, failed
 
-    async def _delete_by_source(self, source: str) -> None:
+    async def _delete_by_source(self, source: str, exclude_ids: Optional[Set[str]] = None) -> None:
+        """Delete every stored point for `source` except `exclude_ids`.
+
+        Called *after* a re-ingest has already written the source's new
+        points (see ingest()'s write-then-delete ordering), so exclude_ids
+        is exactly "the points this ingest call just wrote for this
+        source" -- without it, this would delete the points it just wrote.
+        """
+        exclude_ids = exclude_ids or set()
+
         # The in-memory _source_ids map is rebuilt from Qdrant on startup, but
         # if Qdrant was unavailable the map may be empty or stale. Scan the
         # whole in-memory document set to guarantee no old chunks survive.
-        old_ids = {point_id for point_id, doc in self._docs.items() if doc.get("source") == source}
+        old_ids = {
+            point_id for point_id, doc in self._docs.items()
+            if doc.get("source") == source and point_id not in exclude_ids
+        }
         for point_id in old_ids:
             self._docs.pop(point_id, None)
-        self._source_ids[source] = set()
+        self._source_ids[source] = set(exclude_ids)
 
         if self.client is not None:
             try:
+                must_not = [HasIdCondition(has_id=list(exclude_ids))] if exclude_ids else None
                 await self.client.delete(
                     collection_name=self.collection_name,
                     points_selector=FilterSelector(
                         filter=Filter(
-                            must=[FieldCondition(key="source", match=MatchValue(value=source))]
+                            must=[FieldCondition(key="source", match=MatchValue(value=source))],
+                            must_not=must_not,
                         )
                     ),
                 )

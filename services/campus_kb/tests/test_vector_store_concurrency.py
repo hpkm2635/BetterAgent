@@ -52,3 +52,81 @@ async def test_concurrent_ingest_same_source_does_not_duplicate_or_lose_docs():
         f"expected exactly 1 surviving document for source=faq.md after two "
         f"concurrent full-source ingests, got {len(docs_for_source)}: {docs_for_source}"
     )
+
+
+@pytest.mark.asyncio
+async def test_reingest_fully_replaces_old_content_not_a_union():
+    """A source re-ingest must end up with *only* the new content -- this is
+    the correctness property ingest()'s write-then-delete reordering has to
+    preserve (write-then-exclude-and-delete is more error-prone than the old
+    delete-then-write if the excluded-id tracking is wrong, since stale
+    content would then survive forever instead of just being briefly visible).
+    """
+    store = KnowledgeStore(HashedNgramEmbedder(dim=64))
+
+    await store.ingest([
+        IngestDocument(content="图书馆周一至周五开放至22:00。", source="faq.md"),
+        IngestDocument(content="超市营业时间07:00-23:00。", source="faq.md"),
+    ])
+    assert len(store._source_ids["faq.md"]) == 2
+
+    await store.ingest([
+        IngestDocument(content="图书馆全年无休，24小时开放。", source="faq.md"),
+    ])
+
+    docs_for_source = [doc for doc in store._docs.values() if doc["source"] == "faq.md"]
+    assert len(docs_for_source) == 1, f"expected old content fully replaced, got {docs_for_source}"
+    assert docs_for_source[0]["content"] == "图书馆全年无休，24小时开放。"
+    assert store._source_ids["faq.md"] == {docs_for_source[0]["id"]}
+
+
+@pytest.mark.asyncio
+async def test_reingest_never_exposes_an_empty_window_for_the_source():
+    """During a re-ingest, the source's document count must never drop to 0
+    -- write-then-delete means the worst observable state is "old and new
+    briefly coexist", never "neither exists yet" (the delete-then-write
+    ordering this replaces could expose exactly that empty window).
+    """
+    store = KnowledgeStore(HashedNgramEmbedder(dim=64))
+    await store.ingest([
+        IngestDocument(content="图书馆周一至周五开放至22:00。", source="faq.md"),
+    ])
+
+    min_observed = None
+    stop = asyncio.Event()
+
+    async def prober():
+        nonlocal min_observed
+        while not stop.is_set():
+            count = len(store._source_ids.get("faq.md", set()))
+            if min_observed is None or count < min_observed:
+                min_observed = count
+            await asyncio.sleep(0)
+
+    class _SlowEmbedder:
+        """Embeds with several real await points, widening the window a
+        prober task would need to race into to observe an inconsistent
+        state -- HashedNgramEmbedder alone never yields control at all.
+        """
+
+        def __init__(self) -> None:
+            self._inner = HashedNgramEmbedder(dim=64)
+
+        async def embed(self, texts):
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return await self._inner.embed(texts)
+
+    store.embedder = _SlowEmbedder()
+
+    prober_task = asyncio.create_task(prober())
+    await store.ingest([
+        IngestDocument(content="图书馆全年无休，24小时开放。", source="faq.md"),
+    ])
+    stop.set()
+    await prober_task
+
+    assert min_observed is not None and min_observed >= 1, (
+        f"expected the source to always have >=1 document during re-ingest, "
+        f"observed a minimum of {min_observed}"
+    )
