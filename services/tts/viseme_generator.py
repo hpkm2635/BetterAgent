@@ -52,6 +52,31 @@ def preprocess_text(text: str) -> str:
     return "".join(res)
 
 
+# Rough Chinese speech-rate estimate, used only to decide roughly how much
+# of the sentence's remaining text each streamed TTS sub-chunk "covers" for
+# viseme purposes -- not meant to be precise, tune after real-world testing.
+DEFAULT_VISEME_CHARS_PER_SEC = 4.5
+
+
+def allocate_viseme_text_slice(
+    remaining_text: str, duration_sec: float, chars_per_sec: float = DEFAULT_VISEME_CHARS_PER_SEC
+) -> "tuple[str, str]":
+    """Estimates how much of the sentence's remaining text this sub-chunk's
+    real audio duration likely covers, and slices that much off the front.
+
+    Returns (slice_for_this_chunk, new_remaining_text). Without this, calling
+    text_to_visemes() with the *whole* sentence text on every one of a
+    sentence's dozens of streamed sub-chunks (each only tens of milliseconds
+    long) compresses the entire sentence's viseme timeline into each
+    sub-chunk's own short duration -- guaranteed to be wrong, every time.
+    """
+    if not remaining_text or duration_sec <= 0:
+        return "", remaining_text
+    est_chars = max(1, round(duration_sec * chars_per_sec))
+    est_chars = min(est_chars, len(remaining_text))
+    return remaining_text[:est_chars], remaining_text[est_chars:]
+
+
 def text_to_visemes(text: str, duration_seconds: float = 1.0) -> List[Dict[str, Any]]:
     """
     Converts Chinese/English/Numeric text to VRM 5 BlendShape visemes timeline.

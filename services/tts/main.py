@@ -19,7 +19,7 @@ from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayloa
 from shared.logger import setup_logger
 from shared.text_utils import clean_tts_text
 from services.tts.cosyvoice_client import CosyVoiceClient
-from services.tts.viseme_generator import text_to_visemes
+from services.tts.viseme_generator import text_to_visemes, allocate_viseme_text_slice
 from services.tts.audio_normalizer import add_wav_header, smooth_pcm_chunk_edges
 
 load_dotenv()
@@ -107,6 +107,7 @@ async def main():
 
             chunk_idx = 0
             accumulated_pcm = bytearray()
+            remaining_viseme_text = text
             async for audio_bytes, fmt in client.synthesize_stream(text, cancel_event=cancel_event):
                 if cancel_event.is_set():
                     logger.info(f"⚡ TTS synthesis interrupted mid-stream for chat_id={chat_id}")
@@ -123,7 +124,14 @@ async def main():
 
                 bytes_per_sec = float(getattr(client, "sample_rate", 32000) * 2)
                 duration_sec = len(raw_pcm) / bytes_per_sec
-                visemes = text_to_visemes(text, duration_sec)
+                # Only pass this sub-chunk's own slice of the sentence, not
+                # the whole sentence -- see allocate_viseme_text_slice's
+                # docstring for why using the full sentence text on every
+                # sub-chunk produces meaningless, garbled viseme timing.
+                chunk_viseme_text, remaining_viseme_text = allocate_viseme_text_slice(
+                    remaining_viseme_text, duration_sec
+                )
+                visemes = text_to_visemes(chunk_viseme_text, duration_sec)
 
                 # Wrap raw PCM chunks with 44-byte standard RIFF WAV header for browser AudioContext compatibility
                 sample_rate = getattr(client, "sample_rate", 32000)
