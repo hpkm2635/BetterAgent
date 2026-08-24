@@ -18,6 +18,10 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const lastEmotion = ref('')
   const lastAction = ref('')
   const emotionalState = ref<EmotionalStatePayload | null>(null)
+  // Live mid-utterance STT preview (unpunctuated, still being refined) --
+  // cleared once the matching final transcript lands. No UI consumes this
+  // yet; exposed for a future "recognizing..." indicator to bind to.
+  const partialTranscript = ref('')
   const scheduleDialogOpen = ref(false)
   const emotionDialogOpen = ref(false)
 
@@ -180,9 +184,20 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     }))
 
     // 6. STT transcripts -- show the user's recognized voice input as a
-    // normal user message so a spoken turn reads like a typed one.
+    // normal user message so a spoken turn reads like a typed one. Partial
+    // (mid-utterance) results only update the live preview, never the chat.
     unsubs.push(betterAgentWSBridge.onSTTTranscript((text, isFinal, chatId) => {
-      if (!isFinal || !isChatMatch(chatId) || !text.trim())
+      if (!isChatMatch(chatId))
+        return
+
+      if (!isFinal) {
+        partialTranscript.value = text
+        return
+      }
+
+      partialTranscript.value = ''
+
+      if (!text.trim())
         return
 
       const sessionId = chatSession.activeSessionId
@@ -205,6 +220,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     lastEmotion,
     lastAction,
     emotionalState,
+    partialTranscript,
     scheduleDialogOpen,
     emotionDialogOpen,
     initialize,
