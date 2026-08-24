@@ -1,4 +1,4 @@
-"""Retrieval primitives: BM25, RRF fusion, query expansion, category routing."""
+"""Retrieval primitives: BM25, query expansion, category routing."""
 
 from __future__ import annotations
 
