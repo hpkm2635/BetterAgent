@@ -76,8 +76,10 @@ Authorization: Bearer <secret>
 ```
 
 - 留空（默认）时校验关闭，便于本地开发。
-- Admin Web UI 的 Vite 代理会从 `admin/frontend/.env` 读取同名 `ADMIN_SECRET_KEY` 并注入
-  `X-Admin-Token`，因此两者需配置为相同值；令牌只存在于代理层，不会进入浏览器 JS。
+- Admin Web UI 有一个登录界面（`admin/frontend/src/App.vue`），打开面板时手动输入这个密钥，
+  浏览器把它存进 `localStorage`，之后每个请求都带上 `Authorization: Bearer <secret>`；密钥错误
+  或过期都会清空本地存储并弹回登录界面。前端本身不需要任何 `.env` 配置——dev 模式和打包成
+  静态文件部署到别的机器上行为完全一致，不依赖 Vite 代理。
 - `/health` 始终公开，不受令牌保护。
 
 ## 启动 frontend
