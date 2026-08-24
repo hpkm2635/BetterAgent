@@ -69,6 +69,8 @@
 | `8094` | **Admin Panel REST API** | HTTP REST | 谢自立 | ✅ 已就绪 |
 | `8095` | **Admin Web UI (Vite)** | HTTP Dev | 谢自立 | ✅ 已就绪 |
 | `8096` | **Companion Tool Service** | HTTP REST | 张劭哲 | ✅ 已就绪 |
+| `15173` | **Stage Web Frontend (Vite)** | HTTP Dev | 核心 (褚裕禄) | ✅ 已就绪 |
+
 
 <details>
 <summary>各子服务已实现接口摘要</summary>
@@ -144,11 +146,12 @@ cd frontend
 # 安装 pnpm 依赖
 pnpm install
 
-# 启动 stage-web 调试端 (端口 5173)
-pnpm --filter @proj-airi/stage-web dev
+# 启动 stage-web 调试端 (端口 15173)
+pnpm --filter @proj-airi/stage-web dev --port 15173
 ```
 
-在浏览器打开 `http://localhost:5173` 即可与数字人猫娘进行音视频全双工交互！
+在浏览器打开 `http://localhost:15173` 即可与数字人猫娘进行音视频全双工交互！
+
 
 ### 5. 运行团队接口契约集成测试
 

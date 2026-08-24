@@ -700,7 +700,8 @@ def main():
     enable_vt100_console()
     init_windows_job_object()
     clean_logs_if_configured()
-    kill_stale_port_listeners([8093, 8090, 8094, 8095, 5173, 8096])
+    kill_stale_port_listeners([8093, 8090, 8094, 8095, 15173, 8096])
+
 
     mgr = ServiceManager()
     print(f" [i] Python Interpreter: {mgr.py_exe}")
@@ -868,19 +869,20 @@ def main():
         else:
             print(" [!] NOTICE: 'npm' command not found in PATH. Skipping Admin Frontend Vue Service (:8095).")
 
-    # 10. Stage Web Frontend Vue Service (:5173)
+    # 10. Stage Web Frontend Vue Service (:15173)
     stage_web_dir = ROOT_DIR / "frontend"
     if stage_web_dir.exists() and (stage_web_dir / "package.json").exists():
         pnpm_cmd = find_cli_cmd("pnpm") or find_cli_cmd("npm")
         if pnpm_cmd:
             mgr.spawn_service("stage_web_frontend_service", [pnpm_cmd, "run", "dev"], cwd=stage_web_dir)
             wait_for_readiness(
-                lambda: is_port_open("127.0.0.1", 5173),
-                service_name="Stage Web Frontend Vue Service (:5173)",
+                lambda: is_port_open("127.0.0.1", 15173),
+                service_name="Stage Web Frontend Vue Service (:15173)",
                 timeout=30.0,
             )
         else:
-            print(" [!] NOTICE: 'pnpm' / 'npm' command not found in PATH. Skipping Stage Web Frontend Vue Service (:5173).")
+            print(" [!] NOTICE: 'pnpm' / 'npm' command not found in PATH. Skipping Stage Web Frontend Vue Service (:15173).")
+
 
     mgr.write_pid_file()
 

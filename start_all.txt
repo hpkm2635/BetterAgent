@@ -4,5 +4,5 @@ python api_v2.py -a 127.0.0.1 -p 19888
 
 
 cd frontend 
-pnpm --filter @proj-airi/stage-web dev
+pnpm --filter @proj-airi/stage-web dev --port 15173
 pnpm --filter @proj-airi/stage-web build
