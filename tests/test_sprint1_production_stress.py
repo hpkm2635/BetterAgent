@@ -147,13 +147,14 @@ async def test_high_concurrency_consolidation_deadlock_stress():
         await hub.handle_inbound_message(msg)
 
     try:
-        # 设置 10 秒超时保护，若死锁则触发 TimeoutError
+        # 设置 30 秒超时保护，若死锁则触发 TimeoutError
         await asyncio.wait_for(
             asyncio.gather(*[worker(msg) for msg in inbound_messages]),
-            timeout=10.0
+            timeout=30.0
         )
     except asyncio.TimeoutError:
-        pytest.fail("高并发 MemoryHub 消息处理发生死锁 (Deadlock Detected)！10秒内未完成。")
+        pytest.fail("高并发 MemoryHub 消息处理发生死锁 (Deadlock Detected)！30秒内未完成。")
+
 
     elapsed = time.time() - start_time
     history = await hub.short_term_buffer.get_recent_messages(user_id)

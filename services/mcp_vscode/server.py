@@ -342,15 +342,18 @@ def vscode_highlight_range(path: str, start_line: int, end_line: int, label: str
             logger.debug(f"Native line selection note: {err}")
 
     if _signal_path is not None:
-        _write_signal({
+        res = _write_signal({
             "action": "highlight",
             "path": str(resolved),
             "start_line": start_line,
             "end_line": end_line,
             "label": label,
         })
+        if isinstance(res, dict) and res.get("status") == "skipped":
+            return res
 
     return {"status": "ok", "path": str(resolved), "start_line": start_line, "end_line": end_line}
+
 
 
 @mcp.tool(structured_output=False)

@@ -41,7 +41,11 @@ async def test_vector_store_empty_and_whitespace_inputs():
 async def test_vector_store_ebbinghaus_decay_future_and_past_timestamps():
     """Verify decay math with future timestamps, zero decay, and extreme age."""
     store = VectorMemoryStore(collection_name="test_decay", decay_lambda=0.01)
+    store._qdrant_disabled = True
+    store._embed_text = AsyncMock(side_effect=lambda text: _hashed_embed(text, store.dim))
     user_id = 2002
+
+
     try:
         # 1. Future timestamp (clock skew scenario) -> delta_t_hours clamped to >= 0
         future_doc = {
@@ -159,6 +163,7 @@ async def test_short_term_buffer_user_id_string_coercion_and_clear():
 async def test_short_term_buffer_mark_consolidated_overflow_clamping():
     """Verify mark_consolidated clamps cursor when count exceeds buffer length."""
     buf = ShortTermMemoryBuffer(max_capacity=10)
+    buf._redis_disabled = True
     user_id = 3003
 
     for i in range(5):
@@ -167,6 +172,7 @@ async def test_short_term_buffer_mark_consolidated_overflow_clamping():
     # Mark consolidated with count=999 (far exceeds total 5)
     await buf.mark_consolidated(user_id=user_id, count=999)
     assert buf.cursors[user_id] == 5
+
 
     unconsolidated = await buf.get_unconsolidated_messages(user_id=user_id)
     assert len(unconsolidated) == 0
@@ -236,7 +242,9 @@ async def test_user_profile_manager_empty_likes_dislikes_formatting():
 async def test_memory_hub_handle_action_completed_photo():
     """Verify handle_action_completed handles photo action and records assistant history."""
     hub = MemoryHub()
+    hub.short_term_buffer._redis_disabled = True
     chat_id = 7007
+
 
     decision = ActionDecisionPayload(
         event_id="act_evt_1",
@@ -261,8 +269,9 @@ async def test_memory_hub_handle_action_completed_photo():
         recent = await hub.short_term_buffer.get_recent_messages(chat_id)
         assert len(recent) == 1
         assert recent[0]["role"] == "assistant"
-        assert "[猫娘已发送照片: /tmp/cat_photo.jpg]" in recent[0]["content"]
+        assert "[助手已发送照片: /tmp/cat_photo.jpg]" in recent[0]["content"]
         assert "主人的猫娘自拍到了哦~" in recent[0]["content"]
+
     finally:
         await hub.vector_store.close()
 

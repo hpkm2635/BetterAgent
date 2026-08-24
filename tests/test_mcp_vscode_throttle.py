@@ -2,9 +2,11 @@ import json
 import sys
 import time
 
+from unittest.mock import patch
 import pytest
 
 from services.cognitive.mcp.client import McpSession
+
 
 
 @pytest.fixture
@@ -24,26 +26,33 @@ async def _session(root, signal_path):
 
 
 @pytest.mark.asyncio
-async def test_identical_highlight_calls_are_deduped(workspace, tmp_path):
+async def test_identical_highlight_calls_are_deduped(tmp_path):
     # Regression test: a model retrying/re-confirming the same highlight in a
     # tight tool-call loop used to poke the signal file (and the extension's
-    # FS watcher) on every single call with no floor at all -- a real
-    # contributor to VS Code becoming unresponsive during a presenter session.
+    # FS watcher) on every single call with no floor at all.
+    from services.mcp_vscode import server
+    
+    hello_file = tmp_path / "hello.py"
+    hello_file.write_text("def add(a, b):\n    return a + b\n")
     signal_path = tmp_path / "signal.json"
-    session = await _session(workspace, signal_path)
-    try:
+
+    with patch.object(server, "_workspace_root", tmp_path), \
+         patch.object(server, "_signal_path", signal_path), \
+         patch.object(server, "_detect_code_cli", return_value=None), \
+         patch.object(server, "_last_signal_payload", None), \
+         patch.object(server, "_last_signal_time", 0.0):
+        
         args = {"path": "hello.py", "start_line": 1, "end_line": 2}
-        first = await session.call_tool("vscode_highlight_range", args)
+        first = server.vscode_highlight_range(**args)
         assert first["status"] == "ok"
         written_after_first = json.loads(signal_path.read_text())
 
-        second = await session.call_tool("vscode_highlight_range", args)
+        second = server.vscode_highlight_range(**args)
         assert second["status"] == "skipped"
 
         # The signal file itself must not have been touched by the skipped call.
         assert json.loads(signal_path.read_text()) == written_after_first
-    finally:
-        await session.close()
+
 
 
 @pytest.mark.asyncio
