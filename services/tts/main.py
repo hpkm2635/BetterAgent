@@ -151,7 +151,12 @@ async def main():
                 out_format = "wav"
 
                 audio_b64 = base64.b64encode(out_bytes).decode("utf-8")
-                text_delta = text if chunk_idx == 0 else ""
+                # This chunk's own slice of the sentence (same value already
+                # computed above for viseme timing) -- lets the frontend pace
+                # a typewriter-style caption reveal against real chunk
+                # playback time, instead of the old "whole sentence, only on
+                # chunk_idx==0" value which carried no per-chunk timing info.
+                text_delta = chunk_viseme_text
                 is_sentence_start = (chunk_idx == 0)
                 chunk_payload = StreamAudioChunkPayload(
                     event_id=act.event_id,
