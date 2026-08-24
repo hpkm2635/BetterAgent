@@ -149,7 +149,7 @@ class IFlytekSession:
             code = header.get("code")
             status = header.get("status")
             if code != 0:
-                logger.warning(f"iFLYTEK STT error: code={code}, message={header.get('message')}")
+                logger.warning(f"iFLYTEK STT error: code={code}, message={header.get('message')}, raw_msg={raw}")
                 break
 
             payload = msg.get("payload")
