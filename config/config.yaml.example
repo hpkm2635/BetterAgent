@@ -37,11 +37,22 @@ llm:
 # Tools & Multimodal Extensions
 tools:
   tts:
-    provider: "cosyvoice"
+    provider: "gpt_sovits"
     voice_id: "catgirl_cute"
   image_gen:
-    provider: "gemini_imagen"
-    model: "imagen-3.0-generate-002"
+    provider: "gemini"
+    model: "gemini-3.1-flash-lite-image"
+
+tts:
+  provider: "gpt_sovits"
+  gpt_sovits:
+    endpoint: "http://127.0.0.1:9888/tts"
+    voice: "catgirl_tsundere"
+    sample_rate: 32000
+  cosyvoice:
+    endpoint: "http://127.0.0.1:50000/tts"
+    voice: "catgirl_tsundere"
+    sample_rate: 24000
 
 # STT (services/stt/ bridges an external FunASR streaming WebSocket server --
 # FunASR itself is not part of this repo, run it separately, same way GPT-SoVITS
