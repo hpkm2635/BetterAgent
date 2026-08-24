@@ -970,68 +970,65 @@ func (b *NatsBridge) handleEmotionDeltaMsg(msg *nats.Msg) {
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 }
 
-func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
+// decodeSTTTranscript unmarshals and validates an STT transcript NATS
+// message, shared by both the partial and final handlers -- services/stt
+// publishes the exact same payload shape on both SUBJECT_STT_STREAM_PARTIAL
+// and SUBJECT_STT_STREAM_FINAL (see shared/schema/payloads.py's
+// STTTranscriptPayload docstring), the subject alone is what distinguishes
+// them.
+func decodeSTTTranscript(msg *nats.Msg) (schema.STTFinalTranscriptPayload, bool) {
 	var env struct {
 		Payload schema.STTFinalTranscriptPayload `json:"payload"`
 	}
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
-		return
+		return schema.STTFinalTranscriptPayload{}, false
 	}
-
 	p := env.Payload
 	if p.ChatID == 0 || p.Text == "" {
-		return
+		return schema.STTFinalTranscriptPayload{}, false
 	}
+	return p, true
+}
 
-	transcript := p.Text
-
-	// Echo the recognized transcript back to the browser so the web client can
-	// render the user's spoken turn alongside the assistant's streaming reply.
-	// The browser never sees agent.inbound_message directly; without this frame
-	// the voice utterance produces a reply but no user message in the chat UI.
+// sendSTTTranscript echoes a recognized transcript to the browser as
+// agent.stt_transcript, so the web client can render the user's spoken turn
+// alongside the assistant's streaming reply -- the browser never sees
+// agent.inbound_message directly.
+func (b *NatsBridge) sendSTTTranscript(chatID int64, text string, isFinal bool) {
 	outBytes, _ := json.Marshal(WSMessage{
 		Type: "agent.stt_transcript",
 		Payload: marshalRaw(AgentSTTTranscriptPayload{
-			Text:    p.Text,
-			IsFinal: true,
-			ChatID:  p.ChatID,
+			Text:    text,
+			IsFinal: isFinal,
+			ChatID:  chatID,
 		}),
 	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sessions.SendTextToChat(chatID, outBytes)
+}
 
+func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
+	p, ok := decodeSTTTranscript(msg)
+	if !ok {
+		return
+	}
+
+	b.sendSTTTranscript(p.ChatID, p.Text, true)
+
+	transcript := p.Text
 	b.publishInboundMessage(p.ChatID, p.Text, "voice", &transcript)
 }
 
 // handleSTTPartialMsg relays a mid-utterance (unpunctuated) transcript to the
-// browser as a live preview. Reuses schema.STTFinalTranscriptPayload to
-// decode -- services/stt publishes the exact same payload shape on both
-// SUBJECT_STT_STREAM_PARTIAL and SUBJECT_STT_STREAM_FINAL (see
-// shared/schema/payloads.py's STTTranscriptPayload docstring), the subject
-// alone is what distinguishes them. Unlike handleSTTFinalMsg, this never
-// calls publishInboundMessage -- a partial result is provisional and must
-// not trigger a reasoning turn.
+// browser as a live preview. Unlike handleSTTFinalMsg, this never calls
+// publishInboundMessage -- a partial result is provisional and must not
+// trigger a reasoning turn.
 func (b *NatsBridge) handleSTTPartialMsg(msg *nats.Msg) {
-	var env struct {
-		Payload schema.STTFinalTranscriptPayload `json:"payload"`
-	}
-	if err := json.Unmarshal(msg.Data, &env); err != nil {
+	p, ok := decodeSTTTranscript(msg)
+	if !ok {
 		return
 	}
 
-	p := env.Payload
-	if p.ChatID == 0 || p.Text == "" {
-		return
-	}
-
-	outBytes, _ := json.Marshal(WSMessage{
-		Type: "agent.stt_transcript",
-		Payload: marshalRaw(AgentSTTTranscriptPayload{
-			Text:    p.Text,
-			IsFinal: false,
-			ChatID:  p.ChatID,
-		}),
-	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sendSTTTranscript(p.ChatID, p.Text, false)
 }
 
 func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
