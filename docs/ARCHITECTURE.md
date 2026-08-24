@@ -139,13 +139,13 @@ sequenceDiagram
 
     NATS-->>Cog: Notify "agent.reasoning_request"
     Cog->>Cog: 流式生成 Text Delta
-    Cog->>NATS: Publish "agent.tts.stream_chunk" (流式文本, generation_id=N)
+    Cog->>NATS: Publish "agent.action.web.{chat_id}" (ActionDecisionPayload, generation_id=N)
 
-    NATS-->>TTS: Notify "agent.tts.stream_chunk"
+    NATS-->>TTS: Notify "agent.action.web.*"
     TTS->>TTS: 实时合成 PCM 音频切片 + 生成 Viseme 口型帧
-    TTS->>NATS: Publish "agent.audio.chunk" & "agent.viseme.data" (generation_id=N)
+    TTS->>NATS: Publish "agent.audio.chunk" (内嵌 visemes 字段, generation_id=N)
 
-    NATS-->>GW: Notify "agent.audio.chunk" & "agent.viseme.data" & "agent.action.web.*"
+    NATS-->>GW: Notify "agent.audio.chunk" & "agent.action.web.*"
     Note over GW: 校验 generation_id == 当前最新，丢弃在途过期旧帧
     GW-->>WebUser: WebSocket 双工下发 { audio_base64, visemes, text_delta, emotion_tag }
     
@@ -655,21 +655,24 @@ graph LR
 
         subgraph Render_Engines["Stage UI Engine Canvas"]
             Live2DCanvas["pixi-live2d-display (Live2D 模型渲染器)"]
-            AudioAnalyser["AudioAnalyser (音频频谱实时分析口型驱动)"]
-            AudioPlayback["Web AudioContext (PCM 流式播放器)"]
+            WLipSync["wLipSync AudioWorkletNode (元音共振峰实时分析, fallback)"]
+            VisemeSchedule["Viseme 调度表 (Stage.vue, MVP)"]
+            AudioPlayback["Web AudioContext (PCM 无缝子块播放器)"]
         end
     end
 
-    WSBridge --"JSON Frame"--> StreamStore
+    WSBridge --"JSON Frame (文本/游戏状态)"--> StreamStore
     WSBridge --"Game State Update"--> STS2Store
     StreamStore --"Text Delta"--> ChatUI["聊天窗口 UI"]
-    StreamStore --"Base64 PCM Chunk"--> AudioPlayback
-    AudioPlayback --"实时频谱分析"--> AudioAnalyser
-    AudioAnalyser --"ParamMouthOpenY"--> Live2DCanvas
+    WSBridge -."audio_base64 + visemes (直接轮询消费, 不经过 Store)".-> AudioPlayback
+    AudioPlayback --"实时播放"--> WLipSync
+    WSBridge -."visemes 时间轴".-> VisemeSchedule
+    VisemeSchedule --"ParamMouthOpenY (优先)"--> Live2DCanvas
+    WLipSync --"ParamMouthOpenY (无 viseme 数据时的 fallback)"--> Live2DCanvas
     EmotionStore --"Expression & Motion"--> Live2DCanvas
 ```
 
-> **设计如此，尚未接入**：`agent.audio.chunk` payload 里的 `visemes` 时间轴数据已经生成并传输到前端，但目前前端直接丢弃，未被任何组件消费——口型驱动实际靠对播放中音频做实时频谱分析（`AudioAnalyser` → `ParamMouthOpenY`），不是精确的音素级 Viseme 同步。上图不再画出一个实际不存在消费方的 `VisemeLipsyncDecoder`，接入 Viseme 数据驱动口型是已知的后续工作项（详见 `docs/implementation plan.md` 中与流式字幕方案共享的前置依赖说明）。
+> **口型驱动机制**：`Stage.vue` 直接轮询 `window.__betterAgentWSBridge`（不经过 `StreamStore`/Pinia）消费 BetterAgent 的音频与 viseme 数据。JSON `agent.audio_chunk` 消息里的 `visemes` 时间轴会与紧随其后的二进制 AUDI 音频帧配对，按 `audioContext` 播放时钟换算成绝对时间调度表，驱动 Live2D 参数 `ParamMouthOpenY`（`getBetterAgentMouthOpenness`，离散口型→张合度的映射是 MVP 阶段的粗略估计，待真实效果测试后调整）；仅当本次会话尚未收到过任何 viseme 数据时，才回退到 `@proj-airi/model-driver-lipsync` 的 wLipSync `AudioWorkletNode`（对播放中音频做元音共振峰实时分析）驱动同一参数——这是 wLipSync 一直以来的工作方式，此前被误记为"音频频谱分析"，现已订正。
 
 WebGateway 下行 JSON 帧还包括 `agent.stt_transcript`（`{ text, is_final, chat_id }`），
 用于把 STT 识别结果回显给前端：`is_final:true` 是 `agent.stt.stream_final` 转发，让语音输入在聊天窗口中显示为普通用户消息；`is_final:false` 是 `agent.stt.stream_partial` 转发的边说边出的中间转写结果，目前只更新 `betteragent-gateway.ts` store 里的 `partialTranscript` 响应式状态，尚无 UI 组件消费。
