@@ -124,6 +124,7 @@ class IFlytekSession:
             raise RuntimeError("iFLYTEK session not started")
         audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
         frame = self._build_frame(audio_b64, self._status)
+        logger.info(f"iFLYTEK send_audio status={self._status} len={len(pcm_bytes)}")
         await self._ws.send(json.dumps(frame))
         # After the first real audio frame we are in "continue" mode.
         if self._status == STATUS_FIRST_FRAME:
@@ -153,6 +154,8 @@ class IFlytekSession:
             if code is not None and code != 0:
                 logger.warning(f"iFLYTEK STT error: code={code}, message={msg.get('message')}, raw_msg={raw}")
                 break
+
+            logger.info(f"iFLYTEK raw response: {raw}")
 
             # v2 successful responses nest the result under data.result.
             payload = msg.get("data") or msg.get("payload")
