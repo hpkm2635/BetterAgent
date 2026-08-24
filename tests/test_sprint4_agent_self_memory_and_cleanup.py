@@ -34,7 +34,7 @@ async def test_agent_self_memory_record_and_prompt_injection():
     await hub.handle_action_completed(action_completed)
 
     # Assert self_memory captured the event
-    self_events = hub.self_memory.get_recent_self_events(limit=3)
+    self_events = hub.self_memory.get_recent_self_events(chat_id, limit=3)
     assert len(self_events) == 1
     assert "执行动作 send_message" in self_events[0]["description"]
 
@@ -55,6 +55,50 @@ async def test_agent_self_memory_record_and_prompt_injection():
     system_prompt = PromptBuilder.build_system_prompt(reasoning_req)
     assert "[Agent 自身近期行为记录]:" in system_prompt
     assert "执行动作 send_message" in system_prompt
+
+    await hub.vector_store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_self_memory_isolated_per_chat():
+    """AgentSelfMemory must not leak one chat's recent actions into another's
+    prompt -- MemoryHub (and its self_memory) is a process-wide singleton, so
+    without per-chat scoping every chat would see every other chat's actions.
+    """
+    hub = MemoryHub()
+    chat_id_a = 111222333
+    chat_id_b = 444555666
+
+    async def complete_action(chat_id: int, text: str) -> None:
+        decision = ActionDecisionPayload(
+            event_id=f"act_{chat_id}",
+            source_component="cognitive",
+            chat_id=chat_id,
+            action_type="send_message",
+            text_content=text,
+            is_final=True,
+        )
+        await hub.handle_action_completed(ActionCompletedPayload(
+            event_id=f"act_{chat_id}",
+            source_component="webgateway",
+            chat_id=chat_id,
+            action_decision=decision,
+            status="success",
+        ))
+
+    await complete_action(chat_id_a, "只属于 A 的动作")
+    await complete_action(chat_id_b, "只属于 B 的动作")
+
+    events_a = hub.self_memory.get_recent_self_events(chat_id_a, limit=3)
+    events_b = hub.self_memory.get_recent_self_events(chat_id_b, limit=3)
+
+    assert len(events_a) == 1
+    assert "只属于 A 的动作" in events_a[0]["description"]
+    assert "只属于 B 的动作" not in events_a[0]["description"]
+
+    assert len(events_b) == 1
+    assert "只属于 B 的动作" in events_b[0]["description"]
+    assert "只属于 A 的动作" not in events_b[0]["description"]
 
     await hub.vector_store.close()
 

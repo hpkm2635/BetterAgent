@@ -98,6 +98,7 @@ class MemoryHub:
         # Record event in agent self memory
         if decision.action_type:
             self.self_memory.add_self_event(
+                chat_id=chat_id,
                 description=f"执行动作 {decision.action_type}: {full_content[:30]}",
                 emotion_tag="normal",
             )
@@ -210,7 +211,7 @@ class MemoryHub:
         )
 
         # Retrieve Agent Self Events
-        self_events = self.self_memory.get_recent_self_events(limit=3)
+        self_events = self.self_memory.get_recent_self_events(chat_id, limit=3)
 
         # Build ReasoningRequestPayload
         return ReasoningRequestPayload(
