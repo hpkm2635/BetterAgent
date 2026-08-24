@@ -757,6 +757,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 								"state":     "idle",
 								"csm_state": "IDLE",
 								"chat_id":   chatID,
+								"reason":    "text_fallback_idle",
 							}),
 						})
 						b.sessions.SendTextToChat(chatID, out)
@@ -887,7 +888,9 @@ func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, a
 		// DeepCopy takes one RLock and snapshots every field, so reading
 		// several of them here can't race against a concurrent
 		// ApplySentimentDelta/ApplyTimeDecay writer the way raw field
-		// access would.
+		// access would -- and every payload field below is derived from
+		// this one snapshot (never from the live st), so they can't be torn
+		// across different points in time either.
 		snap := st.DeepCopy()
 		payload.Mood = string(snap.CurrentMoodTag)
 		payload.EmotionTag = string(snap.CurrentMoodTag)
@@ -895,10 +898,10 @@ func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, a
 		payload.Arousal = snap.Arousal
 		payload.Energy = snap.Energy
 		payload.Satiety = snap.Satiety
-		payload.SocialBattery = st.GetSocialBattery()
+		payload.SocialBattery = snap.GetSocialBattery()
 		payload.Affection = snap.AffectionLevel
-		payload.IsJealous = st.IsJealous()
-		payload.Description = st.ToPromptDescription()
+		payload.IsJealous = snap.IsJealous()
+		payload.Description = snap.ToPromptDescription()
 	}
 	return payload
 }
@@ -994,6 +997,7 @@ func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
 			"state":     "idle",
 			"csm_state": "IDLE",
 			"chat_id":   p.ChatID,
+			"reason":    "tts_stream_end",
 		}),
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
@@ -1018,6 +1022,7 @@ func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
 			"state":     "idle",
 			"csm_state": "IDLE",
 			"chat_id":   p.ChatID,
+			"reason":    "stream_cancelled",
 		}),
 	})
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
