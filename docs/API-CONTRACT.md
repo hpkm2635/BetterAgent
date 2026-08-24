@@ -183,10 +183,11 @@ Content-Type: application/json
 | `knowledge_scope` | string |
 | `forbidden_topics` | string |
 
-**Response 200**: `{ "status": "ok", "id": "catgirl" }`  
+**Response 200**: `{ "status": "ok", "id": "catgirl", "hot_reload": "ok" | "failed" }`  
 **Response 400**: `{ "error": "Forbidden field: tts" }`（尝试修改白名单外字段时）
 
-> **实现约束**：使用 `ruamel.yaml` 原地更新 YAML，保留注释和字段顺序；禁止用 `yaml.dump` 覆盖整个文件。
+> **实现约束**：使用 `ruamel.yaml` 原地更新 YAML（临时文件 + fsync + os.replace 原子写入），保留注释和字段顺序；禁止用 `yaml.dump` 覆盖整个文件。
+> YAML 写盘成功后，Admin 后端直接通过 `nats-py` 向 NATS 发布 `agent.persona.update`（不经过 Go Core），触发 `services/cognitive` 内 `PersonaLoader` 失效缓存并重新加载。`hot_reload` 字段如实反映这次 NATS 推送是否成功；推送失败不影响 YAML 已落盘的事实，也不会被静默吞掉。
 
 ### 2.2 用户管理（只读 + 软删除）
 
@@ -294,82 +295,6 @@ GET http://localhost:8094/health
 - [ ] `PATCH /api/admin/config` 修改默认 Provider / Key 正常生效并广播 `agent.config.reloaded`
 - [ ] Admin Web UI 在 `localhost:8095` 可访问首页（截图附 PR）
 - [ ] PR diff 不包含 `core/`、`shared/`、`runner.py`、`frontend/` 任何文件的修改（`admin/` 内部维护 `.env` 和 `config.yaml` 读写逻辑）
-
-### 2.7 系统配置与 API 密钥管理（BYOK 模式）
-
-Admin 后端作为端侧配置管理中枢，读取并安全更新 `config/config.yaml` 与 `.env` 文件中的配置项：
-
-#### 获取系统配置与 API 密钥状态（脱敏）
-```
-GET http://localhost:8094/api/admin/config
-→ 200
-{
-  "default_provider": "gemini",
-  "providers": {
-    "gemini": { "has_key": true, "key_masked": "AIzaSy***4x9", "model": "gemini-3.1-flash-lite" },
-    "openai": { "has_key": false, "key_masked": "", "model": "gpt-4o" },
-    "deepseek": { "has_key": false, "key_masked": "", "model": "deepseek-chat" },
-    "qwen": { "has_key": false, "key_masked": "", "model": "qwen3.6-flash" }
-  },
-  "tts_provider": "cosyvoice",
-  "network": { "http_proxy": "", "https_proxy": "" }
-}
-```
-
-#### 动态更新配置与 API 密钥
-```
-PATCH http://localhost:8094/api/admin/config
-Content-Type: application/json
-```
-
-**Request**:
-```json
-{
-  "default_provider": "gemini",
-  "api_keys": {
-    "gemini": "AIzaSyYourNewActualKeyHere"
-  },
-  "models": {
-    "gemini": "gemini-3.1-flash-lite"
-  }
-}
-```
-
-**Response 200**: `{ "status": "ok", "reloaded": true }`
-
-> **实现约束**：
-> 1. API 密钥写入 `.env` 文件，保持私有化存取；全局配置更新至 `config/config.yaml`。
-> 2. 更新成功后，通过 NATS 消息总线发布 `agent.config.reloaded` 事件通知全系统。
-
-#### API 密钥连通性测试
-```
-POST http://localhost:8094/api/admin/config/test-key
-Content-Type: application/json
-```
-
-**Request**:
-```json
-{
-  "provider": "gemini",
-  "api_key": "AIzaSyYourNewActualKeyHere"
-}
-```
-
-**Response 200**:
-```json
-{
-  "status": "ok",
-  "latency_ms": 142,
-  "available_models": ["gemini-3.1-flash-lite", "gemini-1.5-pro"]
-}
-```
-**Response 400/500**:
-```json
-{
-  "status": "error",
-  "error": "401 Unauthorized: Invalid API key"
-}
-```
 
 ### 2.7 系统配置与 API 密钥管理（BYOK 模式）
 
@@ -488,11 +413,13 @@ PATCH 成功后，Admin 后端向 NATS 发布 `agent.config.reloaded`，信封�
 { "subject": "agent.config.reloaded", "source": "admin_backend", "payload": { "default_provider": "claude", "network": { "...": "..." }, "providers": { "gemini": { "api_key": "..." } } } }
 ```
 
-> 消费端（cognitive / memory 等服务的 config cache 失效与 Provider 重建）由技术总监在
-> 各服务内实现；Admin 只负责**发布**，不订阅。若需触发 Agent 响应，通知技术总监添加
-> NATS 订阅点。
+> 消费端已实现：`services/cognitive/main.py` 订阅 `agent.config.reloaded`，收到后依次调用
+> `ProviderFactory.invalidate_cache()`（清空缓存的 Provider 实例）与
+> `CognitiveEngine.refresh_default_provider()`（重新解析默认 Provider 并重建
+> `self.providers`），使正在运行的 cognitive 服务无需重启即可切换 Provider/Key。
+> Admin 只负责**发布**，不订阅；其余服务若也需要响应此信号，可按同样模式各自订阅。
 
-### 2.7 PR 合并门控
+### 2.8 PR 合并门控
 
 - [ ] `GET /api/admin/config` 返回 `default_provider` / `network` / `providers`，providers 含 `gemini`/`claude`/`qwen`
 - [ ] `PATCH /api/admin/config` 修改 `default_provider` 后 `GET` 能反映，且 `config/config.yaml` 实际更新
@@ -682,10 +609,10 @@ GET http://localhost:8096/health
 | `8090` | Go Core 游戏事件 HTTP 摄入 | 褚裕禄 | ✅ 已有 |
 | `8091` | TTS Service | 褚裕禄 | ✅ 已有 |
 | `8092` | STT Service | 褚裕禄 | ✅ 已有 |
-| `8093` | **Campus KB RAG Service** | 冯文哲 | 🔲 待实现 |
-| `8094` | **Admin Backend REST API** | 谢自立 | 🔲 待实现 |
-| `8095` | **Admin Web UI (Vite Dev)** | 谢自立 | 🔲 待实现 |
-| `8096` | **Companion Tool Service** | 张劭哲 | 🔲 待实现 |
+| `8093` | **Campus KB RAG Service** | 冯文哲 | ✅ 已实现 |
+| `8094` | **Admin Backend REST API** | 谢自立 | ✅ 已实现 |
+| `8095` | **Admin Web UI (Vite Dev)** | 谢自立 | ✅ 已实现 |
+| `8096` | **Companion Tool Service** | 张劭哲 | ✅ 已实现 |
 
 ---
 
