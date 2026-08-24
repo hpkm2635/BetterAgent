@@ -231,6 +231,13 @@ h1 {
   color: #fff;
 }
 
+.btn-success {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #0f1115;
+  font-weight: 600;
+}
+
 .btn-danger {
   background: transparent;
   border-color: var(--danger);
@@ -249,6 +256,14 @@ h1 {
   margin: 2px 4px 2px 0;
   font-size: 12px;
 }
+
+.tag-active {
+  background: rgba(63, 185, 80, 0.2);
+  color: var(--ok);
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  font-weight: 600;
+}
+
 
 .role {
   text-transform: uppercase;

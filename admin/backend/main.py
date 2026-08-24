@@ -194,7 +194,8 @@ def _get_active_persona_id() -> str:
 
 @app.get("/api/admin/personas")
 def list_personas():
-    """列出所有人设，摘要字段（id/name/tts_provider/voice_id）。"""
+    """列出所有人设，摘要字段（id/name/tts_provider/voice_id/is_active）。"""
+    active_id = _get_active_persona_id()
     personas = []
     if PERSONA_DIR.exists():
         for path in sorted(PERSONA_DIR.glob("*.yaml")):
@@ -208,13 +209,67 @@ def list_personas():
                 continue
             tts = data.get("tts")
             tts = tts if isinstance(tts, dict) else {}
+            p_id = data.get("id") or path.stem
             personas.append({
-                "id": data.get("id") or path.stem,
+                "id": p_id,
                 "name": data.get("name"),
                 "tts_provider": tts.get("provider"),
                 "voice_id": tts.get("voice_id"),
+                "is_active": (p_id == active_id),
             })
-    return {"personas": personas}
+    return {"personas": personas, "active_id": active_id}
+
+
+@app.post("/api/admin/personas/{persona_id}/activate")
+def activate_persona(persona_id: str):
+    """在线将指定人设切换为当前系统全局活跃人设（更新 config.yaml 的 persona.active 节点，并广播 NATS 热重载）。"""
+    path = _persona_path(persona_id)
+    if path is None or not path.exists():
+        return _error(404, "persona not found")
+
+    config_path = REPO_ROOT / "config" / "config.yaml"
+    if not config_path.exists():
+        return _error(500, "config.yaml not found")
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            doc = _yaml_rt.load(f)
+        if not isinstance(doc, dict):
+            return _error(500, "invalid config.yaml")
+
+        if "persona" not in doc or not isinstance(doc["persona"], dict):
+            doc["persona"] = {}
+        doc["persona"]["active"] = persona_id
+
+        tmp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=config_path.parent,
+                prefix=".config.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = Path(f.name)
+                _yaml_rt.dump(doc, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+            tmp_path = None
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+    except Exception as exc:
+        logger.error(f"Failed to update active persona in config.yaml: {exc}")
+        return _error(500, f"failed to activate persona: {exc}")
+
+    _publish_persona_update(persona_id)
+    return {"status": "ok", "active_id": persona_id}
+
 
 
 @app.get("/api/admin/personas/{persona_id}")

@@ -32,8 +32,10 @@ const health = ref(null)
 const healthError = ref('')
 
 const personas = ref([])
+const activePersonaId = ref('')
 const selectedId = ref('')
 const personaDetail = ref(null)
+
 const personaSaveMsg = ref('')
 // 2.1 白名单 6 字段，详情页可编辑
 const PERSONA_FIELDS = [
@@ -111,6 +113,7 @@ async function loadPersonas() {
   try {
     const data = await api('/api/admin/personas')
     personas.value = data.personas || []
+    activePersonaId.value = data.active_id || ''
     if (personas.value.length && !selectedId.value) {
       await selectPersona(personas.value[0].id)
     }
@@ -118,6 +121,18 @@ async function loadPersonas() {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+async function activatePersona(id) {
+  personaSaveMsg.value = ''
+  try {
+    const res = await api(`/api/admin/personas/${id}/activate`, { method: 'POST' })
+    activePersonaId.value = res.active_id || id
+    personaSaveMsg.value = '已设为当前系统活跃人设 ✓'
+    await loadPersonas()
+  } catch (e) {
+    personaSaveMsg.value = `切换失败: ${e.message}`
   }
 }
 
@@ -529,6 +544,7 @@ onMounted(() => {
               <div class="row">
                 <strong>{{ p.name }}</strong>
                 <span class="muted">({{ p.id }})</span>
+                <span v-if="p.is_active || p.id === activePersonaId" class="tag tag-active">当前活跃</span>
               </div>
               <div class="muted small">
                 TTS: {{ p.tts_provider }} · voice: {{ p.voice_id }}
@@ -540,7 +556,10 @@ onMounted(() => {
         <div class="card">
           <div class="card-head">
             <h2>人设详情</h2>
-            <span v-if="selectedId" class="muted small">{{ selectedId }}</span>
+            <div v-if="selectedId" class="row">
+              <span v-if="selectedId === activePersonaId" class="tag tag-active">当前活跃人设</span>
+              <span class="muted small">{{ selectedId }}</span>
+            </div>
           </div>
           <template v-if="personaDetail">
             <div v-for="f in PERSONA_FIELDS" :key="f.key" class="field">
@@ -555,9 +574,17 @@ onMounted(() => {
             </div>
             <div class="row field">
               <button class="btn btn-primary" @click="savePersona">保存修改</button>
-              <button v-if="selectedId !== 'catgirl' && !personaDetail.is_active" class="btn btn-danger" @click="askDeletePersona(personaDetail)">删除人设</button>
+              <button
+                v-if="selectedId && selectedId !== activePersonaId"
+                class="btn btn-success"
+                @click="activatePersona(selectedId)"
+              >
+                设为当前活跃人设
+              </button>
+              <button v-if="selectedId !== 'catgirl' && selectedId !== activePersonaId" class="btn btn-danger" @click="askDeletePersona(personaDetail)">删除人设</button>
               <span v-if="personaSaveMsg" class="muted small">{{ personaSaveMsg }}</span>
             </div>
+
             <details class="field">
               <summary>完整 YAML (JSON)</summary>
               <pre class="code">{{ JSON.stringify(personaDetail, null, 2) }}</pre>
