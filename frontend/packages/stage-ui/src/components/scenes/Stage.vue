@@ -558,6 +558,20 @@ async function playBetterAgentAudioChunk(audioBase64: string, generation: number
   // is_final on these chunks today).
   betterAgentSilenceTimer = setTimeout(() => {
     betterAgentSilenceTimer = undefined
+    if (audioContext && betterAgentNextChunkStartTime > audioContext.currentTime) {
+      // Chunks stopped arriving, but there's still queued audio that hasn't
+      // actually finished playing yet (production -- LLM+TTS -- outran
+      // realtime playback, common for long multi-sentence replies) -- defer
+      // the "not speaking" reset until that queued audio will actually have
+      // finished, instead of hiding speaking-state UI (captions, mouth
+      // animation, etc.) while the character is still audibly talking.
+      const remainingMs = (betterAgentNextChunkStartTime - audioContext.currentTime) * 1000
+      betterAgentSilenceTimer = setTimeout(() => {
+        betterAgentSilenceTimer = undefined
+        resetSpeakingState()
+      }, remainingMs)
+      return
+    }
     resetSpeakingState()
   }, BETTERAGENT_SILENCE_TIMEOUT_MS)
 }

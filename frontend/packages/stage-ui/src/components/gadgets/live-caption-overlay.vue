@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
+import { useSpeakingStore } from '../../stores/audio'
 import { useChatStreamStore } from '../../stores/chat/stream-store'
 import { useBetterAgentGatewayStore } from '../../stores/modules/betteragent-gateway'
 import { useSpeechOutputControlStore } from '../../stores/speech-output-control'
@@ -9,6 +10,13 @@ const streamStore = useChatStreamStore()
 const gatewayStore = useBetterAgentGatewayStore()
 const { isSpeaking, csmState, isStreaming, isGracePeriodActive, revealedCaption } = storeToRefs(gatewayStore)
 const { speechMuted } = storeToRefs(useSpeechOutputControlStore())
+// Stage.vue keeps this true for as long as it still has BetterAgent audio
+// queued/playing on audioContext's own clock (see betterAgentSilenceTimer),
+// which is a more trustworthy "still talking" signal than the server's
+// agent.state_change broadcast alone -- the server only knows when it's
+// done *producing* audio, not when the browser is done *playing* it, and
+// production can outrun realtime playback for long multi-sentence replies.
+const { nowSpeaking } = storeToRefs(useSpeakingStore())
 
 // Normally the typewriter-paced revealedCaption (Stage.vue reveals it chunk
 // by chunk as each chunk's audio actually starts playing) is the source of
@@ -50,9 +58,10 @@ watch(displayText, (newVal) => {
   }
 })
 
-// Subtitle visibility is bound to CSM TALKING state, audio playback, active streaming, and inter-turn grace period
+// Subtitle visibility is bound to CSM TALKING state, audio playback, active streaming, inter-turn grace period, and
+// Stage.vue's own real playback-queue-completion signal (nowSpeaking) -- see its import above for why the latter matters.
 const isVisible = computed(() => {
-  const isTalking = isSpeaking.value || csmState.value === 'talking' || isStreaming.value || isGracePeriodActive.value
+  const isTalking = nowSpeaking.value || isSpeaking.value || csmState.value === 'talking' || isStreaming.value || isGracePeriodActive.value
   return isTalking && !!lastNonEmptyText.value
 })
 
