@@ -38,11 +38,7 @@ function hasFlagEnableMkcert(): boolean {
 }
 
 export default defineConfig({
-  server: {
-    port: 15173,
-  },
   optimizeDeps: {
-
     exclude: [
       // Internal Packages
       '@proj-airi/stage-ui/*',

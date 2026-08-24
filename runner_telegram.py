@@ -3,8 +3,7 @@
 BetterAgent Lightweight Telegram-Only Microservice Supervisor
 Designed for low-resource VPS / Cloud deployments:
 - Only spawns 4 core components: NATS Server, Go Core (Gotd TG Adapter), Memory Service, Cognitive Service.
-- Omits Web stage-web frontend (:15173), Admin panel (:8094/:8095), TTS service (:8091), STT service (:8092), Campus KB (:8093), and STS2 watcher.
-
+- Omits Web stage-web frontend (:5173), Admin panel (:8094/:8095), TTS service (:8091), STT service (:8092), Campus KB (:8093), and STS2 watcher.
 - Supports cross-platform execution (Linux / Windows VPS).
 """
 
