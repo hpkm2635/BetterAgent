@@ -7,6 +7,7 @@ import type { UnElevenLabsOptions } from 'unspeech'
 
 import type { EmotionPayload } from '../../constants/emotions'
 import type { SpeechTransport, StageTtsSession, StreamingSessionSnapshot } from '../../libs/speech/tts-session'
+import type { Viseme } from '../../services/betteragent-ws'
 
 import { defineInvokeHandler } from '@moeru/eventa'
 import { sleep } from '@moeru/std'
@@ -418,6 +419,14 @@ let betterAgentNextChunkStartTime = 0
 let betterAgentSilenceTimer: ReturnType<typeof setTimeout> | undefined
 const betterAgentActiveSources = new Set<AudioBufferSourceNode>()
 
+// MVP viseme-driven mouth shape: a rough discrete shape -> "how open"
+// mapping, tune after real-world visual testing.
+const BETTERAGENT_VISEME_OPENNESS: Record<string, number> = { aa: 1.0, oh: 0.8, ou: 0.5, ee: 0.4, ih: 0.3 }
+interface BetterAgentScheduledViseme { absTime: number, openness: number }
+// Flat, time-ordered queue of upcoming viseme events across all currently
+// scheduled (but not yet fully played) chunks, in audioContext-clock time.
+let betterAgentVisemeSchedule: BetterAgentScheduledViseme[] = []
+
 // Chunks arrive rapidly (dozens per sentence) and decoding is async, so
 // naive fire-and-forget playback can decode/schedule chunk N+1 before
 // chunk N if the browser's audio decoder happens to resolve them out of
@@ -445,11 +454,12 @@ function stopBetterAgentAudio(_reason: string) {
   }
   betterAgentActiveSources.clear()
   betterAgentNextChunkStartTime = 0
+  betterAgentVisemeSchedule = []
   if (nowSpeaking.value)
     resetSpeakingState()
 }
 
-async function playBetterAgentAudioChunk(audioBase64: string, generation: number) {
+async function playBetterAgentAudioChunk(audioBase64: string, generation: number, visemes?: Viseme[]) {
   if (!audioContext || speechMuted.value)
     return
 
@@ -494,6 +504,15 @@ async function playBetterAgentAudioChunk(audioBase64: string, generation: number
   const startTime = Math.max(audioContext.currentTime, betterAgentNextChunkStartTime)
   betterAgentNextChunkStartTime = startTime + audioBuffer.duration
 
+  if (visemes?.length) {
+    // Chunk startTime is monotonically non-decreasing across successive
+    // chunks, and each chunk's own visemes are already ascending by
+    // time_offset -- so appending here keeps the overall queue sorted
+    // without needing an explicit sort.
+    for (const v of visemes)
+      betterAgentVisemeSchedule.push({ absTime: startTime + v.time_offset, openness: BETTERAGENT_VISEME_OPENNESS[v.shape] ?? 0.5 })
+  }
+
   betterAgentActiveSources.add(source)
   source.onended = () => {
     betterAgentActiveSources.delete(source)
@@ -519,13 +538,13 @@ async function playBetterAgentAudioChunk(audioBase64: string, generation: number
   }, BETTERAGENT_SILENCE_TIMEOUT_MS)
 }
 
-function queueBetterAgentAudioChunk(audioBase64: string) {
+function queueBetterAgentAudioChunk(audioBase64: string, visemes?: Viseme[]) {
   const generation = betterAgentGeneration
   betterAgentProcessingChain = betterAgentProcessingChain
     .then(() => {
       if (generation !== betterAgentGeneration)
         return
-      return playBetterAgentAudioChunk(audioBase64, generation)
+      return playBetterAgentAudioChunk(audioBase64, generation, visemes)
     })
     .catch((error) => {
       console.error('[Stage] Failed to decode/play BetterAgent audio chunk', error)
@@ -538,8 +557,8 @@ if (typeof window !== 'undefined') {
     if (bridge) {
       clearInterval(betterAgentBridgePollId)
       betterAgentBridgePollId = undefined
-      betterAgentAudioUnsub = bridge.onAudioChunk((audioBase64: string) => {
-        queueBetterAgentAudioChunk(audioBase64)
+      betterAgentAudioUnsub = bridge.onAudioChunk((audioBase64: string, _sampleRate: number, _chatId?: number, visemes?: Viseme[]) => {
+        queueBetterAgentAudioChunk(audioBase64, visemes)
       })
       // eslint-disable-next-line no-console
       console.log('[BetterAgent] Hooked BetterAgent WS Bridge audio chunks to Stage gapless player!')
@@ -775,6 +794,32 @@ bindSpeakingStateToPlaybackManager(playbackManager, {
   },
 })
 
+// MVP: when BetterAgent has sent server-side viseme timing for the audio
+// currently playing, prefer stepping/interpolating through that schedule
+// over the live wLipSync formant analysis below. Returns undefined (falls
+// back to wLipSync) only if this session has never received any viseme
+// data at all -- once any has arrived, always prefer the schedule so gaps
+// between scheduled frames hold the last known shape instead of flapping
+// back to live analysis mid-sentence.
+function getBetterAgentMouthOpenness(now: number): number | undefined {
+  if (betterAgentVisemeSchedule.length === 0)
+    return undefined
+
+  while (betterAgentVisemeSchedule.length > 1 && betterAgentVisemeSchedule[1].absTime <= now)
+    betterAgentVisemeSchedule.shift()
+
+  const current = betterAgentVisemeSchedule[0]
+  if (now < current.absTime)
+    return 0
+
+  const next = betterAgentVisemeSchedule[1]
+  if (!next || now >= next.absTime)
+    return current.openness
+
+  const t = (now - current.absTime) / (next.absTime - current.absTime)
+  return current.openness + (next.openness - current.openness) * t
+}
+
 function startLipSyncLoop() {
   if (lipSyncLoopId.value)
     return
@@ -784,7 +829,8 @@ function startLipSyncLoop() {
       mouthOpenSize.value = 0
     }
     else {
-      mouthOpenSize.value = live2dLipSync.value.getMouthOpen()
+      const visemeOpenness = audioContext ? getBetterAgentMouthOpenness(audioContext.currentTime) : undefined
+      mouthOpenSize.value = visemeOpenness ?? live2dLipSync.value.getMouthOpen()
     }
     lipSyncLoopId.value = requestAnimationFrame(tick)
   }

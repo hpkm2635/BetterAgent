@@ -118,6 +118,11 @@ export class BetterAgentWSBridge {
   // frame from a barge-in'd generation can't play after the WebGateway has
   // already moved on (see protocol.go's AUDI header: bytes 12-20).
   private latestGenerationByChat: Map<number, bigint> = new Map()
+  // The JSON agent.audio_chunk message (carrying visemes) is always sent
+  // immediately before the binary AUDI frame for the same chunk, over the
+  // same ordered WS connection -- stash it here and pair it with the next
+  // binary frame that actually plays.
+  private pendingVisemes: Viseme[] | undefined
   private sttTranscriptListeners: Set<STTTranscriptCallback> = new Set()
   private stateChangeListeners: Set<StateChangeCallback> = new Set()
   private gameStateListeners: Set<GameStateCallback> = new Set()
@@ -244,6 +249,9 @@ export class BetterAgentWSBridge {
           break
 
         case 'agent.audio_chunk':
+          if (Array.isArray(msg.payload?.visemes)) {
+            this.pendingVisemes = msg.payload.visemes
+          }
           break
 
         case 'agent.stt_transcript':
@@ -283,6 +291,9 @@ export class BetterAgentWSBridge {
     if (generationId < latestGen) {
       // Stale frame from a generation that's already been superseded
       // (barge-in / new message) -- drop it instead of playing it late.
+      // Also discard any visemes that arrived paired with this dropped
+      // frame, so they don't get attached to the next (unrelated) chunk.
+      this.pendingVisemes = undefined
       return
     }
     if (generationId > latestGen) {
@@ -291,7 +302,9 @@ export class BetterAgentWSBridge {
 
     const rawAudio = buf.slice(20)
     const base64Audio = uint8ArrayToBase64(new Uint8Array(rawAudio))
-    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000, chatId))
+    const visemes = this.pendingVisemes
+    this.pendingVisemes = undefined
+    this.audioChunkListeners.forEach(cb => cb(base64Audio, 32000, chatId, visemes))
   }
 
   public sendUserText(text: string, chatId?: number): void {
