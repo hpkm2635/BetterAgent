@@ -17,7 +17,7 @@ export interface WSMessage<T = any> {
 export type TextDeltaCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export type EmotionCallback = (emotion: string, action?: string) => void
 export type AudioChunkCallback = (audioBase64: string, sampleRate: number, chatId?: number, visemes?: Viseme[]) => void
-export type StateChangeCallback = (state: string, chatId?: number) => void
+export type StateChangeCallback = (state: string, chatId?: number, reason?: string) => void
 export type STTTranscriptCallback = (text: string, isFinal: boolean, chatId?: number) => void
 export interface GameStatePayload {
   floor: number
@@ -175,6 +175,13 @@ export class BetterAgentWSBridge {
       this.ws.onopen = () => {
         console.log('[BetterAgentWSBridge] Connected successfully 🚀')
         this.reconnectAttempts = 0
+        // A fresh connection (initial or reconnect) may be talking to a
+        // backend process that restarted -- generationID counters reset to
+        // 1 there (see core/internal/engine/state_machine.go), so a stale
+        // high-water mark from before the disconnect would otherwise cause
+        // every future audio frame for that chat to be misjudged as stale
+        // and silently dropped forever.
+        this.latestGenerationByChat.clear()
       }
 
       this.ws.onmessage = (event: MessageEvent) => {
@@ -247,7 +254,7 @@ export class BetterAgentWSBridge {
 
         case 'agent.state_change':
           if (msg.payload?.state) {
-            this.stateChangeListeners.forEach(cb => cb(msg.payload.state, msg.payload.chat_id))
+            this.stateChangeListeners.forEach(cb => cb(msg.payload.state, msg.payload.chat_id, msg.payload.reason))
           }
           break
 

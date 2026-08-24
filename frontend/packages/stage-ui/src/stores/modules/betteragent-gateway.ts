@@ -126,7 +126,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     }))
 
     // 2. CSM State Transitions
-    unsubs.push(betterAgentWSBridge.onStateChange((state: string, chatId?: number) => {
+    unsubs.push(betterAgentWSBridge.onStateChange((state: string, chatId?: number, reason?: string) => {
       if (!isChatMatch(chatId))
         return
 
@@ -144,13 +144,15 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
           graceTimer = null
         }
         resetStreamingWatchdog()
-        // The CSM reaches idle both on a normal turn end and on a barge-in
-        // cancel (CANCELLING -> PURGE_RESET -> IDLE) -- the frame carries no
-        // flag distinguishing the two. Stopping playback here is idempotent
-        // (a no-op if nothing is queued/playing), so firing it unconditionally
-        // is what actually makes barge-in stop audio immediately instead of
-        // letting already-queued chunks play out.
-        speechOutputControl.requestStopSpeaking('server-state-idle')
+        // The CSM reaches idle both on a normal turn end (reason
+        // "tts_stream_end"/"text_fallback_idle", sent as soon as the server
+        // is done producing/sending, not once the client has finished
+        // *playing* the already-queued/in-flight audio) and on a barge-in
+        // cancel (reason "stream_cancelled"). Only the latter should cut
+        // audio short -- stopping unconditionally here would clip the tail
+        // of every normal response.
+        if (reason === 'stream_cancelled')
+          speechOutputControl.requestStopSpeaking('server-state-idle')
       }
     }))
 
