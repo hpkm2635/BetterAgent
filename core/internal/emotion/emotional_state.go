@@ -175,6 +175,18 @@ func (e *EmotionalState) GetSocialBattery() float64 {
 	return e.SocialBattery
 }
 
+func (e *EmotionalState) GetMoodTag() MoodEnum {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.CurrentMoodTag
+}
+
+func (e *EmotionalState) GetAffectionLevel() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.AffectionLevel
+}
+
 func (e *EmotionalState) CheckTrigger() *EventSignal {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -200,4 +212,3 @@ func (e *EmotionalState) ToPromptDescription() string {
 		e.CurrentMoodTag, e.Valence, e.Arousal, e.AffectionLevel, e.Energy, e.Satiety, e.SocialBattery, isJealous,
 	)
 }
-

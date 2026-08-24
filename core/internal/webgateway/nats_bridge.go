@@ -219,7 +219,7 @@ func (b *NatsBridge) getEmotionalStateForChat(chatID int64) *emotion.EmotionalSt
 func (b *NatsBridge) getMoodTagForChat(chatID int64) string {
 	st := b.getEmotionalStateForChat(chatID)
 	if st != nil {
-		return string(st.CurrentMoodTag)
+		return string(st.GetMoodTag())
 	}
 	return "NEUTRAL"
 }
@@ -884,14 +884,19 @@ func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, a
 	}
 	st := b.getEmotionalStateForChat(chatID)
 	if st != nil {
-		payload.Mood = string(st.CurrentMoodTag)
-		payload.EmotionTag = string(st.CurrentMoodTag)
-		payload.Valence = st.Valence
-		payload.Arousal = st.Arousal
-		payload.Energy = st.Energy
-		payload.Satiety = st.Satiety
+		// DeepCopy takes one RLock and snapshots every field, so reading
+		// several of them here can't race against a concurrent
+		// ApplySentimentDelta/ApplyTimeDecay writer the way raw field
+		// access would.
+		snap := st.DeepCopy()
+		payload.Mood = string(snap.CurrentMoodTag)
+		payload.EmotionTag = string(snap.CurrentMoodTag)
+		payload.Valence = snap.Valence
+		payload.Arousal = snap.Arousal
+		payload.Energy = snap.Energy
+		payload.Satiety = snap.Satiety
 		payload.SocialBattery = st.GetSocialBattery()
-		payload.Affection = st.AffectionLevel
+		payload.Affection = snap.AffectionLevel
 		payload.IsJealous = st.IsJealous()
 		payload.Description = st.ToPromptDescription()
 	}
