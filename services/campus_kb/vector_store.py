@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import uuid
@@ -44,6 +45,11 @@ class KnowledgeStore:
         self.client: Optional[AsyncQdrantClient] = None
         self._docs: Dict[str, dict] = {}
         self._source_ids: Dict[str, Set[str]] = {}
+        # Guards the delete-old-then-write-new critical section in ingest():
+        # each document has multiple `await` points between them, so two
+        # concurrent /api/kb/ingest calls targeting the same source could
+        # otherwise interleave and leave duplicate or missing entries.
+        self._mutation_lock = asyncio.Lock()
 
     @property
     def dim(self) -> int:
@@ -130,74 +136,75 @@ class KnowledgeStore:
         failed = 0
         handled_sources: Set[str] = set()
 
-        for document in documents:
-            try:
-                source = document.source or ""
-                if source and source not in handled_sources:
-                    await self._delete_by_source(source)
-                    handled_sources.add(source)
+        async with self._mutation_lock:
+            for document in documents:
+                try:
+                    source = document.source or ""
+                    if source and source not in handled_sources:
+                        await self._delete_by_source(source)
+                        handled_sources.add(source)
 
-                questions = [q.strip() for q in (document.questions or []) if q and q.strip()]
-                points: List[PointStruct] = []
+                    questions = [q.strip() for q in (document.questions or []) if q and q.strip()]
+                    points: List[PointStruct] = []
 
-                if questions:
-                    vectors = await self.embedder.embed(questions)
-                    for question, vector in zip(questions, vectors):
-                        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:q:{question}"))
-                        payload = {
-                            "content": document.content,
-                            "question": question,
-                            "source": source,
-                            "category": document.category,
-                            "metadata": document.metadata,
-                        }
-                        self._docs[point_id] = {
-                            "id": point_id,
-                            "content": document.content,
-                            "question": question,
-                            "source": source,
-                            "category": document.category,
-                            "metadata": document.metadata,
-                            "vector": vector,
-                        }
-                        self._source_ids.setdefault(source, set()).add(point_id)
-                        points.append(PointStruct(id=point_id, vector=vector, payload=payload))
-                else:
-                    chunks = chunk_text(document.content)
-                    vectors = await self.embedder.embed(chunks)
-                    for chunk, vector in zip(chunks, vectors):
-                        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:chunk:{chunk}"))
-                        payload = {
-                            "content": chunk,
-                            "source": source,
-                            "category": document.category,
-                            "metadata": document.metadata,
-                        }
-                        self._docs[point_id] = {
-                            "id": point_id,
-                            "content": chunk,
-                            "source": source,
-                            "category": document.category,
-                            "metadata": document.metadata,
-                            "vector": vector,
-                        }
-                        self._source_ids.setdefault(source, set()).add(point_id)
-                        points.append(PointStruct(id=point_id, vector=vector, payload=payload))
+                    if questions:
+                        vectors = await self.embedder.embed(questions)
+                        for question, vector in zip(questions, vectors):
+                            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:q:{question}"))
+                            payload = {
+                                "content": document.content,
+                                "question": question,
+                                "source": source,
+                                "category": document.category,
+                                "metadata": document.metadata,
+                            }
+                            self._docs[point_id] = {
+                                "id": point_id,
+                                "content": document.content,
+                                "question": question,
+                                "source": source,
+                                "category": document.category,
+                                "metadata": document.metadata,
+                                "vector": vector,
+                            }
+                            self._source_ids.setdefault(source, set()).add(point_id)
+                            points.append(PointStruct(id=point_id, vector=vector, payload=payload))
+                    else:
+                        chunks = chunk_text(document.content)
+                        vectors = await self.embedder.embed(chunks)
+                        for chunk, vector in zip(chunks, vectors):
+                            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}:chunk:{chunk}"))
+                            payload = {
+                                "content": chunk,
+                                "source": source,
+                                "category": document.category,
+                                "metadata": document.metadata,
+                            }
+                            self._docs[point_id] = {
+                                "id": point_id,
+                                "content": chunk,
+                                "source": source,
+                                "category": document.category,
+                                "metadata": document.metadata,
+                                "vector": vector,
+                            }
+                            self._source_ids.setdefault(source, set()).add(point_id)
+                            points.append(PointStruct(id=point_id, vector=vector, payload=payload))
 
-                if self.client is not None:
-                    try:
-                        await self.client.upsert(
-                            collection_name=self.collection_name,
-                            points=points,
-                        )
-                    except Exception:
-                        # A Qdrant outage is non-fatal: the in-memory index
-                        # already contains this document and search falls back.
-                        pass
+                    if self.client is not None:
+                        try:
+                            await self.client.upsert(
+                                collection_name=self.collection_name,
+                                points=points,
+                            )
+                        except Exception:
+                            # A Qdrant outage is non-fatal: the in-memory index
+                            # already contains this document and search falls back.
+                            pass
 
-                ingested += 1
-            except Exception:
-                failed += 1
+                    ingested += 1
+                except Exception:
+                    failed += 1
 
         logger.info("campus_kb ingest finished: ingested=%d failed=%d", ingested, failed)
         return ingested, failed

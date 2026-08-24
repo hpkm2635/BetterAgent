@@ -66,8 +66,8 @@ func (h *EmotionDeltaHandler) Start() error {
 			zap.Float64("d_arousal", dA),
 			zap.Float64("d_affection", dAff),
 			zap.Bool("is_jealous", p.IsJealous),
-			zap.String("mood_tag", string(st.CurrentMoodTag)),
-			zap.Float64("total_affection", st.AffectionLevel),
+			zap.String("mood_tag", string(st.GetMoodTag())),
+			zap.Float64("total_affection", st.GetAffectionLevel()),
 		)
 	})
 

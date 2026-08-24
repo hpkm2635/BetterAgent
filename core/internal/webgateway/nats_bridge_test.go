@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
+	"nhooyr.io/websocket"
 
 	"betteragent-core/internal/bus"
 	"betteragent-core/internal/engine"
@@ -55,7 +56,12 @@ func TestHandleActionDecisionMsg_WebChannel_ProcessedNoMismatchLog(t *testing.T)
 	b, logs := newTestNatsBridge(t)
 	text := "hello"
 	b.handleActionDecisionMsg(actionDecisionMsg(t, schema.ActionDecisionPayload{
-		ChatID:        1001,
+		ChatID: 1001,
+		// A fresh CentralStateMachine chat starts at generation 1 (see
+		// state_machine.go); this must match or the generation-id filter
+		// drops the message before it's ever "processed", defeating what
+		// this test is actually meant to exercise.
+		GenerationID:  1,
 		SourceChannel: "web",
 		ActionType:    "send_message",
 		TextContent:   &text,
@@ -79,6 +85,7 @@ func TestHandleActionDecisionMsg_MismatchedSourceChannel_ProcessedWithLogNotDrop
 	text := "hello"
 	b.handleActionDecisionMsg(actionDecisionMsg(t, schema.ActionDecisionPayload{
 		ChatID:        1001,
+		GenerationID:  1,          // matches the fresh chat's starting generation
 		SourceChannel: "telegram", // mismatched on purpose
 		ActionType:    "send_message",
 		TextContent:   &text,
@@ -98,6 +105,164 @@ func TestHandleActionDecisionMsg_MismatchedSourceChannel_ProcessedWithLogNotDrop
 	// never have been touched via TouchWatchdogChat -- IsFinal + no urgeEngine
 	// panic is the main risk here, so completing this call without a panic
 	// while producing the log line above is the meaningful assertion.
+}
+
+func TestHandleActionDecisionMsg_ZeroGenerationID_TreatedAsStaleAndDropped(t *testing.T) {
+	// A chat's generationID starts at 1 and only increments (state_machine.go),
+	// so it is never legitimately 0 -- a decision arriving with GenerationID
+	// unset/0 must be dropped as stale, not specially let through. This pins
+	// the fix for the gap where "GenerationID != 0" bypassed the staleness
+	// check entirely for zero-valued payloads.
+	b, logs := newTestNatsBridge(t)
+	text := "hello"
+	b.handleActionDecisionMsg(actionDecisionMsg(t, schema.ActionDecisionPayload{
+		ChatID: 1002,
+		// GenerationID intentionally left at its zero value.
+		SourceChannel: "web",
+		ActionType:    "send_message",
+		TextContent:   &text,
+		IsFinal:       true,
+	}))
+
+	found := false
+	for _, entry := range logs.All() {
+		if entry.Level == zapcore.WarnLevel && entry.Message != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'dropped stale ActionDecision' warning for a zero-value GenerationID")
+	}
+}
+
+func audioChunkMsg(t *testing.T, payload schema.StreamAudioChunkPayload) *nats.Msg {
+	t.Helper()
+	env := struct {
+		Payload schema.StreamAudioChunkPayload `json:"payload"`
+	}{Payload: payload}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("failed to marshal test StreamAudioChunkPayload: %v", err)
+	}
+	return &nats.Msg{Data: data}
+}
+
+// TestHandleAudioChunkMsg_BinaryFrameTaggedWithChunksOwnGeneration_NotCurrentChatGeneration
+// pins a bug where the binary AUDI frame was tagged with
+// b.csm.GetGenerationChat(chatID) -- the chat's *current* generation at the
+// moment this handler runs -- instead of the audio chunk's own
+// GenerationID. A barge-in between when TTS produced this chunk and when
+// this handler processes it bumps the chat's current generation, so the
+// stale chunk would get silently re-stamped as current and defeat the
+// client-side staleness filter that trusts this exact field.
+func TestHandleAudioChunkMsg_BinaryFrameTaggedWithChunksOwnGeneration_NotCurrentChatGeneration(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(5555)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	// Chat is already at generation 3 (e.g. two barge-ins happened after
+	// this audio chunk, which belongs to generation 1, was produced).
+	b.csm.IncrementGenerationChat(chatID)
+	b.csm.IncrementGenerationChat(chatID)
+	if got := b.csm.GetGenerationChat(chatID); got != 3 {
+		t.Fatalf("test setup: expected chat generation 3, got %d", got)
+	}
+
+	b.handleAudioChunkMsg(audioChunkMsg(t, schema.StreamAudioChunkPayload{
+		ChatID:       chatID,
+		GenerationID: 1,
+		AudioBase64:  "AQIDBA==", // 4 raw bytes, base64
+		SampleRate:   32000,
+		Format:       "pcm",
+	}))
+
+	// handleAudioChunkMsg sends a JSON text frame (agent.audio_chunk, for
+	// stage-web compat) before the binary AUDI frame -- drain until the
+	// binary one.
+	for {
+		select {
+		case frame := <-session.sendChan:
+			if frame.MessageType != websocket.MessageBinary {
+				continue
+			}
+			_, decodedGenID, _, err := DecodeBinaryAudioFrame(frame.Data)
+			if err != nil {
+				t.Fatalf("failed to decode binary audio frame: %v", err)
+			}
+			if decodedGenID != 1 {
+				t.Errorf("expected binary frame tagged with the chunk's own GenerationID=1, got %d (chat's current generation is 3)", decodedGenID)
+			}
+			return
+		default:
+			t.Fatal("expected a binary frame to be sent to the session, got none")
+		}
+	}
+}
+
+func sttTranscriptMsg(t *testing.T, payload schema.STTFinalTranscriptPayload) *nats.Msg {
+	t.Helper()
+	env := struct {
+		Payload schema.STTFinalTranscriptPayload `json:"payload"`
+	}{Payload: payload}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("failed to marshal test STTFinalTranscriptPayload: %v", err)
+	}
+	return &nats.Msg{Data: data}
+}
+
+// TestHandleSTTPartialMsg_RelaysToWSButNeverTriggersReasoning covers wiring
+// up agent.stt.stream_partial (previously never subscribed at all, so
+// mid-utterance transcripts never reached the browser -- see
+// handleSTTPartialMsg's doc comment). Confirms both halves: the browser
+// gets an is_final:false preview frame, and -- unlike handleSTTFinalMsg --
+// the chat is never pushed into a reasoning turn over a partial result.
+func TestHandleSTTPartialMsg_RelaysToWSButNeverTriggersReasoning(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(6666)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	if got := b.csm.GetChatState(chatID); got != engine.StateIdle {
+		t.Fatalf("test setup: expected chat to start IDLE, got %s", got)
+	}
+
+	b.handleSTTPartialMsg(sttTranscriptMsg(t, schema.STTFinalTranscriptPayload{
+		ChatID: chatID,
+		Text:   "帮我查一下图书",
+	}))
+
+	select {
+	case frame := <-session.sendChan:
+		var wsMsg WSMessage
+		if err := json.Unmarshal(frame.Data, &wsMsg); err != nil {
+			t.Fatalf("failed to unmarshal WS frame: %v", err)
+		}
+		if wsMsg.Type != "agent.stt_transcript" {
+			t.Fatalf("expected agent.stt_transcript frame, got %q", wsMsg.Type)
+		}
+		var payload AgentSTTTranscriptPayload
+		if err := json.Unmarshal(wsMsg.Payload, &payload); err != nil {
+			t.Fatalf("failed to unmarshal AgentSTTTranscriptPayload: %v", err)
+		}
+		if payload.IsFinal {
+			t.Errorf("expected IsFinal=false for a partial transcript, got true")
+		}
+		if payload.Text != "帮我查一下图书" {
+			t.Errorf("expected text to be relayed unchanged, got %q", payload.Text)
+		}
+	default:
+		t.Fatal("expected a WS frame to be sent to the session, got none")
+	}
+
+	if got := b.csm.GetChatState(chatID); got != engine.StateIdle {
+		t.Errorf("expected chat to remain IDLE after a partial transcript (must not trigger a reasoning turn), got %s", got)
+	}
 }
 
 func TestHandleGameStartStopCommand_GameStart_ActivatesAndIntercepts(t *testing.T) {

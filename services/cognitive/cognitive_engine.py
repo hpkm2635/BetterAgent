@@ -297,18 +297,32 @@ class CognitiveEngine:
     }
 
     def __init__(self, default_provider_name: Optional[str] = None):
-        if not default_provider_name:
-            default_provider_name = get_config_val("llm.default_provider", "gemini")
         self.presenter_manager = PresenterSessionManager(
             server_commands=self._load_presenter_server_commands(),
             idle_timeout_seconds=get_config_val("mcp.presenter.idle_timeout_seconds", 600),
         )
         self.tool_registry = ToolRegistry(presenter_manager=self.presenter_manager)
+        self._resolve_default_provider(default_provider_name)
+        self.latest_vision_frames: Dict[int, Dict[str, Any]] = {}
+
+    def refresh_default_provider(self, default_provider_name: Optional[str] = None) -> None:
+        """Re-resolve the default LLM provider from current config.
+
+        Call after ProviderFactory.invalidate_cache() (e.g. on
+        agent.config.reloaded) so a BYOK API key / default provider change
+        made in the admin panel takes effect without restarting this
+        service -- self.default_provider is otherwise only ever resolved
+        once, at __init__.
+        """
+        self._resolve_default_provider(default_provider_name)
+
+    def _resolve_default_provider(self, default_provider_name: Optional[str] = None) -> None:
+        if not default_provider_name:
+            default_provider_name = get_config_val("llm.default_provider", "gemini")
         self.default_provider = ProviderFactory.get_provider(default_provider_name)
         self.providers = {
             default_provider_name: self.default_provider,
         }
-        self.latest_vision_frames: Dict[int, Dict[str, Any]] = {}
 
     @staticmethod
     def _load_presenter_server_commands() -> Dict[str, List[str]]:

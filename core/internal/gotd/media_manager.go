@@ -64,20 +64,3 @@ func (m *MediaManager) ResolveMediaPath(reported string) (string, error) {
 
 	return candidate, nil
 }
-
-func (m *MediaManager) CleanOldFiles(maxAgeSec int64) {
-	entries, err := os.ReadDir(m.tempDir)
-	if err != nil {
-		return
-	}
-
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Unix() < maxAgeSec {
-			_ = os.Remove(filepath.Join(m.tempDir, entry.Name()))
-		}
-	}
-}

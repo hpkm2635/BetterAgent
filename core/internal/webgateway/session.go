@@ -11,10 +11,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const (
-	writeWait  = 10 * time.Second
-	pingPeriod = 30 * time.Second
-)
+const writeWait = 10 * time.Second
 
 type WSFrame struct {
 	MessageType websocket.MessageType
@@ -156,14 +153,6 @@ func (m *SessionManager) ClearChatBuffers(chatID int64) {
 		if s.ChatID == chatID {
 			s.ClearSendBuffer()
 		}
-	}
-}
-
-func (m *SessionManager) BroadcastText(data []byte) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, s := range m.sessions {
-		s.SendText(data)
 	}
 }
 

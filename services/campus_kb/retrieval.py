@@ -1,4 +1,4 @@
-"""Retrieval primitives: BM25, RRF fusion, query expansion, category routing."""
+"""Retrieval primitives: BM25, query expansion, category routing."""
 
 from __future__ import annotations
 
@@ -52,15 +52,6 @@ class BM25:
             score += idf * (term_freq * (self.k1 + 1.0)) / denominator
 
         return score
-
-
-def rrf_fusion(ranked_lists: List[List[int]], k: int = 60) -> Dict[int, float]:
-    """Fuse ranked document indices with Reciprocal Rank Fusion."""
-    fused: Dict[int, float] = defaultdict(float)
-    for ranked in ranked_lists:
-        for rank, doc_index in enumerate(ranked):
-            fused[doc_index] += 1.0 / (k + rank + 1)
-    return dict(fused)
 
 
 _SYNONYM_GROUPS: List[Tuple[str, ...]] = [

@@ -219,9 +219,27 @@ func (b *NatsBridge) getEmotionalStateForChat(chatID int64) *emotion.EmotionalSt
 func (b *NatsBridge) getMoodTagForChat(chatID int64) string {
 	st := b.getEmotionalStateForChat(chatID)
 	if st != nil {
-		return string(st.CurrentMoodTag)
+		return string(st.GetMoodTag())
 	}
 	return "NEUTRAL"
+}
+
+// sendIdleStateChange broadcasts an "agent.state_change" idle transition to
+// chatID's sessions. reason distinguishes why the chat went idle --
+// "tts_stream_end" / "text_fallback_idle" for a normal turn ending vs.
+// "stream_cancelled" for a barge-in -- since the frontend must only cut off
+// in-flight audio playback for the latter (see betteragent-gateway.ts).
+func (b *NatsBridge) sendIdleStateChange(chatID int64, reason string) {
+	outBytes, _ := json.Marshal(WSMessage{
+		Type: "agent.state_change",
+		Payload: marshalRaw(map[string]interface{}{
+			"state":     "idle",
+			"csm_state": "IDLE",
+			"chat_id":   chatID,
+			"reason":    reason,
+		}),
+	})
+	b.sessions.SendTextToChat(chatID, outBytes)
 }
 
 func (b *NatsBridge) StartSubscriptions() error {
@@ -252,6 +270,13 @@ func (b *NatsBridge) StartSubscriptions() error {
 	// exactly like the user having typed the text (see publishInboundMessage).
 	_, _ = b.bus.Subscribe(bus.SubjectSTTStreamFinal, func(msg *nats.Msg) {
 		b.handleSTTFinalMsg(msg)
+	})
+	// Mid-utterance (unpunctuated) partial transcripts -- echoed to the
+	// browser as a live "recognizing" preview, but never fed into
+	// publishInboundMessage: only a final transcript may trigger a
+	// reasoning turn.
+	_, _ = b.bus.Subscribe(bus.SubjectSTTStreamPartial, func(msg *nats.Msg) {
+		b.handleSTTPartialMsg(msg)
 	})
 
 	// 5. Subscribe to TTS Stream End & Stream Cancel Ack to broadcast CSM IDLE state to browser
@@ -684,8 +709,13 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 			zap.Int64("chat_id", decision.ChatID), zap.String("source_channel", decision.SourceChannel))
 	}
 
-	// Static Generation ID Filter: Drop stale action decisions from past turns
-	if decision.GenerationID != 0 && b.csm != nil {
+	// Static Generation ID Filter: Drop stale action decisions from past turns.
+	// Every chat's generationID starts at 1 and only increments (see
+	// ChatStateMachine.generationID in state_machine.go), so it is never
+	// legitimately 0 -- a zero value only means the field was missing from
+	// the publisher's payload, which is itself stale/malformed and must not
+	// be let through unchecked.
+	if b.csm != nil {
 		activeGen := b.csm.GetGenerationChat(decision.ChatID)
 		if decision.GenerationID != activeGen {
 			b.logger.Warn("⚠️ Dropped stale ActionDecision from old generation", zap.Int64("chat_id", decision.ChatID), zap.Uint64("decision_gen", decision.GenerationID), zap.Uint64("active_gen", activeGen))
@@ -746,15 +776,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 					currGen := b.csm.GetGenerationChat(chatID)
 					if (currState == engine.StateTalking || currState == engine.StateStreamingTTS) && (genID == 0 || currGen == genID) {
 						b.csm.TransitionToChat(chatID, engine.StateIdle, "text_fallback_idle")
-						out, _ := json.Marshal(WSMessage{
-							Type: "agent.state_change",
-							Payload: marshalRaw(map[string]interface{}{
-								"state":     "idle",
-								"csm_state": "IDLE",
-								"chat_id":   chatID,
-							}),
-						})
-						b.sessions.SendTextToChat(chatID, out)
+						b.sendIdleStateChange(chatID, "text_fallback_idle")
 					}
 				}
 			}()
@@ -767,7 +789,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 			emotionStr = *decision.ReactionEmoji
 		}
 		outBytes, _ := json.Marshal(WSMessage{
-			Type: "agent.emotion",
+			Type:    "agent.emotion",
 			Payload: marshalRaw(b.buildAgentEmotionPayload(decision.ChatID, emotionStr, "")),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, outBytes)
@@ -865,8 +887,15 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	}
 
 	// 2. High-Performance Zero-Copy Binary WebSocket Frame (0% Base64 Overhead)
+	//
+	// Must tag the frame with genID (this chunk's own generation, computed
+	// above) and not the chat's *current* generation: a barge-in can bump
+	// the chat to generation N+1 while a generation-N chunk is still queued
+	// for delivery here, and re-stamping it as N+1 would make the client's
+	// staleness filter (which trusts this field) wrongly treat stale audio
+	// as current and play it anyway.
 	if rawAudioBytes, err := base64.StdEncoding.DecodeString(p.AudioBase64); err == nil && len(rawAudioBytes) > 0 {
-		binFrame := EncodeBinaryAudioFrame(p.ChatID, b.csm.GetGenerationChat(p.ChatID), rawAudioBytes)
+		binFrame := EncodeBinaryAudioFrame(p.ChatID, genID, rawAudioBytes)
 		b.sessions.SendBinaryToChat(p.ChatID, binFrame)
 	}
 }
@@ -879,16 +908,28 @@ func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, a
 	}
 	st := b.getEmotionalStateForChat(chatID)
 	if st != nil {
-		payload.Mood = string(st.CurrentMoodTag)
-		payload.EmotionTag = string(st.CurrentMoodTag)
-		payload.Valence = st.Valence
-		payload.Arousal = st.Arousal
-		payload.Energy = st.Energy
-		payload.Satiety = st.Satiety
-		payload.SocialBattery = st.GetSocialBattery()
-		payload.Affection = st.AffectionLevel
-		payload.IsJealous = st.IsJealous()
-		payload.Description = st.ToPromptDescription()
+		// DeepCopy takes one RLock and snapshots every field, so reading
+		// several of them here can't race against a concurrent
+		// ApplySentimentDelta/ApplyTimeDecay writer the way raw field
+		// access would -- and every payload field below is derived from
+		// this one snapshot (never from the live st), so they can't be torn
+		// across different points in time either.
+		// snap is a private, unshared copy -- no other goroutine can ever
+		// see it, so its fields are read directly rather than through
+		// snap.GetSocialBattery()/IsJealous() (needless self-locking on an
+		// object nothing contends for). ToPromptDescription() is kept as a
+		// method call rather than duplicated here.
+		snap := st.DeepCopy()
+		payload.Mood = string(snap.CurrentMoodTag)
+		payload.EmotionTag = string(snap.CurrentMoodTag)
+		payload.Valence = snap.Valence
+		payload.Arousal = snap.Arousal
+		payload.Energy = snap.Energy
+		payload.Satiety = snap.Satiety
+		payload.SocialBattery = snap.SocialBattery
+		payload.Affection = snap.AffectionLevel
+		payload.IsJealous = snap.JealousyLevel > 0.3
+		payload.Description = snap.ToPromptDescription()
 	}
 	return payload
 }
@@ -929,36 +970,65 @@ func (b *NatsBridge) handleEmotionDeltaMsg(msg *nats.Msg) {
 	b.sessions.SendTextToChat(p.ChatID, outBytes)
 }
 
-func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
+// decodeSTTTranscript unmarshals and validates an STT transcript NATS
+// message, shared by both the partial and final handlers -- services/stt
+// publishes the exact same payload shape on both SUBJECT_STT_STREAM_PARTIAL
+// and SUBJECT_STT_STREAM_FINAL (see shared/schema/payloads.py's
+// STTTranscriptPayload docstring), the subject alone is what distinguishes
+// them.
+func decodeSTTTranscript(msg *nats.Msg) (schema.STTFinalTranscriptPayload, bool) {
 	var env struct {
 		Payload schema.STTFinalTranscriptPayload `json:"payload"`
 	}
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
-		return
+		return schema.STTFinalTranscriptPayload{}, false
 	}
-
 	p := env.Payload
 	if p.ChatID == 0 || p.Text == "" {
-		return
+		return schema.STTFinalTranscriptPayload{}, false
 	}
+	return p, true
+}
 
-	transcript := p.Text
-
-	// Echo the recognized transcript back to the browser so the web client can
-	// render the user's spoken turn alongside the assistant's streaming reply.
-	// The browser never sees agent.inbound_message directly; without this frame
-	// the voice utterance produces a reply but no user message in the chat UI.
+// sendSTTTranscript echoes a recognized transcript to the browser as
+// agent.stt_transcript, so the web client can render the user's spoken turn
+// alongside the assistant's streaming reply -- the browser never sees
+// agent.inbound_message directly.
+func (b *NatsBridge) sendSTTTranscript(chatID int64, text string, isFinal bool) {
 	outBytes, _ := json.Marshal(WSMessage{
 		Type: "agent.stt_transcript",
 		Payload: marshalRaw(AgentSTTTranscriptPayload{
-			Text:    p.Text,
-			IsFinal: true,
-			ChatID:  p.ChatID,
+			Text:    text,
+			IsFinal: isFinal,
+			ChatID:  chatID,
 		}),
 	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sessions.SendTextToChat(chatID, outBytes)
+}
 
+func (b *NatsBridge) handleSTTFinalMsg(msg *nats.Msg) {
+	p, ok := decodeSTTTranscript(msg)
+	if !ok {
+		return
+	}
+
+	b.sendSTTTranscript(p.ChatID, p.Text, true)
+
+	transcript := p.Text
 	b.publishInboundMessage(p.ChatID, p.Text, "voice", &transcript)
+}
+
+// handleSTTPartialMsg relays a mid-utterance (unpunctuated) transcript to the
+// browser as a live preview. Unlike handleSTTFinalMsg, this never calls
+// publishInboundMessage -- a partial result is provisional and must not
+// trigger a reasoning turn.
+func (b *NatsBridge) handleSTTPartialMsg(msg *nats.Msg) {
+	p, ok := decodeSTTTranscript(msg)
+	if !ok {
+		return
+	}
+
+	b.sendSTTTranscript(p.ChatID, p.Text, false)
 }
 
 func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
@@ -978,15 +1048,7 @@ func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
 		b.csm.TransitionToChat(p.ChatID, engine.StateIdle, "tts_stream_end")
 	}
 
-	outBytes, _ := json.Marshal(WSMessage{
-		Type: "agent.state_change",
-		Payload: marshalRaw(map[string]interface{}{
-			"state":     "idle",
-			"csm_state": "IDLE",
-			"chat_id":   p.ChatID,
-		}),
-	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sendIdleStateChange(p.ChatID, "tts_stream_end")
 }
 
 func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
@@ -1002,15 +1064,7 @@ func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
 		return
 	}
 
-	outBytes, _ := json.Marshal(WSMessage{
-		Type: "agent.state_change",
-		Payload: marshalRaw(map[string]interface{}{
-			"state":     "idle",
-			"csm_state": "IDLE",
-			"chat_id":   p.ChatID,
-		}),
-	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sendIdleStateChange(p.ChatID, "stream_cancelled")
 }
 
 func (b *NatsBridge) getEmotionDesc() string {

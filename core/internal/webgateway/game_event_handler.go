@@ -141,7 +141,7 @@ func (s *Server) handleGameEvent(w http.ResponseWriter, r *http.Request) {
 				if reason == "" {
 					reason = "run ended (" + req.EventType + ")"
 				}
-				engine.PublishProactiveTurn(s.bridge.bus, s.bridge.csm, s.bridge.emotionalState, s.bridge.personality, s.bridge.circadian, targetChatID, reason, s.logger)
+				engine.PublishProactiveTurn(s.bridge.bus, s.bridge.csm, s.bridge.getEmotionalStateForChat(targetChatID), s.bridge.personality, s.bridge.circadian, targetChatID, reason, s.logger)
 				s.logger.Info("🎮 Instant game over reaction triggered", zap.String("event_type", req.EventType), zap.Int64("chat_id", targetChatID), zap.String("reason", reason))
 			}
 		}

@@ -1,4 +1,5 @@
 import os
+import tempfile
 import yaml
 import logging
 from typing import Dict, Any
@@ -83,7 +84,12 @@ class PersonaLoader:
 
     @classmethod
     def _patch_yaml(cls, persona_id: str, patch: Dict[str, Any]) -> None:
-        """In-place update of persona YAML using ruamel.yaml (or pyyaml fallback)."""
+        """In-place update of persona YAML using ruamel.yaml (or pyyaml fallback).
+
+        Writes to a temp file in the same directory and os.replace()s it into
+        place, so a crash mid-write can never leave a half-written YAML file
+        on disk (same pattern as admin/backend/main.py's patch_persona).
+        """
         persona_path = cls._persona_path(persona_id)
 
         try:
@@ -94,14 +100,26 @@ class PersonaLoader:
                 with open(persona_path, "r", encoding="utf-8") as f:
                     data = ryaml.load(f) or {}
                 data.update(patch)
-                with open(persona_path, "w", encoding="utf-8") as f:
-                    ryaml.dump(data, f)
+                dump = lambda f: ryaml.dump(data, f)
             except ImportError:
                 with open(persona_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 data.update(patch)
-                with open(persona_path, "w", encoding="utf-8") as f:
-                    yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+                dump = lambda f: yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+            persona_dir = os.path.dirname(persona_path) or "."
+            fd, tmp_path = tempfile.mkstemp(
+                dir=persona_dir, prefix=f".{os.path.basename(persona_path)}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    dump(f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, persona_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
         except Exception as err:
             logger.error(f"Failed to patch YAML file {persona_path}: {err}")
 

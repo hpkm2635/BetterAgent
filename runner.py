@@ -700,7 +700,7 @@ def main():
     enable_vt100_console()
     init_windows_job_object()
     clean_logs_if_configured()
-    kill_stale_port_listeners([8093, 8090, 8094, 8095, 5173, 50000, 10095])
+    kill_stale_port_listeners([8093, 8090, 8094, 8095, 5173, 8096])
 
     mgr = ServiceManager()
     print(f" [i] Python Interpreter: {mgr.py_exe}")

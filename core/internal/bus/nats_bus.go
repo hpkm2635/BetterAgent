@@ -24,15 +24,14 @@ const (
 	SubjectError                = "agent.error"
 
 	// Digital Human & Realtime Multimodal Subjects
-	SubjectSpeechStart      = "agent.speech.start"
-	SubjectSpeechEnd        = "agent.speech.end"
-	SubjectUserInterrupt    = "agent.user.interrupt"
-	SubjectWebUserInterrupt = "agent.user.interrupt"
-	SubjectAudioChunk       = "agent.audio.chunk"
-	SubjectVisemeData       = "agent.viseme.data"
-	SubjectEmotionUpdate    = "agent.emotion.update"
-	SubjectEmotionDelta     = "agent.emotion.delta"
-	SubjectVisionFrame      = "agent.vision.frame"
+	SubjectSpeechStart   = "agent.speech.start"
+	SubjectSpeechEnd     = "agent.speech.end"
+	SubjectUserInterrupt = "agent.user.interrupt"
+	SubjectAudioChunk    = "agent.audio.chunk"
+	SubjectVisemeData    = "agent.viseme.data"
+	SubjectEmotionUpdate = "agent.emotion.update"
+	SubjectEmotionDelta  = "agent.emotion.delta"
+	SubjectVisionFrame   = "agent.vision.frame"
 
 	// 7 Realtime Cancelable Streaming Subjects
 	SubjectSTTStreamChunk    = "agent.stt.stream_chunk"

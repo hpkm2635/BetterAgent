@@ -8,6 +8,12 @@ pydantic>=2.7.0,<2.11.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
 
+# Comment/format-preserving YAML round-trip, used by shared/persona_loader.py
+# to patch persona YAML in place (agent.persona.update handler). Without this,
+# PersonaLoader silently falls back to plain pyyaml, which drops comments and
+# writes non-atomically.
+ruamel.yaml>=0.18
+
 # AI Provider SDKs
 google-genai>=0.1.0
 anthropic>=0.25.0

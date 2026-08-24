@@ -10,7 +10,6 @@ from services.campus_kb.retrieval import (
     BM25,
     detect_category,
     expand_query,
-    rrf_fusion,
 )
 from services.campus_kb.text_utils import chunk_text, text_features
 
@@ -35,12 +34,6 @@ def test_bm25_prefers_matching_document():
     bm25 = BM25(corpus)
     scores = [bm25.score(index, query) for index in range(len(corpus))]
     assert max(range(len(scores)), key=lambda index: scores[index]) == 0
-
-
-def test_rrf_fusion_rewards_top_rank():
-    fused = rrf_fusion([[0, 1, 2], [0, 2, 1]])
-    assert fused[0] > fused[1]
-    assert fused[0] > fused[2]
 
 
 def test_expand_query_adds_synonyms():

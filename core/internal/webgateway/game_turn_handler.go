@@ -87,7 +87,7 @@ func (s *Server) handleGameTurn(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("🎮 Game turn triggered", zap.Int64("chat_id", targetChatID), zap.String("reason", req.Reason))
 
-	engine.PublishGameTurn(s.bridge.bus, s.bridge.csm, s.bridge.emotionalState, s.bridge.personality, s.bridge.circadian, targetChatID, s.logger)
+	engine.PublishGameTurn(s.bridge.bus, s.bridge.csm, s.bridge.getEmotionalStateForChat(targetChatID), s.bridge.personality, s.bridge.circadian, targetChatID, s.logger)
 
 	writeGameEventJSON(w, http.StatusOK, map[string]interface{}{"status": "ok"})
 }

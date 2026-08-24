@@ -15,7 +15,9 @@ from shared.subjects import (
 )
 from shared.schema.payloads import ReasoningRequestPayload, ActionDecisionPayload, EmotionDeltaPayload
 from shared.logger import setup_logger
+from shared.persona_loader import PersonaLoader
 from services.cognitive.cognitive_engine import CognitiveEngine
+from services.cognitive.providers.factory import ProviderFactory
 
 load_dotenv()
 logger = setup_logger("cognitive_service")
@@ -200,11 +202,20 @@ async def main():
     async def persona_update_handler(msg):
         await PersonaLoader.handle_persona_update(msg.data)
 
+    async def config_reloaded_handler(msg):
+        try:
+            ProviderFactory.invalidate_cache()
+            engine.refresh_default_provider()
+            logger.info("♻️ LLM provider cache invalidated and refreshed after agent.config.reloaded")
+        except Exception as e:
+            logger.warning(f"Error handling config reload: {e}")
+
     await nc.subscribe(SUBJECT_REASONING_REQUEST, queue="cognitive_workers", cb=reasoning_handler)
     await nc.subscribe(SUBJECT_VISION_FRAME, cb=vision_handler)
     await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
     await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
     await nc.subscribe("agent.persona.update", cb=persona_update_handler)
+    await nc.subscribe("agent.config.reloaded", cb=config_reloaded_handler)
 
     async def presenter_sweep_loop():
         """Sweep idle MCP presenter sessions every 60 seconds."""

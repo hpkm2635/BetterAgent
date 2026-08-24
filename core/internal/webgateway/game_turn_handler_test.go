@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"betteragent-core/internal/bus"
+	"betteragent-core/internal/emotion"
 	"betteragent-core/internal/engine"
 	"betteragent-core/internal/idspace"
 )
@@ -142,6 +143,35 @@ func TestHandleGameTurn_WebNamespacedChatIDAllowed(t *testing.T) {
 		t.Errorf("expected status=ok, got %q", status)
 	}
 	if got := s.bridge.csm.GetChatState(webChatID); got != engine.StateThinking {
+		t.Errorf("expected chat to transition to StateThinking, got %s", got)
+	}
+}
+
+func TestHandleGameTurn_UsesTargetChatsOwnEmotionalState(t *testing.T) {
+	// Same bug class as TestHandleGameEvent_DeathEvent_UsesTargetChatsOwnEmotionalState
+	// (game_event_handler_test.go): handleGameTurn passed the global
+	// fallback s.bridge.emotionalState into PublishGameTurn instead of the
+	// target chat's own state from s.bridge.emotionStore.
+	s := newTestGameTurnServer(t, "correct-token", true)
+
+	globalFallback := emotion.NewEmotionalState()
+	store := emotion.NewEmotionalStateStore(emotion.NewPersonalityFromConfig(nil))
+	perChatState := store.GetOrCreate(1001)
+	if perChatState == globalFallback {
+		t.Fatalf("test setup invalid: per-chat state must be a distinct instance from the global fallback")
+	}
+	s.bridge.emotionalState = globalFallback
+	s.bridge.SetEmotionStore(store)
+
+	if got := s.bridge.getEmotionalStateForChat(1001); got != perChatState {
+		t.Errorf("expected getEmotionalStateForChat(1001) to return the chat's own EmotionalState instance, got a different pointer")
+	}
+
+	rec := postGameTurn(s, "correct-token", `{"chat_id":1001,"reason":"map"}`)
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := s.bridge.csm.GetChatState(1001); got != engine.StateThinking {
 		t.Errorf("expected chat to transition to StateThinking, got %s", got)
 	}
 }

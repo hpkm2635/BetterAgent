@@ -1,5 +1,6 @@
 import time
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.cognitive.mcp.client import McpSession
@@ -35,8 +36,19 @@ class PresenterSessionManager:
         chat_sessions = self._sessions.setdefault(chat_id, {})
         existing = chat_sessions.get(target)
         if existing is not None:
-            self._touch(chat_id, target)
-            return f"{target} 已经是激活状态"
+            new_root = str(Path(root_path).resolve()) if root_path else None
+            old_root = None
+            if "--root" in existing._command:
+                idx = existing._command.index("--root")
+                if idx + 1 < len(existing._command):
+                    old_root = str(Path(existing._command[idx + 1]).resolve())
+
+            if new_root and old_root and new_root != old_root:
+                logger.info(f"Re-activating {target} session with updated root_path: {new_root} (was {old_root})")
+                await self.deactivate(chat_id, target)
+            else:
+                self._touch(chat_id, target)
+                return f"{target} 已经是激活状态"
 
         # root_path confines the server's file-facing tools (vscode_read_range,
         # ppt_open, ...) to a single directory -- without it those servers

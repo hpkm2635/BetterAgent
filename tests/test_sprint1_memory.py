@@ -115,3 +115,44 @@ async def test_memory_hub_enrich_and_auto_consolidate():
         assert reasoning_req.short_term_history[-1]["content"] == "我明天要去图书馆参加高数复习研讨会"
     finally:
         await hub.vector_store.close()
+
+
+@pytest.mark.asyncio
+async def test_memory_hub_enrich_forwards_generation_id():
+    """handle_enrich_context_req must forward the caller's generation_id, not
+    silently reset it to the ReasoningRequestPayload default (1) -- otherwise
+    the stale/interrupted-generation discard mechanism breaks at this hop.
+    """
+    hub = MemoryHub()
+    user_id = 555444333222112
+    chat_id = 555444333222112
+
+    inbound = InboundMessagePayload(
+        event_id="evt_test_genid",
+        source_component="gotd",
+        chat_id=chat_id,
+        user_id=user_id,
+        message_id=101,
+        generation_id=7,
+        raw_text="随便说点什么",
+    )
+
+    enrich_req = EnrichContextReqPayload(
+        event_id="evt_test_genid",
+        source_component="csm",
+        chat_id=chat_id,
+        user_id=user_id,
+        generation_id=7,
+        current_state="IDLE",
+        emotion_description="当前情绪: 愉快",
+        inbound_message=inbound,
+        trigger_type="user_message",
+        source_channel="telegram",
+    )
+
+    try:
+        await hub.handle_inbound_message(inbound)
+        reasoning_req = await hub.handle_enrich_context_req(enrich_req)
+        assert reasoning_req.generation_id == 7
+    finally:
+        await hub.vector_store.close()

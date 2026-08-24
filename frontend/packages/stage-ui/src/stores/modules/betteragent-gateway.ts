@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { betterAgentWSBridge } from '../../services/betteragent-ws'
 import { useChatStreamStore } from '../chat/stream-store'
 import { useChatSessionStore } from '../chat/session-store'
+import { useSpeechOutputControlStore } from '../speech-output-control'
 import { useSTS2GameStateStore } from './sts2-game-state'
 import { resolveStableChatId } from '../../services/betteragent-ws'
 
@@ -17,12 +18,17 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   const lastEmotion = ref('')
   const lastAction = ref('')
   const emotionalState = ref<EmotionalStatePayload | null>(null)
+  // Live mid-utterance STT preview (unpunctuated, still being refined) --
+  // cleared once the matching final transcript lands. No UI consumes this
+  // yet; exposed for a future "recognizing..." indicator to bind to.
+  const partialTranscript = ref('')
   const scheduleDialogOpen = ref(false)
   const emotionDialogOpen = ref(false)
 
   const streamStore = useChatStreamStore()
   const chatSession = useChatSessionStore()
   const sts2GameState = useSTS2GameStateStore()
+  const speechOutputControl = useSpeechOutputControlStore()
 
   let streamingWatchdog: ReturnType<typeof setTimeout> | null = null
   let graceTimer: ReturnType<typeof setTimeout> | null = null
@@ -124,7 +130,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     }))
 
     // 2. CSM State Transitions
-    unsubs.push(betterAgentWSBridge.onStateChange((state: string, chatId?: number) => {
+    unsubs.push(betterAgentWSBridge.onStateChange((state: string, chatId?: number, reason?: string) => {
       if (!isChatMatch(chatId))
         return
 
@@ -142,11 +148,22 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
           graceTimer = null
         }
         resetStreamingWatchdog()
+        // The CSM reaches idle both on a normal turn end (reason
+        // "tts_stream_end"/"text_fallback_idle", sent as soon as the server
+        // is done producing/sending, not once the client has finished
+        // *playing* the already-queued/in-flight audio) and on a barge-in
+        // cancel (reason "stream_cancelled"). Only the latter should cut
+        // audio short -- stopping unconditionally here would clip the tail
+        // of every normal response.
+        if (reason === 'stream_cancelled')
+          speechOutputControl.requestStopSpeaking('server-state-idle')
       }
     }))
 
     // 3. Audio Chunks
-    unsubs.push(betterAgentWSBridge.onAudioChunk(() => {
+    unsubs.push(betterAgentWSBridge.onAudioChunk((_audioBase64: string, _sampleRate: number, chatId?: number) => {
+      if (!isChatMatch(chatId))
+        return
       isSpeaking.value = true
     }))
 
@@ -167,9 +184,20 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     }))
 
     // 6. STT transcripts -- show the user's recognized voice input as a
-    // normal user message so a spoken turn reads like a typed one.
+    // normal user message so a spoken turn reads like a typed one. Partial
+    // (mid-utterance) results only update the live preview, never the chat.
     unsubs.push(betterAgentWSBridge.onSTTTranscript((text, isFinal, chatId) => {
-      if (!isFinal || !isChatMatch(chatId) || !text.trim())
+      if (!isChatMatch(chatId))
+        return
+
+      if (!isFinal) {
+        partialTranscript.value = text
+        return
+      }
+
+      partialTranscript.value = ''
+
+      if (!text.trim())
         return
 
       const sessionId = chatSession.activeSessionId
@@ -192,6 +220,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     lastEmotion,
     lastAction,
     emotionalState,
+    partialTranscript,
     scheduleDialogOpen,
     emotionDialogOpen,
     initialize,
