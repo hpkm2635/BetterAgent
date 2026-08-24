@@ -54,15 +54,6 @@ class BM25:
         return score
 
 
-def rrf_fusion(ranked_lists: List[List[int]], k: int = 60) -> Dict[int, float]:
-    """Fuse ranked document indices with Reciprocal Rank Fusion."""
-    fused: Dict[int, float] = defaultdict(float)
-    for ranked in ranked_lists:
-        for rank, doc_index in enumerate(ranked):
-            fused[doc_index] += 1.0 / (k + rank + 1)
-    return dict(fused)
-
-
 _SYNONYM_GROUPS: List[Tuple[str, ...]] = [
     ("关门", "关闭", "闭馆", "打烊"),
     ("开放", "营业", "开门"),

@@ -18,10 +18,10 @@ Feature Branch: feat/companion-tools
 """
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from services.companion.database import init_db, get_connection
