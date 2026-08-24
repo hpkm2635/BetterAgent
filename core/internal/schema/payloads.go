@@ -115,22 +115,32 @@ func (r *ReasoningRequestPayload) EnsureDefaults() {
 	}
 }
 
+// Citation mirrors campus_kb_tool.py's fact shape ({content, source,
+// relevance_score}), accumulated across a turn's search_campus_kb calls by
+// cognitive_engine.py and only ever set on that turn's final decision.
+type Citation struct {
+	Content        string  `json:"content"`
+	Source         string  `json:"source"`
+	RelevanceScore float64 `json:"relevance_score,omitempty"`
+}
+
 type ActionDecisionPayload struct {
 	BasePayload
-	ChatID           int64   `json:"chat_id"`
-	GenerationID     uint64  `json:"generation_id,omitempty"`
-	SourceChannel    string  `json:"source_channel,omitempty"` // "telegram" | "web"
-	ActionType       string  `json:"action_type"`
-	TextContent      *string `json:"text_content,omitempty"`
-	TypingDelay      float64 `json:"typing_delay"`
-	MediaType        *string `json:"media_type,omitempty"`
-	ReplyToMessageID *int    `json:"reply_to_message_id,omitempty"`
-	VoicePath        *string `json:"voice_path,omitempty"`
-	PhotoPath        *string `json:"photo_path,omitempty"`
-	ChatAction       *string `json:"chat_action,omitempty"`
-	StickerID        *string `json:"sticker_id,omitempty"`
-	ReactionEmoji    *string `json:"reaction_emoji,omitempty"`
-	IsFinal          bool    `json:"is_final,omitempty"`
+	ChatID           int64      `json:"chat_id"`
+	GenerationID     uint64     `json:"generation_id,omitempty"`
+	SourceChannel    string     `json:"source_channel,omitempty"` // "telegram" | "web"
+	ActionType       string     `json:"action_type"`
+	TextContent      *string    `json:"text_content,omitempty"`
+	TypingDelay      float64    `json:"typing_delay"`
+	MediaType        *string    `json:"media_type,omitempty"`
+	ReplyToMessageID *int       `json:"reply_to_message_id,omitempty"`
+	VoicePath        *string    `json:"voice_path,omitempty"`
+	PhotoPath        *string    `json:"photo_path,omitempty"`
+	ChatAction       *string    `json:"chat_action,omitempty"`
+	StickerID        *string    `json:"sticker_id,omitempty"`
+	ReactionEmoji    *string    `json:"reaction_emoji,omitempty"`
+	IsFinal          bool       `json:"is_final,omitempty"`
+	Citations        []Citation `json:"citations,omitempty"`
 }
 
 type ActionCompletedPayload struct {

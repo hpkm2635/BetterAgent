@@ -35,9 +35,10 @@ type UserVisionFramePayload struct {
 // Outbound Agent Messages (WebGateway -> Browser)
 
 type AgentTextDeltaPayload struct {
-	Text       string `json:"text"`
-	EmotionTag string `json:"emotion_tag,omitempty"` // "HAPPY" | "JEALOUS" | "SLEEPY" | "MOODY" | "NEUTRAL"
-	IsFinal    bool   `json:"is_final,omitempty"` // true on the last sentence of a reasoning turn; see nats_bridge.go handleActionDecisionMsg
+	Text       string     `json:"text"`
+	EmotionTag string     `json:"emotion_tag,omitempty"` // "HAPPY" | "JEALOUS" | "SLEEPY" | "MOODY" | "NEUTRAL"
+	IsFinal    bool       `json:"is_final,omitempty"`    // true on the last sentence of a reasoning turn; see nats_bridge.go handleActionDecisionMsg
+	Citations  []Citation `json:"citations,omitempty"`   // only ever non-empty alongside IsFinal=true; see convertCitations
 }
 
 type AgentEmotionPayload struct {
@@ -83,6 +84,15 @@ type Viseme struct {
 	TimeOffset float64 `json:"time_offset"`
 	VisemeID   int     `json:"viseme_id"`
 	Shape      string  `json:"shape"`
+}
+
+// Citation mirrors schema.Citation for the WS-facing payload -- kept as a
+// separate type rather than reused directly, same convention as Viseme
+// above (see convertCitations in nats_bridge.go for the conversion point).
+type Citation struct {
+	Content        string  `json:"content"`
+	Source         string  `json:"source"`
+	RelevanceScore float64 `json:"relevance_score,omitempty"`
 }
 
 type AgentStateChangePayload struct {

@@ -20,13 +20,14 @@ import (
 )
 
 type deferredTextItem struct {
-	mu       sync.Mutex
-	chatID   int64
-	genID    uint64
-	text     string
-	isFinal  bool
-	timer    *time.Timer
-	executed bool
+	mu        sync.Mutex
+	chatID    int64
+	genID     uint64
+	text      string
+	isFinal   bool
+	citations []schema.Citation
+	timer     *time.Timer
+	executed  bool
 }
 
 type deferredTextManager struct {
@@ -40,7 +41,7 @@ func newDeferredTextManager() *deferredTextManager {
 	}
 }
 
-func (m *deferredTextManager) Add(chatID int64, genID uint64, text string, isFinal bool, timeout time.Duration, onTimeout func(cID int64, gID uint64, txt string, final bool)) {
+func (m *deferredTextManager) Add(chatID int64, genID uint64, text string, isFinal bool, citations []schema.Citation, timeout time.Duration, onTimeout func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation)) {
 	if m == nil {
 		return
 	}
@@ -48,10 +49,11 @@ func (m *deferredTextManager) Add(chatID int64, genID uint64, text string, isFin
 	key := fmt.Sprintf("%d:%d", chatID, genID)
 
 	item := &deferredTextItem{
-		chatID:  chatID,
-		genID:   genID,
-		text:    text,
-		isFinal: isFinal,
+		chatID:    chatID,
+		genID:     genID,
+		text:      text,
+		isFinal:   isFinal,
+		citations: citations,
 	}
 
 	item.timer = time.AfterFunc(timeout, func() {
@@ -79,23 +81,23 @@ func (m *deferredTextManager) Add(chatID int64, genID uint64, text string, isFin
 		}
 		m.mu.Unlock()
 
-		onTimeout(chatID, genID, text, isFinal)
+		onTimeout(chatID, genID, text, isFinal, citations)
 	})
 
 	m.items[key] = append(m.items[key], item)
 	m.mu.Unlock()
 }
 
-func (m *deferredTextManager) PopAndStop(chatID int64, genID uint64) (string, bool, bool) {
+func (m *deferredTextManager) PopAndStop(chatID int64, genID uint64) (string, bool, []schema.Citation, bool) {
 	if m == nil {
-		return "", false, false
+		return "", false, nil, false
 	}
 	m.mu.Lock()
 	key := fmt.Sprintf("%d:%d", chatID, genID)
 	slice, exists := m.items[key]
 	if !exists || len(slice) == 0 {
 		m.mu.Unlock()
-		return "", false, false
+		return "", false, nil, false
 	}
 
 	item := slice[0]
@@ -112,10 +114,10 @@ func (m *deferredTextManager) PopAndStop(chatID int64, genID uint64) (string, bo
 		item.timer.Stop()
 	}
 	if item.executed {
-		return "", false, false
+		return "", false, nil, false
 	}
 	item.executed = true
-	return item.text, item.isFinal, true
+	return item.text, item.isFinal, item.citations, true
 }
 
 func (m *deferredTextManager) ClearChat(chatID int64) {
@@ -708,6 +710,20 @@ func (b *NatsBridge) replyDirect(chatID int64, text string) {
 	b.sessions.SendTextToChat(chatID, outBytes)
 }
 
+// convertCitations converts schema.Citation (NATS-decoded) to the WS-facing
+// Citation type -- same shape-conversion convention already used for
+// Viseme (see handleAudioChunkMsg's visemes loop).
+func convertCitations(cites []schema.Citation) []Citation {
+	if len(cites) == 0 {
+		return nil
+	}
+	out := make([]Citation, len(cites))
+	for i, c := range cites {
+		out[i] = Citation{Content: c.Content, Source: c.Source, RelevanceScore: c.RelevanceScore}
+	}
+	return out
+}
+
 func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 	var env struct {
 		Payload schema.ActionDecisionPayload `json:"payload"`
@@ -750,6 +766,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 
 	if decision.TextContent != nil && *decision.TextContent != "" {
 		text := *decision.TextContent
+		citations := decision.Citations
 		genID := decision.GenerationID
 		if genID == 0 && b.csm != nil {
 			genID = b.csm.GetGenerationChat(decision.ChatID)
@@ -757,7 +774,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 
 		if decision.SourceChannel == "web" && isPronounceableText(text) {
 			isFinal := decision.IsFinal
-			b.getDeferredTexts().Add(decision.ChatID, genID, text, isFinal, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+			b.getDeferredTexts().Add(decision.ChatID, genID, text, isFinal, citations, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 				b.logger.Warn("⏰ TTS Audio Chunk timeout (>800ms) - Watchdog fallback forcing text push to WS",
 					zap.Int64("chat_id", cID), zap.Uint64("gen_id", gID), zap.String("text", txt))
 				outBytes, _ := json.Marshal(WSMessage{
@@ -766,6 +783,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 						Text:       txt,
 						EmotionTag: b.getMoodTagForChat(cID),
 						IsFinal:    final,
+						Citations:  convertCitations(cites),
 					}),
 				})
 				b.sessions.SendTextToChat(cID, outBytes)
@@ -777,6 +795,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 					Text:       text,
 					EmotionTag: b.getMoodTagForChat(decision.ChatID),
 					IsFinal:    decision.IsFinal,
+					Citations:  convertCitations(citations),
 				}),
 			})
 			b.sessions.SendTextToChat(decision.ChatID, outBytes)
@@ -863,7 +882,7 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 	// CURRENT sentence would pop and flush the NEXT sentence's text early,
 	// visibly racing ahead of what's actually audible.
 	if p.IsSentenceStart {
-		if deferredText, isFinal, popped := b.getDeferredTexts().PopAndStop(p.ChatID, genID); popped && deferredText != "" {
+		if deferredText, isFinal, citations, popped := b.getDeferredTexts().PopAndStop(p.ChatID, genID); popped && deferredText != "" {
 			b.logger.Info("🎙️ Synchronized audio arrival - Flushing deferred text to WS",
 				zap.Int64("chat_id", p.ChatID), zap.Uint64("gen_id", genID), zap.String("text", deferredText), zap.Bool("is_final", isFinal))
 			outTextBytes, _ := json.Marshal(WSMessage{
@@ -872,6 +891,7 @@ func (b *NatsBridge) handleAudioChunkMsg(msg *nats.Msg) {
 					Text:       deferredText,
 					EmotionTag: b.getMoodTagForChat(p.ChatID),
 					IsFinal:    isFinal,
+					Citations:  convertCitations(citations),
 				}),
 			})
 			b.sessions.SendTextToChat(p.ChatID, outTextBytes)

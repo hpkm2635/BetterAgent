@@ -333,7 +333,7 @@ func TestHandleAudioChunkMsg_NonSentenceStartChunk_DoesNotFlushDeferredText(t *t
 	b.sessions.Register(session)
 	defer b.sessions.Unregister(session)
 
-	b.getDeferredTexts().Add(chatID, genID, "下一句还没到该说的时候", true, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	b.getDeferredTexts().Add(chatID, genID, "下一句还没到该说的时候", true, nil, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		t.Errorf("expected watchdog timeout not to fire during this test")
 	})
 
@@ -359,7 +359,7 @@ func TestHandleAudioChunkMsg_NonSentenceStartChunk_DoesNotFlushDeferredText(t *t
 		}
 	}
 
-	if poppedText, _, popped := b.getDeferredTexts().PopAndStop(chatID, genID); !popped || poppedText == "" {
+	if poppedText, _, _, popped := b.getDeferredTexts().PopAndStop(chatID, genID); !popped || poppedText == "" {
 		t.Errorf("expected the deferred text to still be queued (never flushed) after a non-sentence-start chunk")
 	}
 }
@@ -379,7 +379,8 @@ func TestHandleAudioChunkMsg_SentenceStartChunk_FlushesDeferredTextAndForwardsTe
 	b.sessions.Register(session)
 	defer b.sessions.Unregister(session)
 
-	b.getDeferredTexts().Add(chatID, genID, "这句话终于轮到你了", true, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	citations := []schema.Citation{{Content: "图书馆周一至周五开放至22:00", Source: "faq.md", RelevanceScore: 0.9}}
+	b.getDeferredTexts().Add(chatID, genID, "这句话终于轮到你了", true, citations, 800*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		t.Errorf("expected watchdog timeout not to fire during this test")
 	})
 
@@ -412,6 +413,9 @@ func TestHandleAudioChunkMsg_SentenceStartChunk_FlushesDeferredTextAndForwardsTe
 			if payload.Text != "这句话终于轮到你了" {
 				t.Errorf("expected deferred sentence text to be flushed, got %q", payload.Text)
 			}
+			if len(payload.Citations) != 1 || payload.Citations[0].Content != "图书馆周一至周五开放至22:00" || payload.Citations[0].Source != "faq.md" {
+				t.Errorf("expected citations to be forwarded alongside the deferred text, got %+v", payload.Citations)
+			}
 		case "agent.audio_chunk":
 			sawAudioChunk = true
 			var payload AgentAudioChunkPayload
@@ -430,7 +434,7 @@ func TestHandleAudioChunkMsg_SentenceStartChunk_FlushesDeferredTextAndForwardsTe
 		t.Fatalf("expected an agent.audio_chunk frame to be sent")
 	}
 
-	if _, _, popped := b.getDeferredTexts().PopAndStop(chatID, genID); popped {
+	if _, _, _, popped := b.getDeferredTexts().PopAndStop(chatID, genID); popped {
 		t.Errorf("expected the deferred text queue to be empty after being flushed")
 	}
 }
@@ -556,18 +560,22 @@ func TestDeferredTextManager_AddAndPop(t *testing.T) {
 	chatID := int64(1001)
 	genID := uint64(1)
 	text := "主人的金枪鱼拿来喵~"
+	citations := []schema.Citation{{Content: "test citation", Source: "faq.md"}}
 
-	mgr.Add(chatID, genID, text, true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	mgr.Add(chatID, genID, text, true, citations, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		t.Errorf("expected timer not to fire when popped before timeout")
 	})
 
-	poppedText, isFinal, ok := mgr.PopAndStop(chatID, genID)
+	poppedText, isFinal, poppedCitations, ok := mgr.PopAndStop(chatID, genID)
 	if !ok || poppedText != text || !isFinal {
 		t.Fatalf("expected to pop deferred text %q with isFinal=true, got ok=%v, text=%q, isFinal=%v", text, ok, poppedText, isFinal)
 	}
+	if len(poppedCitations) != 1 || poppedCitations[0].Content != "test citation" {
+		t.Errorf("expected citations to round-trip through Add/PopAndStop, got %+v", poppedCitations)
+	}
 
 	// Second pop should return false
-	_, _, ok2 := mgr.PopAndStop(chatID, genID)
+	_, _, _, ok2 := mgr.PopAndStop(chatID, genID)
 	if ok2 {
 		t.Errorf("expected second pop to fail after text was popped")
 	}
@@ -578,20 +586,20 @@ func TestDeferredTextManager_MultiSentenceFIFO(t *testing.T) {
 	chatID := int64(1005)
 	genID := uint64(5)
 
-	mgr.Add(chatID, genID, "句1：你好！", false, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {})
-	mgr.Add(chatID, genID, "句2：今天天气不错。", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {})
+	mgr.Add(chatID, genID, "句1：你好！", false, nil, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {})
+	mgr.Add(chatID, genID, "句2：今天天气不错。", true, nil, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {})
 
-	txt1, final1, ok1 := mgr.PopAndStop(chatID, genID)
+	txt1, final1, _, ok1 := mgr.PopAndStop(chatID, genID)
 	if !ok1 || txt1 != "句1：你好！" || final1 != false {
 		t.Fatalf("expected FIFO sentence 1, got text=%q, final=%v, ok=%v", txt1, final1, ok1)
 	}
 
-	txt2, final2, ok2 := mgr.PopAndStop(chatID, genID)
+	txt2, final2, _, ok2 := mgr.PopAndStop(chatID, genID)
 	if !ok2 || txt2 != "句2：今天天气不错。" || final2 != true {
 		t.Fatalf("expected FIFO sentence 2, got text=%q, final=%v, ok=%v", txt2, final2, ok2)
 	}
 
-	_, _, ok3 := mgr.PopAndStop(chatID, genID)
+	_, _, _, ok3 := mgr.PopAndStop(chatID, genID)
 	if ok3 {
 		t.Errorf("expected queue to be empty after popping both sentences")
 	}
@@ -604,7 +612,7 @@ func TestDeferredTextManager_WatchdogTimeout(t *testing.T) {
 	text := "超时保底文本上屏"
 	fired := make(chan string, 1)
 
-	mgr.Add(chatID, genID, text, true, 50*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	mgr.Add(chatID, genID, text, true, nil, 50*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		fired <- txt
 	})
 
@@ -618,7 +626,7 @@ func TestDeferredTextManager_WatchdogTimeout(t *testing.T) {
 	}
 
 	// After watchdog timeout fired, PopAndStop should return false
-	_, _, ok := mgr.PopAndStop(chatID, genID)
+	_, _, _, ok := mgr.PopAndStop(chatID, genID)
 	if ok {
 		t.Errorf("expected PopAndStop to return false after watchdog timeout executed")
 	}
@@ -628,20 +636,20 @@ func TestDeferredTextManager_GenIDIsolation(t *testing.T) {
 	mgr := newDeferredTextManager()
 	chatID := int64(1003)
 
-	mgr.Add(chatID, 1, "Turn 1 Text", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	mgr.Add(chatID, 1, "Turn 1 Text", true, nil, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		t.Errorf("Turn 1 timer should be stopped")
 	})
-	mgr.Add(chatID, 2, "Turn 2 Text", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	mgr.Add(chatID, 2, "Turn 2 Text", true, nil, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		t.Errorf("Turn 2 timer should be stopped")
 	})
 
 	// Popping Turn 1 should not affect Turn 2
-	txt1, _, ok1 := mgr.PopAndStop(chatID, 1)
+	txt1, _, _, ok1 := mgr.PopAndStop(chatID, 1)
 	if !ok1 || txt1 != "Turn 1 Text" {
 		t.Errorf("failed to pop Turn 1 text")
 	}
 
-	txt2, _, ok2 := mgr.PopAndStop(chatID, 2)
+	txt2, _, _, ok2 := mgr.PopAndStop(chatID, 2)
 	if !ok2 || txt2 != "Turn 2 Text" {
 		t.Errorf("failed to pop Turn 2 text")
 	}
@@ -651,13 +659,13 @@ func TestDeferredTextManager_BargeInClear(t *testing.T) {
 	mgr := newDeferredTextManager()
 	chatID := int64(1004)
 
-	mgr.Add(chatID, 1, "Interrupted Text", true, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool) {
+	mgr.Add(chatID, 1, "Interrupted Text", true, nil, 500*time.Millisecond, func(cID int64, gID uint64, txt string, final bool, cites []schema.Citation) {
 		t.Errorf("Barge-in cleared item should not fire timer callback")
 	})
 
 	mgr.ClearChat(chatID)
 
-	_, _, ok := mgr.PopAndStop(chatID, 1)
+	_, _, _, ok := mgr.PopAndStop(chatID, 1)
 	if ok {
 		t.Errorf("expected item to be cleared by ClearChat")
 	}
