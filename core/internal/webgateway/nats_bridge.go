@@ -224,6 +224,24 @@ func (b *NatsBridge) getMoodTagForChat(chatID int64) string {
 	return "NEUTRAL"
 }
 
+// sendIdleStateChange broadcasts an "agent.state_change" idle transition to
+// chatID's sessions. reason distinguishes why the chat went idle --
+// "tts_stream_end" / "text_fallback_idle" for a normal turn ending vs.
+// "stream_cancelled" for a barge-in -- since the frontend must only cut off
+// in-flight audio playback for the latter (see betteragent-gateway.ts).
+func (b *NatsBridge) sendIdleStateChange(chatID int64, reason string) {
+	outBytes, _ := json.Marshal(WSMessage{
+		Type: "agent.state_change",
+		Payload: marshalRaw(map[string]interface{}{
+			"state":     "idle",
+			"csm_state": "IDLE",
+			"chat_id":   chatID,
+			"reason":    reason,
+		}),
+	})
+	b.sessions.SendTextToChat(chatID, outBytes)
+}
+
 func (b *NatsBridge) StartSubscriptions() error {
 	// 1. Subscribe to Action Decisions from LLM / Cognitive Engine -- only
 	// the "web" channel's subjects, so Telegram-bound decisions are never
@@ -751,16 +769,7 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 					currGen := b.csm.GetGenerationChat(chatID)
 					if (currState == engine.StateTalking || currState == engine.StateStreamingTTS) && (genID == 0 || currGen == genID) {
 						b.csm.TransitionToChat(chatID, engine.StateIdle, "text_fallback_idle")
-						out, _ := json.Marshal(WSMessage{
-							Type: "agent.state_change",
-							Payload: marshalRaw(map[string]interface{}{
-								"state":     "idle",
-								"csm_state": "IDLE",
-								"chat_id":   chatID,
-								"reason":    "text_fallback_idle",
-							}),
-						})
-						b.sessions.SendTextToChat(chatID, out)
+						b.sendIdleStateChange(chatID, "text_fallback_idle")
 					}
 				}
 			}()
@@ -898,6 +907,11 @@ func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, a
 		// access would -- and every payload field below is derived from
 		// this one snapshot (never from the live st), so they can't be torn
 		// across different points in time either.
+		// snap is a private, unshared copy -- no other goroutine can ever
+		// see it, so its fields are read directly rather than through
+		// snap.GetSocialBattery()/IsJealous() (needless self-locking on an
+		// object nothing contends for). ToPromptDescription() is kept as a
+		// method call rather than duplicated here.
 		snap := st.DeepCopy()
 		payload.Mood = string(snap.CurrentMoodTag)
 		payload.EmotionTag = string(snap.CurrentMoodTag)
@@ -905,9 +919,9 @@ func (b *NatsBridge) buildAgentEmotionPayload(chatID int64, emotionStr string, a
 		payload.Arousal = snap.Arousal
 		payload.Energy = snap.Energy
 		payload.Satiety = snap.Satiety
-		payload.SocialBattery = snap.GetSocialBattery()
+		payload.SocialBattery = snap.SocialBattery
 		payload.Affection = snap.AffectionLevel
-		payload.IsJealous = snap.IsJealous()
+		payload.IsJealous = snap.JealousyLevel > 0.3
 		payload.Description = snap.ToPromptDescription()
 	}
 	return payload
@@ -998,16 +1012,7 @@ func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
 		b.csm.TransitionToChat(p.ChatID, engine.StateIdle, "tts_stream_end")
 	}
 
-	outBytes, _ := json.Marshal(WSMessage{
-		Type: "agent.state_change",
-		Payload: marshalRaw(map[string]interface{}{
-			"state":     "idle",
-			"csm_state": "IDLE",
-			"chat_id":   p.ChatID,
-			"reason":    "tts_stream_end",
-		}),
-	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sendIdleStateChange(p.ChatID, "tts_stream_end")
 }
 
 func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
@@ -1023,16 +1028,7 @@ func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
 		return
 	}
 
-	outBytes, _ := json.Marshal(WSMessage{
-		Type: "agent.state_change",
-		Payload: marshalRaw(map[string]interface{}{
-			"state":     "idle",
-			"csm_state": "IDLE",
-			"chat_id":   p.ChatID,
-			"reason":    "stream_cancelled",
-		}),
-	})
-	b.sessions.SendTextToChat(p.ChatID, outBytes)
+	b.sendIdleStateChange(p.ChatID, "stream_cancelled")
 }
 
 func (b *NatsBridge) getEmotionDesc() string {
