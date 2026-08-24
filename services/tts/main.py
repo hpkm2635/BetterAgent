@@ -279,7 +279,8 @@ async def main():
     await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
     await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
 
-    logger.info("CosyVoice TTS Service listening on NATS subjects (Action Decisions & Cancel Control)...")
+    logger.info(f"TTS Service ({tts_client.__class__.__name__}) listening on NATS subjects (Action Decisions & Cancel Control)...")
+
     while True:
         await asyncio.sleep(1)
 

@@ -37,12 +37,13 @@ def sanitize_text_for_tts(text: str) -> str:
 
 class GPTSoVITSClient:
     """
-    GPT-SoVITS TTS Async Client connecting to local FastAPI (http://127.0.0.1:19880/tts).
+    GPT-SoVITS TTS Async Client connecting to local FastAPI (http://127.0.0.1:19888/tts).
     Features zero-dependency urllib streaming and automatic Audio Loudness Normalization.
     """
 
     def __init__(self, endpoint: Optional[str] = None):
-        self.endpoint = endpoint or get_config_val("tts.gpt_sovits.endpoint", "http://127.0.0.1:19880/tts")
+        self.endpoint = endpoint or get_config_val("tts.gpt_sovits.endpoint", "http://127.0.0.1:19888/tts")
+
 
 
         self.sample_rate = get_config_val("tts.gpt_sovits.sample_rate", 32000)
