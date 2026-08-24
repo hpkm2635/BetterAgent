@@ -824,6 +824,10 @@ class CognitiveEngine:
             messages[-1]["metadata"]["vision_frame"] = vision_frame
 
         segmenter = SentenceSegmenter()
+        # Campus KB facts retrieved by search_campus_kb calls this turn (any
+        # round), carried on the turn's true final ActionDecisionPayload --
+        # see the tool-execution loop below and the final-flush section.
+        collected_citations: List[Dict[str, Any]] = []
 
         max_rounds = self.MAX_GAME_TOOL_ROUNDS if payload.trigger_type == "game_turn" else self.MAX_TOOL_ROUNDS
 
@@ -962,6 +966,11 @@ class CognitiveEngine:
                         else:
                             tool_output = await tool.execute(**tool_args)
 
+                        if tool_name == "search_campus_kb" and tool_output.get("status") == "success":
+                            for fact in tool_output.get("facts", []):
+                                if not any(existing.get("content") == fact.get("content") for existing in collected_citations):
+                                    collected_citations.append(fact)
+
                         action = self._build_local_tool_action(tool_name, tool_output, payload, gen_id, src_channel)
                         if action is not None:
                             yield action
@@ -1045,6 +1054,7 @@ class CognitiveEngine:
                         text_content=sentence,
                         chat_action="typing",
                         is_final=is_last,
+                        citations=collected_citations if is_last and collected_citations else None,
                     )
             else:
                 # If no sentence emitted in flush, emit empty final marker payload
@@ -1058,6 +1068,7 @@ class CognitiveEngine:
                     text_content="",
                     chat_action="typing",
                     is_final=True,
+                    citations=collected_citations if collected_citations else None,
                 )
 
             if segmenter.last_emotion_delta:

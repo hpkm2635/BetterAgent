@@ -129,6 +129,11 @@ class ActionDecisionPayload(BasePayload):
     sticker_id: Optional[str] = None
     reaction_emoji: Optional[str] = None
     is_final: bool = False
+    # Campus KB citations accumulated across this turn's search_campus_kb
+    # tool calls (see cognitive_engine.py's stream_reasoning_loop), only
+    # ever set on the turn's true final payload. Each dict mirrors
+    # campus_kb_tool.py's fact shape: {content, source, relevance_score}.
+    citations: Optional[List[Dict[str, Any]]] = None
 
 
 class ActionCompletedPayload(BasePayload):
