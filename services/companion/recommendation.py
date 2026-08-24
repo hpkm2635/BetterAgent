@@ -5,9 +5,8 @@
   2. 查未来 24 小时内的 schedule 项 → 生成"快到期提醒"文案
   3. 无数据时返回空列表，不崩溃
 """
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import List
 
 from services.companion.database import get_connection
 
@@ -17,12 +16,12 @@ def get_recommendations(chat_id: int) -> List[str]:
     recommendations: List[str] = []
 
     today = datetime.now().strftime("%Y-%m-%d")
-    now_ts = time.time()
-    future_ts = now_ts + 24 * 3600
     # 与 schedule_service.py 的 list()/_register_job() 保持一致：naive 时间
     # 统一按 Asia/Shanghai(+08:00) 解释，否则跨时区部署时判断会偏差数小时。
     cst = timezone(timedelta(hours=8))
     now_cst = datetime.now(cst)
+    now_ts = now_cst.timestamp()
+    future_ts = now_ts + 24 * 3600
 
     conn = get_connection()
     try:
