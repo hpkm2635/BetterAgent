@@ -31,13 +31,18 @@ func newTestNatsBridge(t *testing.T) (*NatsBridge, *observer.ObservedLogs) {
 		t.Fatalf("expected NewNatsBus to degrade gracefully to offline mode, got error: %v", err)
 	}
 
-	return &NatsBridge{
+	b := &NatsBridge{
 		bus:                 natsBus,
 		sessions:            newSessionManager(logger),
 		csm:                 engine.NewCentralStateMachine(logger),
 		autonomousPlayState: engine.NewAutonomousPlayState(),
 		logger:              logger,
-	}, logs
+	}
+	// Bypasses newNatsBridge's struct literal, so this wiring (normally done
+	// there) has to be repeated here for tests that exercise watchdog-timeout
+	// behavior to see the same production behavior.
+	b.registerWatchdogTimeoutCallback()
+	return b, logs
 }
 
 func actionDecisionMsg(t *testing.T, decision schema.ActionDecisionPayload) *nats.Msg {
@@ -210,6 +215,104 @@ func drainSentFrames(session *ClientSession) []WSFrame {
 			frames = append(frames, frame)
 		default:
 			return frames
+		}
+	}
+}
+
+// TestWatchdogTimeout_BroadcastsIdleStateChangeToBrowser pins the fix for a
+// real bug: a chat stuck in TALKING/STREAMING_TTS whose watchdog times out
+// (e.g. audio chunks genuinely stopped arriving) used to flip to IDLE
+// purely inside the CentralStateMachine with nobody telling the browser --
+// registerWatchdogTimeoutCallback wires that notification through.
+func TestWatchdogTimeout_BroadcastsIdleStateChangeToBrowser(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(8888)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	if ok := b.csm.TransitionToChat(chatID, engine.StateThinking, "test_setup"); !ok {
+		t.Fatalf("test setup: expected IDLE -> THINKING to be a valid transition")
+	}
+	if ok := b.csm.TransitionToChat(chatID, engine.StateTalking, "test_setup"); !ok {
+		t.Fatalf("test setup: expected THINKING -> TALKING to be a valid transition")
+	}
+
+	b.csm.TouchWatchdogChat(chatID, 20*time.Millisecond)
+
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case frame := <-session.sendChan:
+			if frame.MessageType != websocket.MessageText {
+				continue
+			}
+			var wsMsg WSMessage
+			if err := json.Unmarshal(frame.Data, &wsMsg); err != nil {
+				t.Fatalf("failed to unmarshal WS frame: %v", err)
+			}
+			if wsMsg.Type != "agent.state_change" {
+				continue
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(wsMsg.Payload, &payload); err != nil {
+				t.Fatalf("failed to unmarshal agent.state_change payload: %v", err)
+			}
+			if payload["state"] != "idle" {
+				t.Fatalf("expected state:idle, got %v", payload["state"])
+			}
+			if payload["reason"] != "watchdog_timeout" {
+				t.Errorf("expected reason:watchdog_timeout, got %v", payload["reason"])
+			}
+			return
+		case <-deadline:
+			t.Fatal("expected an agent.state_change idle frame within 500ms of the watchdog timeout, got none")
+		}
+	}
+}
+
+// TestWatchdogTimeout_SuppressedByRealStateChangeBeforeDeadline confirms the
+// browser-facing broadcast, like the underlying watchdog itself, is
+// suppressed once a real transition (e.g. barge-in) supersedes the state
+// the watchdog was armed for -- it must not fire a stale idle notification
+// for a turn that's already moved on.
+func TestWatchdogTimeout_SuppressedByRealStateChangeBeforeDeadline(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(8889)
+
+	session := newClientSession(chatID, nil, b.logger)
+	b.sessions.Register(session)
+	defer b.sessions.Unregister(session)
+
+	if ok := b.csm.TransitionToChat(chatID, engine.StateThinking, "test_setup"); !ok {
+		t.Fatalf("test setup: expected IDLE -> THINKING to be a valid transition")
+	}
+	if ok := b.csm.TransitionToChat(chatID, engine.StateTalking, "test_setup"); !ok {
+		t.Fatalf("test setup: expected THINKING -> TALKING to be a valid transition")
+	}
+
+	b.csm.TouchWatchdogChat(chatID, 30*time.Millisecond)
+
+	if ok := b.csm.TransitionToChat(chatID, engine.StateCancelling, "barge_in"); !ok {
+		t.Fatalf("test setup: expected TALKING -> CANCELLING to be a valid transition")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+
+	for _, frame := range drainSentFrames(session) {
+		if frame.MessageType != websocket.MessageText {
+			continue
+		}
+		var wsMsg WSMessage
+		if err := json.Unmarshal(frame.Data, &wsMsg); err != nil {
+			t.Fatalf("failed to unmarshal WS frame: %v", err)
+		}
+		if wsMsg.Type == "agent.state_change" {
+			var payload map[string]any
+			if err := json.Unmarshal(wsMsg.Payload, &payload); err == nil && payload["reason"] == "watchdog_timeout" {
+				t.Fatalf("expected no watchdog_timeout broadcast after a real state transition superseded it")
+			}
 		}
 	}
 }

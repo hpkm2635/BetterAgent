@@ -191,7 +191,7 @@ func newNatsBridge(
 	autonomousPlayState *engine.AutonomousPlayState,
 	logger *zap.Logger,
 ) *NatsBridge {
-	return &NatsBridge{
+	b := &NatsBridge{
 		bus:                 bus,
 		sessions:            sessions,
 		csm:                 csm,
@@ -203,6 +203,29 @@ func newNatsBridge(
 		deferredTexts:       newDeferredTextManager(),
 		logger:              logger,
 	}
+	b.registerWatchdogTimeoutCallback()
+	return b
+}
+
+// registerWatchdogTimeoutCallback wires the CentralStateMachine's generic
+// watchdog-timeout notification to a browser-facing WS idle broadcast.
+// Without this, a chat stuck in StateTalking/StateStreamingTTS whose
+// watchdog times out (see TouchWatchdogChat's sliding window, extended on
+// every audio chunk in handleAudioChunkMsg) would silently flip to IDLE
+// internally with the browser never finding out -- CentralStateMachine's
+// watchdog callback had only ever been registered by gotd's Telegram
+// adapter (for typing-heartbeat cleanup), a wholly unrelated concern.
+// AddTimeoutCallback supports multiple independent subscribers precisely so
+// registering this one doesn't clobber that one.
+func (b *NatsBridge) registerWatchdogTimeoutCallback() {
+	if b.csm == nil {
+		return
+	}
+	b.csm.AddTimeoutCallback(func(chatID int64, state engine.State) {
+		if state == engine.StateTalking || state == engine.StateStreamingTTS {
+			b.sendIdleStateChange(chatID, "watchdog_timeout")
+		}
+	})
 }
 
 func (b *NatsBridge) SetEmotionStore(store *emotion.EmotionalStateStore) {
@@ -226,9 +249,11 @@ func (b *NatsBridge) getMoodTagForChat(chatID int64) string {
 
 // sendIdleStateChange broadcasts an "agent.state_change" idle transition to
 // chatID's sessions. reason distinguishes why the chat went idle --
-// "tts_stream_end" / "text_fallback_idle" for a normal turn ending vs.
-// "stream_cancelled" for a barge-in -- since the frontend must only cut off
-// in-flight audio playback for the latter (see betteragent-gateway.ts).
+// "tts_stream_end" for a normal turn ending, "watchdog_timeout" for the
+// safety-net case where no audio chunk arrived for 5+ seconds (see
+// registerWatchdogTimeoutCallback), vs. "stream_cancelled" for a barge-in --
+// since the frontend must only cut off in-flight audio playback for the
+// latter (see betteragent-gateway.ts).
 func (b *NatsBridge) sendIdleStateChange(chatID int64, reason string) {
 	outBytes, _ := json.Marshal(WSMessage{
 		Type: "agent.state_change",
@@ -766,21 +791,6 @@ func (b *NatsBridge) handleActionDecisionMsg(msg *nats.Msg) {
 			}),
 		})
 		b.sessions.SendTextToChat(decision.ChatID, stateBytes)
-
-		if decision.IsFinal {
-			chatID := decision.ChatID
-			go func() {
-				time.Sleep(3 * time.Second)
-				if b.csm != nil {
-					currState := b.csm.GetChatState(chatID)
-					currGen := b.csm.GetGenerationChat(chatID)
-					if (currState == engine.StateTalking || currState == engine.StateStreamingTTS) && (genID == 0 || currGen == genID) {
-						b.csm.TransitionToChat(chatID, engine.StateIdle, "text_fallback_idle")
-						b.sendIdleStateChange(chatID, "text_fallback_idle")
-					}
-				}
-			}()
-		}
 	}
 
 	if decision.StickerID != nil || decision.ReactionEmoji != nil {
