@@ -1,10 +1,23 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import LoginPage from './LoginPage.vue'
+
+// ---- Auth gate: show login page until the admin secret is verified -------
+const authed = ref(false)
+function adminToken() {
+  return localStorage.getItem('betteragent/admin-token') || ''
+}
+function onAuthed() {
+  authed.value = true
+}
 
 // ---- API helper (relative paths are proxied by Vite to :8094) ------------
 async function api(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  const token = adminToken()
+  if (token) headers['X-Admin-Token'] = token
   const resp = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     ...options,
   })
   const body = await resp.json().catch(() => ({}))
@@ -484,13 +497,17 @@ function switchTab(key) {
 }
 
 onMounted(() => {
-  loadHealth()
-  loadPersonas()
+  if (localStorage.getItem('betteragent/admin-token')) {
+    authed.value = true
+    loadHealth()
+    loadPersonas()
+  }
 })
 </script>
 
 <template>
-  <div class="shell">
+  <LoginPage v-if="!authed" @authed="onAuthed" />
+  <div v-else class="shell">
     <header class="topbar">
       <div class="brand">
         <span class="logo">🐱</span>
