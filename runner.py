@@ -60,6 +60,9 @@ GO_BINARY_NAME = "betteragent_core.exe" if IS_WINDOWS else "betteragent-core"
 GO_BINARY_PATH = BIN_DIR / GO_BINARY_NAME
 NATS_BINARY_NAME = "nats-server.exe" if IS_WINDOWS else "nats-server"
 NATS_BINARY_PATH = BIN_DIR / NATS_BINARY_NAME
+QDRANT_BINARY_NAME = "qdrant.exe" if IS_WINDOWS else "qdrant"
+QDRANT_BINARY_PATH = BIN_DIR / QDRANT_BINARY_NAME
+QDRANT_STORAGE_DIR = ROOT_DIR / "data" / "qdrant_storage"
 
 
 # ============================================================================
@@ -213,18 +216,34 @@ def get_linux_pdeathsig_preexec():
 
 def get_python_interpreter() -> str:
     """
-    Finds standard Python interpreter (.venv preferred).
-    Strict single-environment architecture without legacy fallbacks.
+    Finds a Python interpreter, preferring a developer's .venv, then the
+    bundled portable runtime built by scripts/build_portable_python.py for
+    the install-free package (bin/python-portable/), then falling back to
+    whatever interpreter is running this script.
     """
     venv_py = ROOT_DIR / (".venv/Scripts/python.exe" if IS_WINDOWS else ".venv/bin/python")
     if venv_py.exists():
         return str(venv_py)
-    
+
     alt_venv_py = ROOT_DIR / ".venv/bin/python.exe"
     if alt_venv_py.exists():
         return str(alt_venv_py)
 
+    portable_py = BIN_DIR / "python-portable" / "python.exe"
+    if portable_py.exists():
+        return str(portable_py)
+
     return sys.executable
+
+
+def is_portable_mode() -> bool:
+    """True when running from the "绿化包" distribution (bundled Python
+    present) rather than a developer checkout with its own .venv -- used to
+    decide whether the two frontends should be served as pre-built static
+    assets (scripts/portable_static_server.py) instead of spawning
+    `pnpm run dev` / `npm run dev`, which require Node.js on the target
+    machine."""
+    return (BIN_DIR / "python-portable" / "python.exe").exists()
 
 
 def find_cli_cmd(tool_name: str) -> Optional[str]:
@@ -405,6 +424,64 @@ class ServiceManager:
                 service_name="External NATS Server (4222)",
                 timeout=10.0,
             )
+
+    def start_qdrant_if_needed(self) -> bool:
+        """Mirrors start_nats_if_needed(): reuse an already-running Qdrant
+        (Docker or otherwise) if one is reachable, else fall back to the
+        portable bin/qdrant.exe if present. Returning False just means "no
+        portable/local Qdrant available here" -- main()'s existing Redis/
+        Qdrant/FunASR docker-compose probe (which runs right after this) is
+        the final fallback, and campus_kb/memory already degrade gracefully
+        (in-memory search fallback) if nothing ever comes up on 6333."""
+        if is_port_open("127.0.0.1", 6333):
+            print(" [✓] Qdrant is already running on port 6333 (Docker/Service).")
+            return True
+
+        if not QDRANT_BINARY_PATH.exists():
+            return False
+
+        qdrant_api_key = os.environ.get("QDRANT_API_KEY")
+        if not qdrant_api_key:
+            print(" [!] QDRANT_API_KEY is not set in .env. Refusing to start an unauthenticated Qdrant server.")
+            print("     Copy .env.example to .env and set QDRANT_API_KEY.")
+            return False
+
+        print(" [1.5/5] Starting portable Qdrant Server...")
+        QDRANT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        qdrant_log = open(LOGS_DIR / "qdrant_server.log", "a", encoding="utf-8")
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if IS_WINDOWS else 0
+        preexec = get_linux_pdeathsig_preexec()
+
+        qdrant_env = os.environ.copy()
+        qdrant_env["QDRANT__SERVICE__API_KEY"] = qdrant_api_key
+        qdrant_env["QDRANT__STORAGE__STORAGE_PATH"] = str(QDRANT_STORAGE_DIR)
+
+        qdrant_cmd = [str(QDRANT_BINARY_PATH)]
+        proc = subprocess.Popen(
+            qdrant_cmd,
+            stdout=qdrant_log,
+            stderr=subprocess.STDOUT,
+            cwd=str(ROOT_DIR),
+            env=qdrant_env,
+            creationflags=creationflags,
+            preexec_fn=preexec,
+        )
+        attach_process_to_job(proc)
+
+        self.services["qdrant-server"] = {
+            "proc": proc,
+            "cmd": qdrant_cmd,
+            "out_fd": qdrant_log,
+            "err_fd": None,
+            "restart": True,
+            "restart_history": [],
+        }
+
+        return wait_for_readiness(
+            lambda: is_port_open("127.0.0.1", 6333),
+            service_name="Qdrant Server (6333)",
+            timeout=15.0,
+        )
 
     def spawn_service(self, name: str, cmd: list, cwd: Path = ROOT_DIR, restart: bool = True):
         log_out_path = LOGS_DIR / f"{name}_stdout.log"
@@ -715,7 +792,13 @@ def main():
             )
     except Exception:
         pass
-    
+
+    # -0.5. Portable Qdrant (bin/qdrant.exe) -- tried before the Docker probe
+    # below so an already-bundled/already-running Qdrant short-circuits the
+    # docker-compose fallback for Qdrant specifically (Redis/FunASR still
+    # fall back to Docker as before; see start_qdrant_if_needed's docstring).
+    mgr.start_qdrant_if_needed()
+
     # 0. 自动检测并拉起 Docker 中的 Redis (6379) 和 Qdrant (6333) 基础设施
     def check_tcp(host: str, port: int) -> bool:
         try:
@@ -854,9 +937,26 @@ def main():
             timeout=10.0,
         )
 
-    # 9. Admin Frontend Vue Service (:8095)
+    # 9. Admin Frontend (:8095) -- portable package serves the pre-built
+    # dist/ via scripts/portable_static_server.py (no Node.js needed on the
+    # target machine); a developer checkout keeps using the Vite dev server.
     admin_frontend_dir = ROOT_DIR / "admin" / "frontend"
-    if admin_frontend_dir.exists() and (admin_frontend_dir / "package.json").exists():
+    portable_static_server = ROOT_DIR / "scripts" / "portable_static_server.py"
+    if is_portable_mode():
+        admin_dist_dir = admin_frontend_dir / "dist"
+        if admin_dist_dir.is_dir():
+            mgr.spawn_service(
+                "admin_frontend_service",
+                [mgr.py_exe, str(portable_static_server), "--role", "admin", "--dist", str(admin_dist_dir), "--port", "8095"],
+            )
+            wait_for_readiness(
+                lambda: is_port_open("127.0.0.1", 8095),
+                service_name="Admin Frontend Static Server (:8095)",
+                timeout=10.0,
+            )
+        else:
+            print(f" [!] NOTICE: {admin_dist_dir} not found (run scripts/build_portable_package.py first). Skipping Admin Frontend (:8095).")
+    elif admin_frontend_dir.exists() and (admin_frontend_dir / "package.json").exists():
         npm_cmd = find_cli_cmd("npm")
         if npm_cmd:
             mgr.spawn_service("admin_frontend_service", [npm_cmd, "run", "dev"], cwd=admin_frontend_dir)
@@ -868,9 +968,24 @@ def main():
         else:
             print(" [!] NOTICE: 'npm' command not found in PATH. Skipping Admin Frontend Vue Service (:8095).")
 
-    # 10. Stage Web Frontend Vue Service (:5173)
+    # 10. Stage Web Frontend (:5173) -- same portable-vs-dev split as above.
     stage_web_dir = ROOT_DIR / "frontend"
-    if stage_web_dir.exists() and (stage_web_dir / "package.json").exists():
+    stage_web_app_dir = stage_web_dir / "apps" / "stage-web"
+    if is_portable_mode():
+        stage_web_dist_dir = stage_web_app_dir / "dist"
+        if stage_web_dist_dir.is_dir():
+            mgr.spawn_service(
+                "stage_web_frontend_service",
+                [mgr.py_exe, str(portable_static_server), "--role", "stage-web", "--dist", str(stage_web_dist_dir), "--port", "5173"],
+            )
+            wait_for_readiness(
+                lambda: is_port_open("127.0.0.1", 5173),
+                service_name="Stage Web Static Server (:5173)",
+                timeout=10.0,
+            )
+        else:
+            print(f" [!] NOTICE: {stage_web_dist_dir} not found (run scripts/build_portable_package.py first). Skipping Stage Web Frontend (:5173).")
+    elif stage_web_dir.exists() and (stage_web_dir / "package.json").exists():
         pnpm_cmd = find_cli_cmd("pnpm") or find_cli_cmd("npm")
         if pnpm_cmd:
             mgr.spawn_service("stage_web_frontend_service", [pnpm_cmd, "run", "dev"], cwd=stage_web_dir)
