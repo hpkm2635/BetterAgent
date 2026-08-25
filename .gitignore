@@ -124,3 +124,12 @@ venv_win/
 *.tar.zst
 *.zst
 *.zip
+
+# ==========================================
+# 8. 便携"绿化包"构建产物 (scripts/build_portable_python.py / build_portable_package.py)
+# ==========================================
+# bin/*.exe 已被规则 4 覆盖，这里额外忽略便携 Python 整个目录（其中的
+# site-packages 源码文件不是 .exe/.pyc，不会被上面任何规则命中）。
+bin/python-portable/
+# scripts/build_portable_package.py 的最终组装输出目录。
+portable_package/
