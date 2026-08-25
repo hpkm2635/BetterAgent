@@ -1,12 +1,48 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import LoginPage from './LoginPage.vue'
+
+// ---- Auth gate: show login page until the admin secret is verified -------
+// Backend gates /api/admin/* behind ADMIN_SECRET_KEY (admin/backend/main.py's
+// enforce_admin_token middleware, accepts an X-Admin-Token header).
+// LoginPage.vue does its own one-shot verification against the backend and
+// persists the secret to localStorage on success (see its submit()); this
+// file re-reads it from there and drives everything else. Two things beyond
+// "is a token present" matter for a real login gate, not just a splash
+// screen in front of it:
+//   1. onMounted always re-probes a real endpoint (loadPersonas()) instead
+//      of trusting localStorage's mere presence -- a stale/rotated secret
+//      must bounce back to the login screen, not silently pass through.
+//   2. api() treats any 401 (not just the initial probe) as "no longer
+//      authenticated" and clears the stored token + re-shows the gate --
+//      otherwise a secret that stops matching mid-session (backend restart
+//      with a new ADMIN_SECRET_KEY) would leave the user stuck looking at a
+//      half-authenticated shell with every tab quietly failing.
+const AUTH_STORAGE_KEY = 'betteragent/admin-token'
+const authToken = ref(localStorage.getItem(AUTH_STORAGE_KEY) || '')
+const authChecking = ref(true)
+const authRequired = ref(false)
+
+function onAuthed() {
+  authToken.value = localStorage.getItem(AUTH_STORAGE_KEY) || ''
+  authRequired.value = false
+  loadHealth()
+  loadPersonas()
+}
 
 // ---- API helper (relative paths are proxied by Vite to :8094) ------------
 async function api(path, options = {}) {
-  const resp = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  if (authToken.value) headers['X-Admin-Token'] = authToken.value
+  const resp = await fetch(path, { ...options, headers })
+  if (resp.status === 401) {
+    authToken.value = ''
+    localStorage.removeItem(AUTH_STORAGE_KEY)
+    authRequired.value = true
+    const err = new Error('unauthorized')
+    err.status = 401
+    throw err
+  }
   const body = await resp.json().catch(() => ({}))
   if (!resp.ok) {
     const err = new Error(body.error || `HTTP ${resp.status}`)
@@ -483,14 +519,25 @@ function switchTab(key) {
   if (key === 'config') loadConfig()
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadHealth()
-  loadPersonas()
+  // loadPersonas() swallows its own errors (sets `error`), so this always
+  // resolves -- api()'s 401 handling has already flipped authRequired by the
+  // time it settles if the stored/missing token was rejected. This runs
+  // unconditionally (not gated on "is a token stored") so a backend with no
+  // ADMIN_SECRET_KEY configured at all never shows the login screen -- the
+  // probe just succeeds unauthenticated and authRequired stays false.
+  await loadPersonas()
+  authChecking.value = false
 })
 </script>
 
 <template>
-  <div class="shell">
+  <div v-if="authChecking" class="shell auth-loading">
+    <p class="muted">加载中…</p>
+  </div>
+  <LoginPage v-else-if="authRequired" @authed="onAuthed" />
+  <div v-else class="shell">
     <header class="topbar">
       <div class="brand">
         <span class="logo">🐱</span>
