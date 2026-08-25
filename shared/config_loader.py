@@ -42,3 +42,12 @@ def get_config_val(path: str, default: Any = None) -> Any:
         else:
             return default
     return curr
+
+
+def invalidate_cache() -> None:
+    """Force the next load_config()/get_config_val() call to re-read config.yaml
+    from disk. Needed after anything rewrites config.yaml out-of-process (e.g.
+    admin backend's persona-activate endpoint flipping persona.active) --
+    otherwise this process-wide cache never sees the change."""
+    global _cached_config
+    _cached_config = None

@@ -221,7 +221,7 @@ def list_personas():
 
 
 @app.post("/api/admin/personas/{persona_id}/activate")
-def activate_persona(persona_id: str):
+async def activate_persona(persona_id: str):
     """在线将指定人设切换为当前系统全局活跃人设（更新 config.yaml 的 persona.active 节点，并广播 NATS 热重载）。"""
     path = _persona_path(persona_id)
     if path is None or not path.exists():
@@ -267,8 +267,13 @@ def activate_persona(persona_id: str):
         logger.error(f"Failed to update active persona in config.yaml: {exc}")
         return _error(500, f"failed to activate persona: {exc}")
 
-    _publish_persona_update(persona_id)
-    return {"status": "ok", "active_id": persona_id}
+    # No field patch here -- this is an activation-only update (persona_id
+    # only), which PersonaLoader.handle_persona_update treats as "re-read
+    # everything" rather than "empty/invalid". See patch_persona above for
+    # why a publish failure must surface in the response instead of being
+    # silently swallowed.
+    hot_reloaded = await _publish_persona_update(persona_id, {})
+    return {"status": "ok", "active_id": persona_id, "hot_reload": "ok" if hot_reloaded else "failed"}
 
 
 

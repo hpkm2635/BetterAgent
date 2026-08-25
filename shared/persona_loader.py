@@ -3,6 +3,7 @@ import tempfile
 import yaml
 import logging
 from typing import Dict, Any
+from shared import config_loader
 from shared.config_loader import get_config_val
 
 logger = logging.getLogger("persona_loader")
@@ -53,7 +54,11 @@ class PersonaLoader:
     async def handle_persona_update(cls, raw: bytes) -> None:
         """
         NATS message handler for 'agent.persona.update'.
-        Updates persona YAML on disk in-place and invalidates memory cache.
+        Updates persona YAML on disk in-place (if a field patch is present)
+        and always invalidates both this class's persona cache and
+        config_loader's config.yaml cache -- a message with no field patch
+        still means "persona.active changed, re-read everything", which is
+        exactly what admin/backend/main.py's activate-persona endpoint sends.
         """
         import json
         try:
@@ -65,13 +70,12 @@ class PersonaLoader:
             allowed = {"name", "appearance", "base_prompt", "sleepy_prompt", "knowledge_scope", "forbidden_topics"}
             patch = {k: v for k, v in payload.items() if k in allowed and isinstance(v, str)}
 
-            if not patch:
-                logger.warning("Empty or invalid persona patch payload received")
-                return
+            if patch:
+                cls._patch_yaml(persona_id, patch)
 
-            cls._patch_yaml(persona_id, patch)
+            config_loader.invalidate_cache()
             cls.invalidate_cache()
-            logger.info(f"Persona '{persona_id}' hot-reloaded and in-memory cache invalidated. Fields updated: {list(patch.keys())}")
+            logger.info(f"Persona '{persona_id}' hot-reloaded and in-memory cache invalidated. Fields updated: {list(patch.keys()) if patch else '(activation only)'}")
         except Exception as err:
             logger.error(f"Failed to handle persona update NATS message: {err}", exc_info=True)
 
