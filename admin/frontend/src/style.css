@@ -368,3 +368,12 @@ h1 {
   gap: 10px;
   margin-top: 18px;
 }
+
+/* Brief loading state while App.vue's initial auth probe is in flight --
+   LoginPage.vue brings its own full styling for the actual login screen. */
+.auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
