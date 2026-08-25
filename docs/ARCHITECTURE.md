@@ -303,59 +303,97 @@ stateDiagram-v2
 | **人设与配置** | `agent.persona.update` | 人设热更新广播（YAML 磁盘同步 + PersonaLoader 内存缓存失效） |
 | **游戏感知** | `agent.game_event` | 外部游戏事件广播（稀有圣物、濒死、胜负结算等） |
 
-### 4.2 系统核心组件 UML 类图 (Core Components Class Diagram)
+### 4.2 系统核心总线与适配器 UML 类图 (Core NATS Bus & Multi-Channel Adapters Class Diagram)
 
-架构基于统一事件驱动基类 `BaseAgentComponent`，组件包括 **WebSocket 全双工网关 (`WebGateway`)**、Telegram 适配器 (`TelegramAdapter`)、中央状态机 (`CentralStateMachine`)、认知引擎 (`CognitiveEngine`)、记忆中心 (`MemoryHub`) 与心跳发生器 (`ClockEngine`)：
+架构全量基于 **NATS 消息总线 (`NatsBus`)** 进行 Go Core 与 Python 异构微服务间解耦，由 **Go Core** 统一掌控 WebSocket 全双工网关 (`WebGateway`)、Telegram Cloud API 适配器 (`GotdAdapter`)、中央状态机 (`CentralStateMachine`) 与多维度会话隔离 (`idspace.WebNamespaceOffset`)：
 
 ```mermaid
 classDiagram
-    class BaseAgentComponent {
-        <<Abstract Class>>
-        #String component_name
-        #EventBus bus
-        +start()
-        +stop()
-        #publish_event(EventType, Dict payload)
-        #subscribe_to(EventType)
-        +handle_event(Event)*
+    class NatsBus_Go {
+        <<Go Core NATS Client>>
+        -nc *nats.Conn
+        -logger *zap.Logger
+        +Publish(subject, payload) error
+        +Subscribe(subject, handler) *nats.Subscription
+        +Request(subject, payload, timeout) (*EventEnvelope, error)
+        +Close()
     }
 
-    class EventBus {
-        <<Singleton / Message Router>>
-        -Map~EventType, List~Callable~~ subscribers
-        -AsyncQueue event_queue
-        +subscribe(EventType, Callable handler)
-        +publish(Event event)
-        +start_routing()
+    class NatsClient_Py {
+        <<Python Service NATS Client>>
+        -nc NATS
+        -js JetStreamContext
+        +connect(servers)
+        +publish(subject, payload_dict)
+        +subscribe(subject, cb_coroutine)
+        +request(subject, payload_dict, timeout)
     }
 
-    class Event {
-        <<Data Structure>>
-        +UUID id
-        +EventType event_type
-        +float timestamp
-        +String source_component
-        +BasePayload payload
+    class WebGatewayServer {
+        <<Go Core WebSocket 网关 :8080>>
+        -addr string
+        -token string
+        -sessions *SessionManager
+        -bridge *NatsBridge
+        -urgeEngine *UrgeEngine
+        +Start(ctx) error
+        +HandleWebSocket(w, r)
     }
 
-    class EventType {
-        <<Enumeration>>
-        TICK
-        INBOUND_MESSAGE
-        REASONING_REQUEST
-        ACTION_DECISION
-        ACTION_COMPLETED
-        ERROR
+    class SessionManager {
+        <<Go Session Registry>>
+        -mu sync.RWMutex
+        -sessions map[int64]*WebSession
+        -tokenIndex map[string]int64
+        +GetOrCreateSession(wsToken) (int64, *WebSession)
+        +GetSession(chat_id) (*WebSession, bool)
+        +RemoveSession(chat_id)
     }
 
-    EventBus ..> Event : routes
-    BaseAgentComponent --> EventBus : holds reference
-    BaseAgentComponent <|-- WebGateway : Web 网页端全双工网关 (端口 8080)
-    BaseAgentComponent <|-- TelegramAdapter : Telegram Cloud API 适配器
-    BaseAgentComponent <|-- CognitiveEngine : 认知推理与 Tool 调度引擎
-    BaseAgentComponent <|-- MemoryHub : 记忆编排与 Token Budget 剪裁
-    BaseAgentComponent <|-- CentralStateMachine : 中央状态机与看门狗
-    BaseAgentComponent <|-- ClockEngine : TICK 定时心跳与昼夜触发器
+    class NatsBridge {
+        <<Go WS <-> NATS Bridge>>
+        -bus *bus.NatsBus
+        -csm *engine.CentralStateMachine
+        -sessions *SessionManager
+        +Start() error
+        +HandleInboundWSText(session_id, text, generation_id)
+        +HandleVADSpeechStart(session_id)
+        +HandleVADSpeechEnd(session_id)
+        +HandleBargeInInterrupt(session_id)
+        +ForwardAudioChunkToWS(chat_id, audio_base64, visemes)
+        +ForwardSTTTranscriptToWS(chat_id, text, is_final)
+    }
+
+    class GotdAdapter {
+        <<Go Telegram Cloud API 适配器>>
+        -client *telegram.Client
+        -bus *bus.NatsBus
+        -antiSpam *AntiSpamGuard
+        -humanization *HumanizationEngine
+        +Start(ctx) error
+        +HandleTelegramUpdate(ctx, u)
+        +SendTypingHeartbeat(chat_id)
+        +HandleActionDecision(payload)
+    }
+
+    class CentralStateMachine {
+        <<Go Central State Guard>>
+        -mu sync.RWMutex
+        -chatMachines map[int64]*ChatStateMachine
+        -watchdogTimeout time.Duration
+        +GetOrCreateMachine(chat_id) *ChatStateMachine
+        +TransitionTo(chat_id, newState, reason) error
+        +IncrementGeneration(chat_id) uint64
+        +ValidateGeneration(chat_id, gen_id) bool
+    }
+
+    NatsBridge --> SessionManager : 查表分配 100 亿+ offset 隔离 ID
+    NatsBridge --> NatsBus_Go : Publish inbound/interrupt & Subscribe audio/stt/action
+    WebGatewayServer "1" *-- "1" SessionManager : 管理全双工 Session 声明周期
+    WebGatewayServer "1" *-- "1" NatsBridge : 全双工 WS 事件双向桥接
+    GotdAdapter --> NatsBus_Go : Publish inbound & Subscribe agent.action.telegram.*
+    CentralStateMachine --> NatsBus_Go : 监听状态变更 & 广播 state_change
+    NatsBus_Go <..> NatsClient_Py : 跨语言 NATS Subject 事件交互
 ```
 
 ### 4.3 Payload 数据结构类图 (Payload Schemas)
@@ -494,6 +532,186 @@ classDiagram
     BasePayload <|-- ActionCompletedPayload
     BasePayload <|-- GameEventPayload
     BasePayload <|-- TickPayload
+```
+
+### 4.4 记忆子系统 UML 类图 (Memory Subsystem Class Diagram)
+
+Python `services/memory` 服务负责双层记忆编排、Redis 短时对话缓冲、Qdrant 长期向量衰减检索与用户事实画像提炼：
+
+```mermaid
+classDiagram
+    class MemoryHub {
+        -short_term_buffer: ShortTermMemoryBuffer
+        -vector_store: VectorMemoryStore
+        -profile_mgr: UserProfileManager
+        -consolidator: MemoryConsolidator
+        -token_budget: TokenBudgetManager
+        -self_memory: AgentSelfMemory
+        +async handle_inbound_message(payload: InboundMessagePayload)
+        +async handle_action_completed(payload: ActionCompletedPayload)
+        +async consolidate_user_memory(user_id: int) Dict
+    }
+
+    class ShortTermMemoryBuffer {
+        -redis_client: Optional~Redis~
+        -buffers: Dict~int, List~Dict~~
+        +max_capacity: int = 20
+        +async add_message(user_id: int, role: str, content: str, metadata: Dict)
+        +async get_recent_messages(user_id: int, limit: int = 20) List~Dict~
+        +async get_unconsolidated_messages(user_id: int) List~Dict~
+        +async mark_consolidated(user_id: int, count: int)
+        +async clear_buffer(user_id: int)
+    }
+
+    class VectorMemoryStore {
+        -vector_db_client: QdrantClient
+        -embedding_provider: BaseEmbeddingProvider
+        +collection_name: str = "catgirl_memories"
+        +async search_relevant_memories(user_id: int, query_text: str, top_k: int = 5, score_threshold: float = 0.7, decay_lambda: float = 0.01) List~str~
+        +async add_memory_segment(user_id: int, text: str, metadata: Dict) str
+        +async delete_memory(memory_id: str) bool
+    }
+
+    class UserProfileManager {
+        -db_session: DatabaseSession
+        -profile_cache: Dict~int, Dict~
+        +get_profile(user_id: int) Dict
+        +update_fact(user_id: int, key: str, value: Any)
+        +get_formatted_profile_prompt(user_id: int) str
+        +invalidate_fact(key: str)
+    }
+
+    class MemoryConsolidator {
+        -llm_provider: BaseLLMProvider
+        -consolidation_threshold: int = 15
+        -user_locks: Dict~int, asyncio.Lock~
+        +importance_threshold: float
+        +async consolidate(user_id: int, messages: List, vector_store: VectorMemoryStore) Dict
+        +async evaluate_importance_and_extract(messages: List) Dict
+    }
+
+    class TokenBudgetManager {
+        +fit_into_budget(system_prompt, history, profile, rag_facts, max_budget=4000)
+    }
+
+    class AgentSelfMemory {
+        -self_events: List~Dict~
+        +add_self_event(event_description, emotion_tag)
+        +get_recent_self_events(limit=3) List~Dict~
+    }
+
+    MemoryHub "1" *-- "1" ShortTermMemoryBuffer : 短时对话缓冲 (Redis)
+    MemoryHub "1" *-- "1" VectorMemoryStore : 向量检索 (Qdrant + 艾宾浩斯衰减)
+    MemoryHub "1" *-- "1" UserProfileManager : 用户画像与事实注入
+    MemoryHub "1" *-- "1" MemoryConsolidator : 记忆归档与摘要提炼
+    MemoryHub "1" *-- "1" TokenBudgetManager : 上下文 Token 剪裁
+    MemoryHub "1" *-- "1" AgentSelfMemory : 猫娘自我事件记录
+    MemoryConsolidator ..> VectorMemoryStore : 写入长期向量记忆
+    MemoryConsolidator ..> ShortTermMemoryBuffer : 标记已归档消息
+```
+
+### 4.5 认知与推理子系统 UML 类图 (Cognitive Subsystem Class Diagram)
+
+Python `services/cognitive` 服务负责提示词动态编译、多 Provider 抽象（Gemini / Claude / OpenAI / DeepSeek）、Tool & MCP 调度与情感反馈闭环：
+
+```mermaid
+classDiagram
+    class CognitiveEngine {
+        -providers: Dict~str, BaseLLMProvider~
+        -prompt_builder: PromptBuilder
+        -tool_registry: ToolRegistry
+        -presenter_mgr: PresenterSessionManager
+        +async handle_reasoning_request(payload: ReasoningRequestPayload)
+        +async execute_reasoning_loop(messages: List~Dict~, tools_schema: List~Dict~) List~ActionDecisionPayload~
+        +parse_thought_and_clean_text(raw_text: str) Tuple~str, str~
+        +parse_emotion_delta_from_text(text: str) Tuple~str, Dict~
+    }
+
+    class PromptBuilder {
+        -base_system_template: str
+        +build_system_prompt(payload: ReasoningRequestPayload) str
+        +build_messages(payload: ReasoningRequestPayload) List~Dict~
+    }
+
+    class ProviderFactory {
+        +get_provider(provider_type: str) BaseLLMProvider
+        +invalidate_cache()
+    }
+
+    class BaseLLMProvider {
+        <<Abstract>>
+        #api_key: str
+        #model_name: str
+        +async generate(messages: List~Dict~, tools_schema: List~Dict~ = None) LLMResponsePayload*
+    }
+
+    class GeminiProvider {
+        -sdk: GoogleGenAI
+    }
+    class ClaudeProvider {
+        -sdk: AnthropicSDK
+    }
+    class OpenAIProvider {
+        -sdk: OpenAISDK
+    }
+    class DeepSeekProvider {
+        -sdk: OpenAISDK
+    }
+
+    class ToolRegistry {
+        -tools: Map~str, BaseTool~
+        +register_tool(tool: BaseTool)
+        +get_tool(name: str) BaseTool
+        +get_all_schemas() List~Dict~
+    }
+
+    class BaseTool {
+        <<Abstract>>
+        +name: str
+        +description: str
+        +parameters_schema: Dict
+        +async execute(**kwargs: Dict)*
+    }
+
+    class TelegramActionTool {
+        +async execute(action_type, sticker_id, emoji) Dict
+    }
+    class TTSTool {
+        +async execute(text, emotion) Dict
+    }
+    class ImageGenTool {
+        +async execute(prompt, style) Dict
+    }
+    class CampusKBTool {
+        +async execute(query) Dict
+    }
+    class CompanionTool {
+        +async execute(action, schedule_id) Dict
+    }
+    class SlayTheSpire2Tool {
+        +async execute(command, target) Dict
+    }
+    class PresenterSessionManager {
+        -sessions: Dict~str, PresenterSession~
+        +handle_mcp_call(tool_name, arguments)
+    }
+
+    CognitiveEngine "1" *-- "1" PromptBuilder : 组装多模态提示词
+    CognitiveEngine "1" *-- "1" ToolRegistry : 管理与调度工具
+    CognitiveEngine --> ProviderFactory : 获取 LLM 实例
+    ProviderFactory ..> BaseLLMProvider : 工厂创建
+    BaseLLMProvider <|-- GeminiProvider
+    BaseLLMProvider <|-- ClaudeProvider
+    BaseLLMProvider <|-- OpenAIProvider
+    BaseLLMProvider <|-- DeepSeekProvider
+    ToolRegistry "1" *-- "many" BaseTool : 依赖反转注册
+    BaseTool <|-- TelegramActionTool
+    BaseTool <|-- TTSTool
+    BaseTool <|-- ImageGenTool
+    BaseTool <|-- CampusKBTool
+    BaseTool <|-- CompanionTool
+    BaseTool <|-- SlayTheSpire2Tool
+    CognitiveEngine "1" *-- "1" PresenterSessionManager : MCP 协议桥接
 ```
 
 ---

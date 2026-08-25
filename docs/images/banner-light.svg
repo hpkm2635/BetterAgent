@@ -1,0 +1,89 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="50%" stop-color="#F1F5F9"/>
+      <stop offset="100%" stop-color="#E2E8F0"/>
+    </linearGradient>
+
+    <linearGradient id="cyan-glow-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+
+    <linearGradient id="text-grad-light" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="70%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background Layer -->
+  <rect width="1280" height="360" rx="16" fill="url(#bg-light)" stroke="#CBD5E1" stroke-width="1"/>
+
+  <!-- Subtle Grid -->
+  <g opacity="0.06" stroke="#0284C7" stroke-width="1" fill="none">
+    <path d="M0 60H1280 M0 120H1280 M0 180H1280 M0 240H1280 M0 300H1280"/>
+    <path d="M160 0V360 M320 0V360 M480 0V360 M640 0V360 M800 0V360 M960 0V360 M1120 0V360"/>
+  </g>
+
+  <!-- Ambient Light Glow Behind Cat Icon -->
+  <circle cx="210" cy="180" r="110" fill="#38BDF8" opacity="0.12"/>
+
+  <!-- Minimalist Cyan/Purple Line-Art Cat Icon -->
+  <g transform="translate(100, 70) scale(0.55)" fill="none" stroke="url(#cyan-glow-light)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Cat Head & Ears Contour -->
+    <path d="M 110 180 C 80 110 95 40 135 25 C 175 75 200 120 220 150 C 260 115 320 115 360 150 C 380 120 405 75 445 25 C 485 40 500 110 470 180 C 520 260 485 365 410 415 C 335 460 245 460 170 415 C 95 365 60 260 110 180 Z" />
+    
+    <!-- Inner Ear Accents -->
+    <path d="M 150 75 L 190 140" stroke-width="10"/>
+    <path d="M 430 75 L 390 140" stroke-width="10"/>
+
+    <!-- Eyes (Clean Oval Line Art) -->
+    <ellipse cx="205" cy="245" rx="14" ry="20" fill="#0284C7" stroke="none" />
+    <ellipse cx="375" cy="245" rx="14" ry="20" fill="#0284C7" stroke="none" />
+
+    <!-- Nose & Mouth Curve -->
+    <path d="M 290 285 C 290 305 270 315 250 300" stroke-width="10"/>
+    <path d="M 290 285 C 290 305 310 315 330 300" stroke-width="10"/>
+
+    <!-- Left Whiskers -->
+    <path d="M 120 270 L 15 255" stroke-width="10"/>
+    <path d="M 110 295 L 0 295" stroke-width="10"/>
+    <path d="M 120 320 L 15 335" stroke-width="10"/>
+
+    <!-- Right Whiskers -->
+    <path d="M 460 270 L 565 255" stroke-width="10"/>
+    <path d="M 470 295 L 580 295" stroke-width="10"/>
+    <path d="M 460 320 L 565 335" stroke-width="10"/>
+  </g>
+
+  <!-- Typography Section -->
+  <!-- Main Title -->
+  <text x="430" y="170" font-family="Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="72" font-weight="800" letter-spacing="-1.5" fill="url(#text-grad-light)">BetterAgent</text>
+  
+  <!-- Version Tag -->
+  <rect x="860" y="115" width="130" height="30" rx="15" fill="#0284C7" opacity="0.12"/>
+  <text x="925" y="135" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0284C7" text-anchor="middle" letter-spacing="1">v0.9.0-BETA</text>
+
+  <!-- Subtitle -->
+  <text x="435" y="220" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="24" font-weight="500" fill="#475569" letter-spacing="1">全双工多模态数字人陪伴系统</text>
+
+  <!-- Highlight Badges Below -->
+  <g transform="translate(435, 252)">
+    <!-- Pill 1: Go + Python + NATS -->
+    <rect x="0" y="0" width="165" height="30" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="15" cy="15" r="4" fill="#0284C7"/>
+    <text x="28" y="20" font-family="sans-serif" font-size="13" font-weight="600" fill="#334155">Go · Python · NATS</text>
+
+    <!-- Pill 2: 3D VAD 情绪引擎 -->
+    <rect x="177" y="0" width="155" height="30" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="192" cy="15" r="4" fill="#7C3AED"/>
+    <text x="205" y="20" font-family="sans-serif" font-size="13" font-weight="600" fill="#334155">3D VAD 情绪生理</text>
+
+    <!-- Pill 3: 杀戮尖塔2 AI 解说 -->
+    <rect x="344" y="0" width="160" height="30" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+    <circle cx="359" cy="15" r="4" fill="#EA580C"/>
+    <text x="372" y="20" font-family="sans-serif" font-size="13" font-weight="600" fill="#334155">STS2 游戏感知解说</text>
+  </g>
+</svg>
