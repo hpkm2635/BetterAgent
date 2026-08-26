@@ -100,6 +100,7 @@ const userMsg = ref('')
 const chatId = ref(0)
 const sessions = ref([])
 const sessionsTotal = ref(0)
+const sessionOverview = ref([]) // GET /api/admin/sessions/overview -- every chat with recent Redis short-term history, Telegram + Web
 
 const schedChatId = ref(1001)
 const schedules = ref([])
@@ -321,6 +322,29 @@ async function loadSessions() {
   }
 }
 
+// Which chats currently have a recent conversation (Telegram or Web) --
+// lets an operator browse/pick a session instead of already knowing its
+// chat_id and typing it into the box above.
+async function loadSessionOverview() {
+  try {
+    const data = await api('/api/admin/sessions/overview')
+    sessionOverview.value = data.sessions || []
+  } catch (e) {
+    // Non-fatal: the manual chat_id lookup above still works without this.
+    console.warn('Failed to load session overview:', e.message)
+  }
+}
+
+function pickSession(chatIdToLoad) {
+  chatId.value = chatIdToLoad
+  loadSessions()
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString('zh-CN')
+}
+
 // ---- Schedules ------------------------------------------------------------
 async function loadSchedules() {
   schedMsg.value = ''
@@ -514,7 +538,7 @@ function switchTab(key) {
   error.value = ''
   if (key === 'personas') loadPersonas()
   if (key === 'users') loadUsers()
-  if (key === 'sessions') loadSessions()
+  if (key === 'sessions') { loadSessionOverview(); loadSessions() }
   if (key === 'schedules') loadSchedules()
   if (key === 'config') loadConfig()
 }
@@ -678,24 +702,50 @@ onMounted(async () => {
       </section>
 
       <!-- 会话记录 -->
-      <section v-else-if="activeTab === 'sessions'" class="card">
-        <div class="card-head">
-          <h2>会话记录 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
-          <div class="row">
-            <input v-model.number="chatId" type="number" class="input input-short" placeholder="chat_id" />
-            <button class="btn btn-primary" @click="loadSessions">查询</button>
+      <section v-else-if="activeTab === 'sessions'" class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h2>活跃会话 <span class="muted small">(共 {{ sessionOverview.length }} 个，含 Telegram)</span></h2>
+            <button class="btn" @click="loadSessionOverview">刷新</button>
           </div>
+          <ul class="list">
+            <li v-if="!sessionOverview.length" class="muted">暂无活跃会话（近期没有任何用户/Telegram 对话留在短期缓存里）</li>
+            <li
+              v-for="s in sessionOverview"
+              :key="s.chat_id"
+              class="list-item"
+              :class="{ selected: s.chat_id === chatId }"
+              style="cursor: pointer"
+              @click="pickSession(s.chat_id)"
+            >
+              <div class="row">
+                <span class="tag" :class="{ 'tag-active': s.channel === 'telegram' }">{{ s.channel === 'telegram' ? 'Telegram' : 'Web' }}</span>
+                <span class="muted small">chat_id={{ s.chat_id }} · {{ s.message_count }} 条 · {{ formatTimestamp(s.last_timestamp) }}</span>
+              </div>
+              <div class="bubble small">{{ s.preview || '(空)' }}</div>
+            </li>
+          </ul>
         </div>
-        <ul class="list">
-          <li v-if="!sessions.length" class="muted">暂无会话记录</li>
-          <li v-for="s in sessions" :key="s.message_id" class="list-item">
+
+        <div class="card">
+          <div class="card-head">
+            <h2>会话详情 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
             <div class="row">
-              <span class="role" :class="s.role">{{ s.role }}</span>
-              <span class="muted small">#{{ s.message_id }} · {{ s.timestamp }}</span>
+              <input v-model.number="chatId" type="number" class="input input-short" placeholder="chat_id" />
+              <button class="btn btn-primary" @click="loadSessions">查询</button>
             </div>
-            <div class="bubble">{{ s.content }}</div>
-          </li>
-        </ul>
+          </div>
+          <ul class="list">
+            <li v-if="!sessions.length" class="muted">暂无会话记录</li>
+            <li v-for="s in sessions" :key="s.message_id" class="list-item">
+              <div class="row">
+                <span class="role" :class="s.role">{{ s.role }}</span>
+                <span class="muted small">#{{ s.message_id }} · {{ s.timestamp }}</span>
+              </div>
+              <div class="bubble">{{ s.content }}</div>
+            </li>
+          </ul>
+        </div>
       </section>
 
       <!-- 日程提醒 -->

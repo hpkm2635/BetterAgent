@@ -825,10 +825,16 @@ def list_session_overview():
         try:
             for key in r.scan_iter(f"{prefix}*"):
                 chat_id = _chat_id_from_session_key(key)
-                base_chat_id = _from_web_chat_id(chat_id) if chat_id is not None else None
-                if base_chat_id is None or base_chat_id in seen:
+                if chat_id is None:
+                    continue
+                base_chat_id = _from_web_chat_id(chat_id)
+                if base_chat_id in seen:
                     continue
                 seen.add(base_chat_id)
+                # Computed from the raw (pre-fold) chat_id -- WebGateway is the
+                # only thing that ever writes into the 9e15+ namespace, so
+                # anything below it arrived via the Telegram adapter instead.
+                channel = "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram"
 
                 count = 0
                 preview = ""
@@ -852,7 +858,8 @@ def list_session_overview():
                 sessions.append({
                     # Display the base id so the frontend stays consistent with
                     # the chat_id it knows (localStorage / URL query param).
-                    "chat_id": _from_web_chat_id(chat_id),
+                    "chat_id": base_chat_id,
+                    "channel": channel,
                     "message_count": count,
                     "last_timestamp": last_timestamp,
                     "preview": preview,
