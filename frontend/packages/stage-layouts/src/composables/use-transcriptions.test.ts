@@ -229,6 +229,56 @@ describe('useTranscriptions', () => {
     })
   })
 
+  describe('re-entrancy guard', () => {
+    it('should ignore a concurrent startStreamingTranscription call while one is already in-flight', async () => {
+      mockHearingStore.configured.value = true
+      mockAudioDevice.stream.value = { id: 'stream-1' } as any
+      mockAudioDevice.enabled.value = true
+      mockHearingPipeline.supportsStreamInput.value = true
+
+      // Simulate the real async gap (e.g. `await audioContext.resume()` on
+      // the BetterAgent iFLYTEK STT path) that let a second call race in
+      // and stack a second audio pipeline on the shared mic stream.
+      let resolveTranscribe: () => void = () => {}
+      mockHearingPipeline.transcribeForMediaStream = vi.fn().mockImplementation(() => new Promise<void>((resolve) => {
+        resolveTranscribe = resolve
+      }))
+
+      const { isListening, startStreamingTranscription } = useTranscriptions(createOptions())
+
+      const firstCall = startStreamingTranscription()
+      const secondCall = startStreamingTranscription()
+      await secondCall
+
+      // The second call must have bailed out immediately -- it must not
+      // have invoked transcribeForMediaStream a second time.
+      expect(mockHearingPipeline.transcribeForMediaStream).toHaveBeenCalledTimes(1)
+      expect(isListening.value).toBe(false) // first call still pending
+
+      resolveTranscribe()
+      await firstCall
+      await nextTick()
+      expect(isListening.value).toBe(true)
+    })
+
+    it('should ignore a startStreamingTranscription call while already listening', async () => {
+      mockHearingStore.configured.value = true
+      mockAudioDevice.stream.value = { id: 'stream-1' } as any
+      mockAudioDevice.enabled.value = true
+      mockHearingPipeline.supportsStreamInput.value = true
+
+      const { isListening, startStreamingTranscription } = useTranscriptions(createOptions())
+
+      await startStreamingTranscription()
+      await nextTick()
+      expect(isListening.value).toBe(true)
+
+      await startStreamingTranscription()
+
+      expect(mockHearingPipeline.transcribeForMediaStream).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('transcription & Input', () => {
     it('should append transcribed text to messageInputRef', async () => {
       const mockInput = ref('')

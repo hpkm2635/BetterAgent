@@ -28,6 +28,14 @@ export function useTranscriptions(options: TranscriptionOptions) {
   const { askPermission, startStream } = audioDeviceSettingsStore
 
   const isListening = ref(false)
+  // isListening only flips to true after transcribeForMediaStream resolves
+  // (which includes an `await audioContext.resume()` gap for the BetterAgent
+  // iFLYTEK STT path) -- a second startStreaming() call landing in that
+  // window would still see isListening === false and race in, stacking a
+  // second AudioContext/ScriptProcessorNode on the same shared mic stream.
+  // The loser is never cleaned up (streamingSession only tracks the winner),
+  // so it keeps firing onaudioprocess forever. This flag closes that gap.
+  let startInFlight = false
 
   // Auto-send logic
   let autoSendTimeout: ReturnType<typeof setTimeout> | undefined
@@ -76,6 +84,21 @@ export function useTranscriptions(options: TranscriptionOptions) {
   }
 
   const startStreaming = async () => {
+    if (startInFlight || isListening.value) {
+      console.info('Start already in progress or already listening, ignoring duplicate call', { source: 'useTranscriptions' })
+      return
+    }
+    startInFlight = true
+
+    try {
+      await startStreamingInner()
+    }
+    finally {
+      startInFlight = false
+    }
+  }
+
+  const startStreamingInner = async () => {
     console.info('Starting streaming transcription', {
       enabled: hearingEnabled.value,
       hasStream: !!stream.value,
