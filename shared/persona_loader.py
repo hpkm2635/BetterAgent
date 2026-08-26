@@ -68,7 +68,13 @@ class PersonaLoader:
 
             persona_id = payload.get("persona_id") or "catgirl"
             allowed = {"name", "appearance", "base_prompt", "sleepy_prompt", "knowledge_scope", "forbidden_topics"}
-            patch = {k: v for k, v in payload.items() if k in allowed and isinstance(v, str)}
+            tts_allowed = {"prompt_audio", "prompt_text", "prompt_lang", "text_lang"}
+            patch: Dict[str, Any] = {k: v for k, v in payload.items() if k in allowed and isinstance(v, str)}
+            tts_patch = payload.get("tts")
+            if isinstance(tts_patch, dict):
+                filtered_tts = {k: v for k, v in tts_patch.items() if k in tts_allowed and isinstance(v, str)}
+                if filtered_tts:
+                    patch["tts"] = filtered_tts
 
             if patch:
                 cls._patch_yaml(persona_id, patch)
@@ -85,6 +91,21 @@ class PersonaLoader:
         if not os.path.exists(path):
             return "config/persona/catgirl.yaml"
         return path
+
+    @staticmethod
+    def _merge_patch(data: Dict[str, Any], patch: Dict[str, Any]) -> None:
+        """Applies `patch` onto `data` in place. `tts` is merged key-by-key
+        into the existing sub-object instead of replacing it wholesale --
+        the patch only ever carries the hot-reloadable subfields (see
+        handle_persona_update's tts_allowed), so a plain top-level
+        `data.update(patch)` would silently wipe out provider/voice_id."""
+        for key, value in patch.items():
+            if key == "tts" and isinstance(value, dict):
+                if not isinstance(data.get("tts"), dict):
+                    data["tts"] = {}
+                data["tts"].update(value)
+            else:
+                data[key] = value
 
     @classmethod
     def _patch_yaml(cls, persona_id: str, patch: Dict[str, Any]) -> None:
@@ -103,12 +124,12 @@ class PersonaLoader:
                 ryaml.preserve_quotes = True
                 with open(persona_path, "r", encoding="utf-8") as f:
                     data = ryaml.load(f) or {}
-                data.update(patch)
+                cls._merge_patch(data, patch)
                 dump = lambda f: ryaml.dump(data, f)
             except ImportError:
                 with open(persona_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
-                data.update(patch)
+                cls._merge_patch(data, patch)
                 dump = lambda f: yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
             persona_dir = os.path.dirname(persona_path) or "."

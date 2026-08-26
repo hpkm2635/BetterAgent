@@ -92,6 +92,26 @@ const form = reactive({
 })
 const original = {}
 
+// tts.prompt_audio/prompt_text/prompt_lang/text_lang are the only tts
+// subfields GPT-SoVITS re-reads on every synthesis call (real hot reload).
+// provider/voice_id are read once at service startup and cached in memory,
+// so they're shown read-only here -- editing them wouldn't take effect
+// without restarting the tts service, and the PATCH endpoint rejects them.
+const TTS_FIELDS = [
+  { key: 'prompt_audio', label: 'prompt_audio', type: 'input' },
+  { key: 'prompt_text', label: 'prompt_text', type: 'textarea', rows: 2 },
+  { key: 'prompt_lang', label: 'prompt_lang', type: 'input' },
+  { key: 'text_lang', label: 'text_lang', type: 'input' },
+]
+const ttsForm = reactive({
+  prompt_audio: '',
+  prompt_text: '',
+  prompt_lang: '',
+  text_lang: '',
+})
+const ttsOriginal = {}
+const ttsReadOnly = reactive({ provider: '', voice_id: '' })
+
 const users = ref([])
 const usersTotal = ref(0)
 const deleteTarget = ref(null) // 待软删除的用户对象
@@ -178,6 +198,13 @@ function fillForm(detail) {
     form[f.key] = detail?.[f.key] ?? ''
     original[f.key] = detail?.[f.key] ?? ''
   }
+  const tts = detail?.tts || {}
+  for (const f of TTS_FIELDS) {
+    ttsForm[f.key] = tts[f.key] ?? ''
+    ttsOriginal[f.key] = tts[f.key] ?? ''
+  }
+  ttsReadOnly.provider = tts.provider ?? ''
+  ttsReadOnly.voice_id = tts.voice_id ?? ''
 }
 
 async function selectPersona(id) {
@@ -200,6 +227,15 @@ async function savePersona() {
     if (form[f.key] !== (original[f.key] ?? '')) {
       payload[f.key] = form[f.key]
     }
+  }
+  const ttsChanges = {}
+  for (const f of TTS_FIELDS) {
+    if (ttsForm[f.key] !== (ttsOriginal[f.key] ?? '')) {
+      ttsChanges[f.key] = ttsForm[f.key]
+    }
+  }
+  if (Object.keys(ttsChanges).length) {
+    payload.tts = ttsChanges
   }
   if (!Object.keys(payload).length) {
     personaSaveMsg.value = '没有修改'
@@ -643,6 +679,26 @@ onMounted(async () => {
               ></textarea>
               <input v-else v-model="form[f.key]" class="input" />
             </div>
+
+            <div class="field">
+              <label>tts</label>
+              <div class="row small muted" style="margin-bottom: 8px">
+                <span>provider: {{ ttsReadOnly.provider || '—' }}</span>
+                <span>voice_id: {{ ttsReadOnly.voice_id || '—' }}</span>
+                <span>（这两项服务启动时读一次，改了需要重启 tts 服务才生效，不在此处开放编辑）</span>
+              </div>
+              <div v-for="f in TTS_FIELDS" :key="f.key" class="field">
+                <label class="small muted">tts.{{ f.label }}</label>
+                <textarea
+                  v-if="f.type === 'textarea'"
+                  v-model="ttsForm[f.key]"
+                  class="textarea"
+                  :rows="f.rows"
+                ></textarea>
+                <input v-else v-model="ttsForm[f.key]" class="input" />
+              </div>
+            </div>
+
             <div class="row field">
               <button class="btn btn-primary" @click="savePersona">保存修改</button>
               <button
