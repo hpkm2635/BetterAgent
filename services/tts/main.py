@@ -307,9 +307,21 @@ async def main():
         except Exception as err:
             logger.error(f"Error in TTS action_decision_handler: {err}", exc_info=True)
 
+    async def persona_update_handler(msg):
+        # gpt_sovits_client.py's synthesize_stream already re-reads
+        # PersonaLoader.load_active_persona() fresh on every call (so
+        # prompt_audio/prompt_text/prompt_lang/text_lang hot-reload
+        # correctly) -- but without this subscription, PersonaLoader's
+        # in-process cache inside *this* service never gets invalidated,
+        # so it keeps serving whatever was loaded the first time this
+        # process needed a persona, no matter how many times the YAML on
+        # disk gets patched. Same pattern as services/cognitive/main.py.
+        await PersonaLoader.handle_persona_update(msg.data)
+
     await nc.subscribe(action_decision_wildcard("web"), queue="tts_workers", cb=action_decision_handler)
     await nc.subscribe(SUBJECT_STREAM_CANCEL_REQ, cb=cancel_handler)
     await nc.subscribe(SUBJECT_USER_INTERRUPT, cb=cancel_handler)
+    await nc.subscribe("agent.persona.update", cb=persona_update_handler)
 
     logger.info(f"TTS Service ({tts_client.__class__.__name__}) listening on NATS subjects (Action Decisions & Cancel Control)...")
 
