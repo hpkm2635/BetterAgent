@@ -885,19 +885,20 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
         }, idleTimeout)
       }
 
+      // Was a manually-built ScriptProcessorNode(4096, 1, 1) here -- server
+      // logs showed every stream_chunk arriving with audio_len=0 (empty PCM)
+      // regardless of session state, and browser-side sendAudioChunk logs
+      // confirmed pcm.length was already 0 at the call site, meaning
+      // event.inputBuffer.getChannelData(0) itself was coming back
+      // zero-length from that node -- a known rough edge of the deprecated
+      // ScriptProcessorNode API. Switched to the same AudioWorkletNode-based
+      // capture (createAudioStreamFromMediaStream, backed by
+      // workers/vad/process.worklet.ts) already used by the other
+      // streaming-transcription provider path below, which is both the
+      // modern replacement and structurally safer here: its processor only
+      // ever posts a message when it actually has a non-null buffer.
       const sampleRate = options?.sampleRate ?? DEFAULT_SAMPLE_RATE
-      const audioContext = new AudioContext({ sampleRate, latencyHint: 'interactive' })
-      const mediaStreamSource = audioContext.createMediaStreamSource(stream)
-      const scriptNode = audioContext.createScriptProcessor(4096, 1, 1)
-
-      mediaStreamSource.connect(scriptNode)
-      scriptNode.connect(audioContext.destination)
-
-      scriptNode.onaudioprocess = (event) => {
-        const inputData = event.inputBuffer.getChannelData(0)
-        const maxAmp = inputData.reduce((a, b) => Math.max(a, Math.abs(b)), 0)
-        console.log('[Hearing Pipeline] ScriptProcessorNode onaudioprocess, samples:', inputData.length, 'maxAmplitude:', maxAmp, 'audioContextState:', audioContext.state)
-        const pcm16 = float32ToInt16(inputData)
+      const session = await createAudioStreamFromMediaStream(stream, sampleRate, undefined, (pcm16) => {
         if (betterAgentWSBridge.isConnected()) {
           betterAgentWSBridge.sendAudioChunk(pcm16)
         }
@@ -905,7 +906,8 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
           console.warn('[Hearing Pipeline] BetterAgentWSBridge not connected, dropping audio chunk')
         }
         bumpIdle()
-      }
+      })
+      const { audioContext, workletNode, mediaStreamSource } = session
 
       console.info('[Hearing Pipeline] AudioContext state before resume:', audioContext.state)
       if (audioContext.state === 'suspended') {
@@ -925,9 +927,9 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
 
       streamingSession.value = {
         audioContext,
-        workletNode: {} as AudioWorkletNode,
+        workletNode,
         mediaStreamSource,
-        audioStreamController: undefined,
+        audioStreamController: session.controller,
         abortController,
         result: {
           mode: 'stream',
