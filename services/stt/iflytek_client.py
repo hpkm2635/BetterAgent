@@ -79,8 +79,7 @@ class IFlytekSession:
             "domain": "slm",
             "language": self._language,
             "accent": self._accent,
-            "dwa": "wpgs",
-            "result": {
+                        "result": {
                 "encoding": "utf8",
                 "compress": "raw",
                 "format": "plain",
@@ -132,6 +131,10 @@ class IFlytekSession:
     async def results(self) -> AsyncGenerator[Dict[str, Any], None]:
         if self._ws is None:
             return
+        # Accumulate words across partial results. iFLYTEK sends the full words
+        # in each partial frame, but the final frame may only contain punctuation,
+        # so we keep the last partial words and append the final punctuation.
+        accumulated_words: list[str] = []
         async for raw in self._ws:
             if isinstance(raw, (bytes, bytearray)):
                 continue
@@ -164,14 +167,23 @@ class IFlytekSession:
                 continue
 
             words = decoded.get("ws", [])
-            transcript = "".join(
+            frame_text = "".join(
                 cw.get("w", "") for item in words for cw in item.get("cw", [])
             )
-            if not transcript:
+            if not frame_text:
                 continue
 
             status = header.get("status")
             is_final = status == 2
+            if is_final:
+                # Append final punctuation/words to the accumulated partial words.
+                accumulated_words.extend(words)
+            else:
+                accumulated_words = words
+
+            transcript = "".join(
+                cw.get("w", "") for item in accumulated_words for cw in item.get("cw", [])
+            )
             logger.info(f"iFLYTEK transcript ({'final' if is_final else 'partial'}): {transcript}")
             yield {"text": transcript, "is_final": is_final}
 

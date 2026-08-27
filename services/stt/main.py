@@ -82,6 +82,7 @@ async def main():
         await nc.publish(subject, json.dumps(envelope).encode())
 
     async def drain_results(chat_id: int, session: Any):
+        last_partial_text = ""
         try:
             result_iter = session.results().__aiter__()
             while True:
@@ -94,9 +95,22 @@ async def main():
                     break
 
                 is_final = result["is_final"]
+                text = result["text"]
+
+                # iFLYTEK\'s final frame sometimes contains only punctuation while
+                # the useful content is in the last partial. Use the last partial if
+                # the final is empty/punctuation-only.
+                if is_final:
+                    stripped = text.strip()
+                    if not stripped or all(ch in "\u3002\uff0c\uff01\uff1f,.!?;:" for ch in stripped):
+                        text = last_partial_text or text
+                else:
+                    if text.strip():
+                        last_partial_text = text
+
                 subject = SUBJECT_STT_STREAM_FINAL if is_final else SUBJECT_STT_STREAM_PARTIAL
-                await publish_transcript(subject, chat_id, result["text"])
-                logger.info(f"{'✅ Final' if is_final else '…Partial'} STT transcript for chat_id={chat_id}: '{result['text']}'")
+                await publish_transcript(subject, chat_id, text)
+                logger.info(f"{'\u2705 Final' if is_final else '\u2026Partial'} STT transcript for chat_id={chat_id}: '{text}'")
 
                 if is_final:
                     break
@@ -108,7 +122,6 @@ async def main():
             await session.close()
             sessions.pop(chat_id, None)
             result_tasks.pop(chat_id, None)
-
     async def close_existing_session(chat_id: int):
         old_task = result_tasks.pop(chat_id, None)
         if old_task and not old_task.done():
