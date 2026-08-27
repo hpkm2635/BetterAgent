@@ -48,6 +48,14 @@ const (
 	// UrgeEngine side effect happens in-process in the HTTP handler, not via
 	// this subscription -- see webgateway/game_event_handler.go.
 	SubjectGameEvent = "agent.game_event"
+
+	// SubjectScheduleFired is published by services/companion's
+	// ScheduleService when a reminder's due time arrives -- WebGateway
+	// subscribes and turns it into a proactive LLM turn via
+	// engine.PublishProactiveTurn (see nats_bridge.go's
+	// handleScheduleFiredMsg), instead of the fixed-template message the
+	// companion service used to publish directly.
+	SubjectScheduleFired = "agent.schedule.fired"
 )
 
 // ActionDecisionSubject and ActionDecisionWildcard replace the old flat

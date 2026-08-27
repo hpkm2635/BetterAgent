@@ -655,6 +655,59 @@ func TestDeferredTextManager_GenIDIsolation(t *testing.T) {
 	}
 }
 
+func scheduleFiredMsg(t *testing.T, payload schema.ScheduleFiredPayload) *nats.Msg {
+	t.Helper()
+	env := struct {
+		Payload schema.ScheduleFiredPayload `json:"payload"`
+	}{Payload: payload}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("failed to marshal test ScheduleFiredPayload: %v", err)
+	}
+	return &nats.Msg{Data: data}
+}
+
+func TestHandleScheduleFiredMsg_ValidPayload_TriggersProactiveTurn(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+	chatID := int64(1001)
+
+	if got := b.csm.GetChatState(chatID); got != engine.StateIdle {
+		t.Fatalf("expected chat to start Idle, got %v", got)
+	}
+
+	b.handleScheduleFiredMsg(scheduleFiredMsg(t, schema.ScheduleFiredPayload{
+		ChatID: chatID,
+		Title:  "赶火车回学校",
+		Note:   "带身份证",
+	}))
+
+	// PublishProactiveTurn's first side effect is transitioning the chat to
+	// Thinking (proactive_trigger.go) -- observable regardless of the test
+	// bus being offline, and the meaningful signal that a companion-service
+	// reminder actually reached the proactive-turn pipeline instead of being
+	// silently dropped.
+	if got := b.csm.GetChatState(chatID); got != engine.StateThinking {
+		t.Fatalf("expected schedule fire to trigger a proactive turn (chat -> Thinking), got %v", got)
+	}
+}
+
+func TestHandleScheduleFiredMsg_ZeroChatID_Ignored(t *testing.T) {
+	b, _ := newTestNatsBridge(t)
+
+	b.handleScheduleFiredMsg(scheduleFiredMsg(t, schema.ScheduleFiredPayload{
+		ChatID: 0,
+		Title:  "赶火车回学校",
+	}))
+
+	// A malformed/zero chat_id must never reach PublishProactiveTurn -- there
+	// is no valid target to transition, and CentralStateMachine has no
+	// meaningful "chat 0". Completing this call without touching any chat
+	// state (and without panicking) is the assertion.
+	if got := b.csm.GetChatState(1001); got != engine.StateIdle {
+		t.Fatalf("unrelated chat_id must not be affected by a zero-chat_id event, got %v", got)
+	}
+}
+
 func TestDeferredTextManager_BargeInClear(t *testing.T) {
 	mgr := newDeferredTextManager()
 	chatID := int64(1004)

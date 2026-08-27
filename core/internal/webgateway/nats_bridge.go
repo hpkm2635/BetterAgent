@@ -310,6 +310,9 @@ func (b *NatsBridge) StartSubscriptions() error {
 	_, _ = b.bus.Subscribe(bus.SubjectTTSStreamEnd, func(msg *nats.Msg) {
 		b.handleTTSStreamEndMsg(msg)
 	})
+	_, _ = b.bus.Subscribe(bus.SubjectScheduleFired, func(msg *nats.Msg) {
+		b.handleScheduleFiredMsg(msg)
+	})
 	_, _ = b.bus.Subscribe(bus.SubjectStreamCancelAck, func(msg *nats.Msg) {
 		b.handleStreamCancelAckMsg(msg)
 	})
@@ -1090,6 +1093,33 @@ func (b *NatsBridge) handleTTSStreamEndMsg(msg *nats.Msg) {
 	}
 
 	b.sendIdleStateChange(p.ChatID, "tts_stream_end")
+}
+
+// handleScheduleFiredMsg turns a due companion-service reminder into a
+// proactive LLM turn (an in-character message about the reminder) instead
+// of services/companion publishing a fixed-template ActionDecision
+// directly -- same PublishProactiveTurn entry point game_event_handler.go
+// already uses for instant death/victory reactions.
+func (b *NatsBridge) handleScheduleFiredMsg(msg *nats.Msg) {
+	var env struct {
+		Payload schema.ScheduleFiredPayload `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		return
+	}
+
+	p := env.Payload
+	if p.ChatID == 0 {
+		return
+	}
+
+	reason := "日程提醒：" + p.Title
+	if p.Note != "" {
+		reason += "（" + p.Note + "）"
+	}
+
+	engine.PublishProactiveTurn(b.bus, b.csm, b.getEmotionalStateForChat(p.ChatID), b.personality, b.circadian, p.ChatID, reason, b.logger)
+	b.logger.Info("⏰ Schedule fired -> proactive turn triggered", zap.Int64("chat_id", p.ChatID), zap.String("title", p.Title))
 }
 
 func (b *NatsBridge) handleStreamCancelAckMsg(msg *nats.Msg) {
