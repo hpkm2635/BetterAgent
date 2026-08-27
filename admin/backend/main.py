@@ -627,7 +627,11 @@ def _redis_user_profiles(r: Any) -> Dict[int, Dict[str, Any]]:
                 # Ignore legacy mock test user IDs (e.g. 988776655443322, 555444333222111)
                 if str(base_user_id).startswith("9887766") or str(base_user_id).startswith("555444") or str(base_user_id).startswith("987654"):
                     continue
-                profiles[base_user_id] = _normalize_profile(base_user_id, raw)
+                profile = _normalize_profile(base_user_id, raw)
+                # Computed from the raw (pre-fold) key id, same convention as
+                # list_session_overview's channel field.
+                profile["channel"] = "web" if user_id >= _WEB_NAMESPACE_OFFSET else "telegram"
+                profiles[base_user_id] = profile
 
     except Exception as exc:
         logger.warning(f"Failed to scan Redis user profiles: {exc}")
@@ -718,6 +722,7 @@ def _redis_short_term_users(r: Any) -> Dict[int, Dict[str, Any]]:
                     "known_facts": [],
                     "last_seen": None,
                     "deleted": False,
+                    "channel": "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram",
                 }
     except Exception as exc:
         logger.warning(f"Failed to scan short-term keys for users: {exc}")
@@ -745,6 +750,10 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "known_facts": c["known_facts"],
             "last_seen": c["last_seen"],
             "deleted": False,
+            # companion.db/admin SQLite store already-folded ids with no trace
+            # of which channel they came from -- only Redis sources (raw key
+            # available pre-fold) can actually tell Telegram from Web.
+            "channel": None,
         }
     for uid, u in sqlite_users.items():
         prev = merged.get(uid)
@@ -754,6 +763,7 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "known_facts": u["known_facts"] or (prev["known_facts"] if prev else []),
             "last_seen": u["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": u["deleted"],
+            "channel": prev["channel"] if prev else None,
         }
     for uid, p in redis_profiles.items():
         prev = merged.get(uid)
@@ -763,11 +773,14 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "known_facts": p["known_facts"] or (prev["known_facts"] if prev else []),
             "last_seen": p["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": prev["deleted"] if prev else False,
+            "channel": p.get("channel") or (prev["channel"] if prev else None),
         }
     if r:
         for uid, rec in _redis_short_term_users(r).items():
             if uid not in merged:
                 merged[uid] = rec
+            elif not merged[uid].get("channel"):
+                merged[uid]["channel"] = rec.get("channel")
     return merged
 
 
@@ -777,6 +790,7 @@ def _user_payload(rec: Dict[str, Any]) -> Dict[str, Any]:
         "display_name": rec["display_name"],
         "known_facts": rec["known_facts"],
         "last_seen": rec["last_seen"],
+        "channel": rec.get("channel") or "unknown",
     }
 
 
