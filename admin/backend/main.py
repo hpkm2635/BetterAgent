@@ -809,6 +809,33 @@ def _format_session_message(msg: Dict[str, Any], index: int) -> Dict[str, Any]:
     }
 
 
+def _merge_consecutive_same_role(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge consecutive messages of the same role into a single record.
+
+    The cognitive engine streams one ActionDecision per sentence and the memory
+    service appends each to the short-term buffer, so a single assistant reply
+    shows up as many records in the admin session view. Consecutive same-role
+    entries are therefore joined into one "turn". Exact consecutive duplicates
+    (the same final sentence can be published twice) are collapsed so merged
+    replies like "喵~喵~" don't appear.
+    """
+    merged: List[Dict[str, Any]] = []
+    last_raw: Optional[str] = None  # last appended segment, for duplicate detection
+    for item in items:
+        role = item.get("role")
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        if merged and merged[-1].get("role") == role:
+            if content == last_raw:
+                continue  # exact consecutive duplicate → collapse
+            merged[-1]["content"] = str(merged[-1].get("content", "")) + content
+        else:
+            merged.append(dict(item))
+        last_raw = content
+    return merged
+
+
 @app.get("/api/admin/sessions")
 def list_sessions(
     chat_id: int = Query(0),
@@ -880,6 +907,9 @@ def list_sessions(
                 break  # 命中第一个有数据的 key 即返回，避免重复叠加
         if items:
             break
+
+    # 同一回复被拆成多条句子（认知引擎按句流式发出、每条单独落库），合并展示。
+    items = _merge_consecutive_same_role(items)
 
     total = len(items)
     return {
@@ -960,27 +990,33 @@ def _chat_id_from_session_key(key: str) -> Optional[int]:
 
 
 def _read_short_term_list(user_id: int, r: Any) -> List[Dict[str, Any]]:
-    """Read one user's short-term messages, trying both key spellings."""
+    """Read one user's short-term messages, trying both key spellings.
+
+    user_id 既可能是 Telegram id（原样存储）也可能是 Web 基础编号（套偏移存储），
+    两种 key 都试；返回前合并同一回复的连续句子（与 list_sessions 保持一致）。
+    """
     items: List[Dict[str, Any]] = []
-    storage_user_id = _to_web_chat_id(user_id)
-    for key in (f"betteragent:short_term:{storage_user_id}", f"short_term:{storage_user_id}"):
-        try:
-            raw = r.lrange(key, 0, -1)
-        except Exception as exc:
-            logger.warning(f"Failed to read short-term key {key}: {exc}")
-            continue
-        for index, entry in enumerate(raw):
-            msg: Any = entry
-            if isinstance(entry, str):
-                try:
-                    msg = json.loads(entry)
-                except (TypeError, ValueError):
-                    msg = {"content": entry}
-            if isinstance(msg, dict):
-                items.append(_format_session_message(msg, index))
+    for storage_user_id in _storage_chat_id_candidates(user_id):
+        for key in (f"betteragent:short_term:{storage_user_id}", f"short_term:{storage_user_id}"):
+            try:
+                raw = r.lrange(key, 0, -1)
+            except Exception as exc:
+                logger.warning(f"Failed to read short-term key {key}: {exc}")
+                continue
+            for index, entry in enumerate(raw):
+                msg: Any = entry
+                if isinstance(entry, str):
+                    try:
+                        msg = json.loads(entry)
+                    except (TypeError, ValueError):
+                        msg = {"content": entry}
+                if isinstance(msg, dict):
+                    items.append(_format_session_message(msg, index))
+            if items:
+                break
         if items:
             break
-    return items
+    return _merge_consecutive_same_role(items)
 
 
 # ---------------------------------------------------------------------------

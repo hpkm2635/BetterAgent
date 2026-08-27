@@ -97,7 +97,6 @@ const usersTotal = ref(0)
 const deleteTarget = ref(null) // 待软删除的用户对象
 const userMsg = ref('')
 
-const chatId = ref(0)
 const userId = ref(0)
 const sessions = ref([])
 const sessionsTotal = ref(0)
@@ -310,21 +309,15 @@ async function confirmDelete() {
 }
 
 // ---- Sessions -------------------------------------------------------------
-// 会话记录支持按 user_id 或 chat_id 查询：管理面板里的 user_id 即 Web 会话的
-// 基础编号（未加命名空间偏移），与 chat_id 共享同一命名空间，因此任一字段
-// 都能命中用户在浏览器（frontend/stage-web）里的真实对话。
+// 会话记录按 user_id 查询：管理面板里的 user_id 即 Web 会话的基础编号
+//（未加命名空间偏移），后端同时兼容 Telegram 原样 id 与 Web 偏移 id。
 async function loadSessions() {
   error.value = ''
   try {
-    const params = new URLSearchParams({ limit: '50', offset: '0' })
-    if (userId.value) params.set('user_id', userId.value)
-    else params.set('chat_id', chatId.value || 0)
+    const params = new URLSearchParams({ limit: '50', offset: '0', user_id: userId.value || 0 })
     const data = await api(`/api/admin/sessions?${params}`)
     sessions.value = data.sessions || []
     sessionsTotal.value = data.total ?? 0
-    if (data.chat_id) {
-      chatId.value = data.chat_id
-    }
     if (data.user_id) {
       userId.value = data.user_id
     }
@@ -343,8 +336,7 @@ async function loadSessionOverview() {
 }
 
 function pickActiveChat(c) {
-  chatId.value = c.chat_id
-  userId.value = 0
+  userId.value = c.chat_id
   loadSessions()
 }
 
@@ -723,7 +715,6 @@ onMounted(async () => {
             <h2>会话记录 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
             <div class="row">
               <input v-model.number="userId" type="number" class="input input-short" placeholder="user_id（如 5982498）" @keyup.enter="loadSessions" />
-              <input v-model.number="chatId" type="number" class="input input-short" placeholder="chat_id" @keyup.enter="loadSessions" />
               <button class="btn btn-primary" @click="loadSessions">查询</button>
             </div>
           </div>
@@ -750,11 +741,11 @@ onMounted(async () => {
               v-for="c in activeChats"
               :key="c.chat_id"
               class="list-item"
-              :class="{ selected: c.chat_id === chatId }"
+              :class="{ selected: c.chat_id === userId }"
               @click="pickActiveChat(c)"
             >
               <div class="row">
-                <strong>user_id / chat_id: {{ c.chat_id }}</strong>
+                <strong>user_id: {{ c.chat_id }}</strong>
                 <span class="tag">{{ c.message_count }} 条</span>
               </div>
               <div class="muted small">{{ c.preview }}</div>
