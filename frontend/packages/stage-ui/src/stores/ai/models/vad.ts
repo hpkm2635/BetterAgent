@@ -34,7 +34,15 @@ export function resolveVADConfig(
 
   return {
     speechThreshold: resolvedThreshold,
-    exitThreshold: resolvedThreshold * 0.3,
+    // Provisional: was resolvedThreshold * 0.3 (0.18 at the default 0.6
+    // threshold). In a noisy room, background speech keeps the probability
+    // above that bar more or less continuously, so it never satisfies
+    // minSilenceDurationMs's requirement of *continuous* silence -- VAD's
+    // speech-end never fires, sessions get stuck until a watchdog kills
+    // them. Loosened to make "silence" easier to satisfy; needs a real
+    // noisy-room retest to confirm it actually helps without making the
+    // opposite failure (cutting speech-end too early) noticeably worse.
+    exitThreshold: resolvedThreshold * 0.5,
     minSilenceDurationMs: minSilenceDurationMs ?? DEFAULT_VAD_MIN_SILENCE_DURATION_MS,
     speechPadMs: speechPadMs ?? DEFAULT_VAD_SPEECH_PAD_MS,
     minSpeechDurationMs: minSpeechDurationMs ?? DEFAULT_VAD_MIN_SPEECH_DURATION_MS,
