@@ -98,6 +98,35 @@ class UserProfileManager:
             except Exception as e:
                 self._handle_redis_error(e)
 
+    async def ensure_user_registered(
+        self, user_id: int, display_name: str = "", last_seen: Optional[str] = None
+    ) -> bool:
+        """为一个刚发来消息的 chat_id/user_id 落一条最小画像，保证后台用户
+        列表能枚举到它——即使还没提取出任何记忆事实。
+
+        返回 True 表示这是全新用户（画像 key 此前不存在）。display_name 为空
+        时只写 last_seen（管理端会用 `用户{id}` 兜底展示）；last_seen 始终刷新。
+        """
+        user_id_int = int(user_id)
+        key = self._get_key(user_id_int)
+        if self.redis_client and not self._redis_disabled:
+            try:
+                if await self.redis_client.exists(key):
+                    if last_seen:
+                        await self.redis_client.hset(key, "last_seen", last_seen)
+                    return False
+                mapping: Dict[str, Any] = {"last_seen": last_seen or ""}
+                if display_name:
+                    mapping["display_name"] = display_name
+                    mapping["preferred_name"] = display_name
+                await self.redis_client.hset(key, mapping=mapping)
+                logger.info(f"Registered new user profile for user_id={user_id_int}")
+                return True
+            except Exception as e:
+                self._handle_redis_error(e)
+        # Redis 不可用时退化为纯内存缓存（无持久化，无画像可读）
+        return False
+
     async def get_formatted_profile_prompt(self, user_id: int) -> str:
         profile = await self.get_profile(user_id)
         pref_name = profile.get("preferred_name", "主人")

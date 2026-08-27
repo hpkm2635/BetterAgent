@@ -34,6 +34,14 @@ const activeChatId = computed(() => {
   return WEB_NAMESPACE_OFFSET + betterAgentWSBridge.getChatId()
 })
 
+// 管理端以 user_id（未加命名空间偏移的基础编号）来标识某个用户/会话。
+// 这里用与 chat_id 同源的基础编号落库，后台"按 user_id 查询日程"才能命中。
+const activeUserId = computed(() => {
+  if (typeof window === 'undefined')
+    return 0
+  return betterAgentWSBridge.getChatId() ?? 0
+})
+
 async function loadSchedules() {
   if (!activeChatId.value)
     return
@@ -66,7 +74,7 @@ async function handleAdd() {
 
     const success = await addSchedule({
       chat_id: activeChatId.value,
-      user_id: 1,
+      user_id: activeUserId.value,
       title: newTitle.value.trim(),
       remind_at: formattedTime,
       note: newNote.value.trim(),

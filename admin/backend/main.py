@@ -110,6 +110,21 @@ def _from_web_chat_id(chat_id: int) -> int:
         return chat_id - _WEB_NAMESPACE_OFFSET
     return chat_id
 
+
+def _storage_chat_id_candidates(base_id: int) -> List[int]:
+    """Return every storage chat_id a base user_id/chat_id could map to.
+
+    A small positive id is ambiguous: it may be a Telegram user id (stored
+    as-is, e.g. betteragent:short_term:777111) or a web session's base id
+    (stored with WebNamespaceOffset, e.g. betteragent:short_term:9e15+5982498).
+    The admin cannot tell the two apart by size alone, so it must try both
+    interpretations when reading sessions/schedules.
+    """
+    candidates = [int(base_id)]
+    if 0 < base_id < _WEB_NAMESPACE_OFFSET:
+        candidates.append(base_id + _WEB_NAMESPACE_OFFSET)
+    return candidates
+
 _VALID_PERSONA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # ruamel loaders: 'safe' for read-only (plain dicts), round-trip for PATCH so
@@ -640,8 +655,53 @@ def _load_companion_user_facts() -> Dict[int, Dict[str, Any]]:
     return facts_map
 
 
+def _redis_short_term_users(r: Any) -> Dict[int, Dict[str, Any]]:
+    """Discover users from Redis short-term chat-history keys.
+
+    The runtime writes conversation history to betteragent:short_term:{chat_id}
+    for every chat, but (before the memory-service user-registration fix) it
+    never guaranteed a profile/fact for a brand-new Telegram or web user, so
+    those users silently never appeared in the admin user list. Any chat that
+    has history is a real user; web-namespaced ids are folded back to the base
+    id exactly like the profile scanner (_redis_user_profiles) does.
+    """
+    users: Dict[int, Dict[str, Any]] = {}
+    try:
+        for prefix in SHORT_TERM_KEY_PREFIXES:
+            for key in r.scan_iter(f"{prefix}*"):
+                chat_id = _chat_id_from_session_key(key)
+                if chat_id is None or chat_id <= 0:
+                    continue
+                base_user_id = _from_web_chat_id(chat_id)
+                # Ignore legacy mock test user IDs (mirrors _redis_user_profiles).
+                if (
+                    str(base_user_id).startswith("9887766")
+                    or str(base_user_id).startswith("555444")
+                    or str(base_user_id).startswith("987654")
+                ):
+                    continue
+                if base_user_id in users:
+                    continue
+                users[base_user_id] = {
+                    "user_id": base_user_id,
+                    "display_name": f"用户{base_user_id}",
+                    "known_facts": [],
+                    "last_seen": None,
+                    "deleted": False,
+                }
+    except Exception as exc:
+        logger.warning(f"Failed to scan short-term keys for users: {exc}")
+    return users
+
+
 def _all_records() -> Dict[int, Dict[str, Any]]:
-    """Merge companion SQLite facts, Redis profiles, and Admin soft-delete flags."""
+    """Merge companion SQLite facts, Redis profiles, and Admin soft-delete flags.
+
+    Sources are merged in priority order (later sources win the fields they
+    provide): companion facts → admin SQLite soft-delete flags → Redis
+    profiles → short-term-history discovery (gap-fill only, so a user with a
+    real profile keeps its display_name rather than the default label).
+    """
     r = _get_redis()
     redis_profiles = _redis_user_profiles(r) if r else {}
     sqlite_users = _load_sqlite_users()
@@ -674,6 +734,10 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "last_seen": p["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": prev["deleted"] if prev else False,
         }
+    if r:
+        for uid, rec in _redis_short_term_users(r).items():
+            if uid not in merged:
+                merged[uid] = rec
     return merged
 
 
@@ -748,15 +812,26 @@ def _format_session_message(msg: Dict[str, Any], index: int) -> Dict[str, Any]:
 @app.get("/api/admin/sessions")
 def list_sessions(
     chat_id: int = Query(0),
+    user_id: int = Query(0),
     limit: int = Query(50),
     offset: int = Query(0),
 ):
+    """列出某会话/用户的对话记录。
+
+    `chat_id` 与 `user_id` 均可查询：管理面板里的 user_id 即 Web 会话的
+    基础编号（未加 WebNamespaceOffset），与 chat_id 共享同一套命名空间
+    （Telegram 用户的 user_id == chat_id）。二者都指定时 user_id 优先，
+    未指定时沿用旧逻辑挑选 Redis 中最近活跃的会话。
+    """
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
+    if user_id and not chat_id:
+        chat_id = user_id
+
     r = _get_redis()
     if r is None:
-        return {"sessions": [], "total": 0, "chat_id": chat_id, "active_chats": []}
+        return {"sessions": [], "total": 0, "chat_id": chat_id, "user_id": user_id, "active_chats": []}
 
     # Discover all active chat_ids in Redis
     active_chats: list = []
@@ -781,29 +856,39 @@ def list_sessions(
         chat_id = real_chats[0] if real_chats else (active_chats[0] if active_chats else 1001)
 
 
-    storage_chat_id = _to_web_chat_id(chat_id)
+    # user_id/chat_id 既可能是 Telegram 用户 id（原样存储），也可能是 Web
+    # 会话的基础编号（套 WebNamespaceOffset 存储）——两者都试，命中即返回。
     items: list = []
-    for template in SESSION_KEY_TEMPLATES:
-        key = template.format(chat_id=storage_chat_id)
-        try:
-            raw = r.lrange(key, 0, -1)
-        except Exception as exc:
-            logger.warning(f"Failed to read session key {key}: {exc}")
-            continue
-        for i, entry in enumerate(raw):
-            msg: Any = entry
-            if isinstance(entry, str):
-                try:
-                    msg = json.loads(entry)
-                except (TypeError, ValueError):
-                    msg = {"content": entry}
-            if isinstance(msg, dict):
-                items.append(_format_session_message(msg, i))
+    for storage_chat_id in _storage_chat_id_candidates(chat_id):
+        for template in SESSION_KEY_TEMPLATES:
+            key = template.format(chat_id=storage_chat_id)
+            try:
+                raw = r.lrange(key, 0, -1)
+            except Exception as exc:
+                logger.warning(f"Failed to read session key {key}: {exc}")
+                continue
+            for i, entry in enumerate(raw):
+                msg: Any = entry
+                if isinstance(entry, str):
+                    try:
+                        msg = json.loads(entry)
+                    except (TypeError, ValueError):
+                        msg = {"content": entry}
+                if isinstance(msg, dict):
+                    items.append(_format_session_message(msg, i))
+            if items:
+                break  # 命中第一个有数据的 key 即返回，避免重复叠加
         if items:
-            break  # 命中第一个有数据的 key 即返回，避免重复叠加
+            break
 
     total = len(items)
-    return {"sessions": items[offset:offset + limit], "total": total, "chat_id": chat_id, "active_chats": active_chats}
+    return {
+        "sessions": items[offset:offset + limit],
+        "total": total,
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "active_chats": active_chats,
+    }
 
 
 @app.get("/api/admin/sessions/overview")
@@ -1106,22 +1191,48 @@ def health():
 # ---------------------------------------------------------------------------
 # 2.6 日程提醒 (Schedule) management -- 代理至 companion 服务，不重复实现逻辑
 # ---------------------------------------------------------------------------
-@app.get("/api/admin/schedules")
-async def list_schedules(chat_id: int = Query(0)):
-    """列出某 chat_id 下的所有日程（透传 companion /api/schedule/list）。
+async def _companion_schedule_json(query: str) -> List[Dict[str, Any]]:
+    """Fetch schedules from companion and return the parsed list (empty on failure)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+            resp = await client.get(f"{COMPANION_URL}/api/schedule/list{query}")
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return data.get("schedules", []) if isinstance(data, dict) else []
+    except Exception as exc:
+        logger.warning(f"Failed to fetch schedules from companion ({exc})")
+        return []
 
-    与 sessions/用户画像等端点同样的约定：管理界面里的 chat_id 是"友好的"
-    原始编号，落到 companion 存储前要套上 WebNamespaceOffset（见
-    _to_web_chat_id）。此前这里漏做了这一步，导致管理面板新建/查询的日程
-    跟真实 Web 会话用的 chat_id 对不上——不只是面板看不到浏览器里创建的日程，
-    companion 的 ScheduleService._fire 到点触发提醒时还会拿"< WebNamespaceOffset"
-    误判成 Telegram 频道，把提醒推错地方（见 services/companion/schedule_service.py）。
+
+@app.get("/api/admin/schedules")
+async def list_schedules(chat_id: int = Query(0), user_id: int = Query(0)):
+    """列出某 chat_id / user_id 下的日程，未指定时列出全部（透传 companion）。
+
+    与 sessions 同样的约定：管理界面里的 chat_id/user_id 是"友好的"原始编号。
+    Telegram 用户的 user_id == chat_id（原样落库），Web 用户的 chat_id 则以
+    WebNamespaceOffset + 基础编号 落库、user_id 列存基础编号（前端已修复）。
+    因此按 user_id 查询时：既按 user_id 列直查，也把 chat_id 的两种解释
+    （原样 / 套偏移）都试一遍，按 schedule_id 去重合并。
     """
-    if not chat_id:
-        chat_id = 1001
-    return await _forward(
-        COMPANION_URL, "companion", "GET", f"/api/schedule/list?chat_id={_to_web_chat_id(chat_id)}"
-    )
+    if not chat_id and not user_id:
+        # 未指定 chat_id/user_id → 列出全部（companion 端 /api/schedule/list 无参即全量）
+        return await _forward(COMPANION_URL, "companion", "GET", "/api/schedule/list")
+
+    base = user_id or chat_id
+    queries: List[str] = []
+    if user_id:
+        queries.append(f"?user_id={int(user_id)}")
+    for storage_chat_id in _storage_chat_id_candidates(base):
+        queries.append(f"?chat_id={storage_chat_id}")
+
+    seen: Dict[str, Dict[str, Any]] = {}
+    for query in queries:
+        for item in await _companion_schedule_json(query):
+            sid = item.get("schedule_id")
+            if sid and sid not in seen:
+                seen[sid] = item
+    return {"schedules": list(seen.values())}
 
 
 @app.post("/api/admin/schedules")

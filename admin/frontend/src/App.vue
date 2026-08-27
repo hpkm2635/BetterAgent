@@ -98,10 +98,13 @@ const deleteTarget = ref(null) // 待软删除的用户对象
 const userMsg = ref('')
 
 const chatId = ref(0)
+const userId = ref(0)
 const sessions = ref([])
 const sessionsTotal = ref(0)
+const activeChats = ref([])
 
 const schedChatId = ref(1001)
+const schedUserId = ref(0)
 const schedules = ref([])
 const schedulesTotal = ref(0)
 const schedMsg = ref('')
@@ -307,31 +310,67 @@ async function confirmDelete() {
 }
 
 // ---- Sessions -------------------------------------------------------------
+// 会话记录支持按 user_id 或 chat_id 查询：管理面板里的 user_id 即 Web 会话的
+// 基础编号（未加命名空间偏移），与 chat_id 共享同一命名空间，因此任一字段
+// 都能命中用户在浏览器（frontend/stage-web）里的真实对话。
 async function loadSessions() {
   error.value = ''
   try {
-    const data = await api(`/api/admin/sessions?chat_id=${encodeURIComponent(chatId.value)}&limit=50&offset=0`)
+    const params = new URLSearchParams({ limit: '50', offset: '0' })
+    if (userId.value) params.set('user_id', userId.value)
+    else params.set('chat_id', chatId.value || 0)
+    const data = await api(`/api/admin/sessions?${params}`)
     sessions.value = data.sessions || []
     sessionsTotal.value = data.total ?? 0
     if (data.chat_id) {
       chatId.value = data.chat_id
+    }
+    if (data.user_id) {
+      userId.value = data.user_id
     }
   } catch (e) {
     error.value = e.message
   }
 }
 
+async function loadSessionOverview() {
+  try {
+    const data = await api('/api/admin/sessions/overview')
+    activeChats.value = data.sessions || []
+  } catch (e) {
+    activeChats.value = []
+  }
+}
+
+function pickActiveChat(c) {
+  chatId.value = c.chat_id
+  userId.value = 0
+  loadSessions()
+}
+
 // ---- Schedules ------------------------------------------------------------
+// 日程支持按 user_id / chat_id 查询，均换算成命名空间 chat_id 后透传到
+// companion；两者都不填时列出全部（同步用户前端添加的日程）。
 async function loadSchedules() {
   schedMsg.value = ''
   try {
-    const data = await api(`/api/admin/schedules?chat_id=${encodeURIComponent(schedChatId.value)}`)
+    const params = new URLSearchParams()
+    if (schedUserId.value) params.set('user_id', schedUserId.value)
+    else if (schedChatId.value) params.set('chat_id', schedChatId.value)
+    const qs = params.toString()
+    const data = await api(`/api/admin/schedules${qs ? `?${qs}` : ''}`)
     schedules.value = data.schedules || []
     schedulesTotal.value = schedules.value.length
     schedMsg.value = `共 ${schedules.value.length} 条日程`
   } catch (e) {
     schedMsg.value = `加载失败: ${e.message}`
   }
+}
+
+function loadAllSchedules() {
+  schedChatId.value = 0
+  schedUserId.value = 0
+  loadSchedules()
 }
 
 async function addSchedule() {
@@ -514,7 +553,7 @@ function switchTab(key) {
   error.value = ''
   if (key === 'personas') loadPersonas()
   if (key === 'users') loadUsers()
-  if (key === 'sessions') loadSessions()
+  if (key === 'sessions') { loadSessions(); loadSessionOverview() }
   if (key === 'schedules') loadSchedules()
   if (key === 'config') loadConfig()
 }
@@ -678,24 +717,50 @@ onMounted(async () => {
       </section>
 
       <!-- 会话记录 -->
-      <section v-else-if="activeTab === 'sessions'" class="card">
-        <div class="card-head">
-          <h2>会话记录 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
-          <div class="row">
-            <input v-model.number="chatId" type="number" class="input input-short" placeholder="chat_id" />
-            <button class="btn btn-primary" @click="loadSessions">查询</button>
-          </div>
-        </div>
-        <ul class="list">
-          <li v-if="!sessions.length" class="muted">暂无会话记录</li>
-          <li v-for="s in sessions" :key="s.message_id" class="list-item">
+      <section v-else-if="activeTab === 'sessions'" class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h2>会话记录 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
             <div class="row">
-              <span class="role" :class="s.role">{{ s.role }}</span>
-              <span class="muted small">#{{ s.message_id }} · {{ s.timestamp }}</span>
+              <input v-model.number="userId" type="number" class="input input-short" placeholder="user_id（如 5982498）" @keyup.enter="loadSessions" />
+              <input v-model.number="chatId" type="number" class="input input-short" placeholder="chat_id" @keyup.enter="loadSessions" />
+              <button class="btn btn-primary" @click="loadSessions">查询</button>
             </div>
-            <div class="bubble">{{ s.content }}</div>
-          </li>
-        </ul>
+          </div>
+          <ul class="list">
+            <li v-if="!sessions.length" class="muted">暂无会话记录</li>
+            <li v-for="s in sessions" :key="s.message_id" class="list-item">
+              <div class="row">
+                <span class="role" :class="s.role">{{ s.role }}</span>
+                <span class="muted small">#{{ s.message_id }} · {{ s.timestamp }}</span>
+              </div>
+              <div class="bubble">{{ s.content }}</div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>活跃会话 <span class="muted small">({{ activeChats.length }})</span></h2>
+            <button class="btn" @click="loadSessionOverview">刷新</button>
+          </div>
+          <ul class="list">
+            <li v-if="!activeChats.length" class="muted">暂无活跃会话</li>
+            <li
+              v-for="c in activeChats"
+              :key="c.chat_id"
+              class="list-item"
+              :class="{ selected: c.chat_id === chatId }"
+              @click="pickActiveChat(c)"
+            >
+              <div class="row">
+                <strong>user_id / chat_id: {{ c.chat_id }}</strong>
+                <span class="tag">{{ c.message_count }} 条</span>
+              </div>
+              <div class="muted small">{{ c.preview }}</div>
+            </li>
+          </ul>
+        </div>
       </section>
 
       <!-- 日程提醒 -->
@@ -705,6 +770,13 @@ onMounted(async () => {
             <h2>日程列表 <span class="muted small">(共 {{ schedulesTotal }} 条)</span></h2>
             <div class="row">
               <input
+                v-model.number="schedUserId"
+                type="number"
+                class="input input-short"
+                placeholder="user_id"
+                @keyup.enter="loadSchedules"
+              />
+              <input
                 v-model.number="schedChatId"
                 type="number"
                 class="input input-short"
@@ -712,6 +784,7 @@ onMounted(async () => {
                 @keyup.enter="loadSchedules"
               />
               <button class="btn btn-primary" @click="loadSchedules">查询</button>
+              <button class="btn" @click="loadAllSchedules">同步全部</button>
             </div>
           </div>
           <p v-if="schedMsg" class="muted small">{{ schedMsg }}</p>
@@ -722,7 +795,9 @@ onMounted(async () => {
                 <strong>{{ s.title }}</strong>
                 <span class="tag">{{ s.status }}</span>
               </div>
-              <div class="muted small">{{ s.remind_at }}</div>
+              <div class="muted small">
+                {{ s.remind_at }} · user_id: {{ s.user_id ?? '—' }} · chat_id: {{ s.chat_id ?? '—' }}
+              </div>
               <div v-if="s.note" class="bubble">{{ s.note }}</div>
               <div class="row" style="margin-top: 8px;">
                 <button class="btn btn-danger" @click="deleteSchedule(s)">删除</button>

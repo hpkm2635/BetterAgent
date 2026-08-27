@@ -155,8 +155,15 @@ def add_schedule(payload: ScheduleAddPayload):
 
 
 @app.get("/api/schedule/list")
-def list_schedules(chat_id: int = Query(...)):
-    schedules = schedule_service.list(chat_id)
+def list_schedules(chat_id: Optional[int] = Query(None), user_id: Optional[int] = Query(None)):
+    """查询日程：可按 chat_id 或 user_id 过滤，都不给时返回全部未到期日程。
+
+    用户前端通过 /api/schedule/add 落库时 chat_id 是带 WebNamespaceOffset 的
+    命名空间 id（管理端已换算好再转发），因此管理端按 user_id 查询时：
+      * 直接传 user_id 会命中 schedules.user_id 列（前端修复后写入基础编号）；
+      * 传 chat_id（管理端换算后的命名空间 id）也能命中同一批日程。
+    """
+    schedules = schedule_service.list(chat_id=chat_id, user_id=user_id)
     return {"schedules": schedules}
 
 
