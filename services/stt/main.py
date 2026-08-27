@@ -94,9 +94,12 @@ async def main():
                     break
 
                 is_final = result["is_final"]
+                text = result["text"]
+
+
                 subject = SUBJECT_STT_STREAM_FINAL if is_final else SUBJECT_STT_STREAM_PARTIAL
-                await publish_transcript(subject, chat_id, result["text"])
-                logger.info(f"{'✅ Final' if is_final else '…Partial'} STT transcript for chat_id={chat_id}: '{result['text']}'")
+                await publish_transcript(subject, chat_id, text)
+                logger.info(f"{'\u2705 Final' if is_final else '\u2026Partial'} STT transcript for chat_id={chat_id}: '{text}'")
 
                 if is_final:
                     break
@@ -108,7 +111,6 @@ async def main():
             await session.close()
             sessions.pop(chat_id, None)
             result_tasks.pop(chat_id, None)
-
     async def close_existing_session(chat_id: int):
         old_task = result_tasks.pop(chat_id, None)
         if old_task and not old_task.done():

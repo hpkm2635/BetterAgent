@@ -171,6 +171,23 @@ watch([enabled], () => {
   setupAnalyzer()
 }, { immediate: true })
 
+
+watch(isListening, (listening) => {
+  const sessionId = chatSession.activeSessionId
+  if (!sessionId)
+    return
+
+  if (!listening)
+    return
+
+  // Each voice recording leaves a persistent voice-tag in the chat history.
+  chatSession.appendSessionMessage(sessionId, {
+    role: 'user',
+    content: '',
+    voice: { transcript: '语音输入' },
+  })
+})
+
 onUnmounted(() => {
   teardownAnalyzer()
 })

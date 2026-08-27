@@ -102,12 +102,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   }
 
   function isChatMatch(msgChatId?: number | null): boolean {
-    if (!msgChatId)
+    if (msgChatId == null)
       return true
     const active = getResolvedChatId()
     if (!active)
       return true
-    return active === msgChatId
+    return Number(active) === Number(msgChatId)
   }
 
   let unsubs: Array<() => void> = []
@@ -121,6 +121,9 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     if (initialized)
       return
     initialized = true
+
+    // Make sure we know which chat we are in so STT transcript events can be matched.
+    getResolvedChatId()
 
     // Clean up previous listeners if re-initializing
     unsubs.forEach(unsub => unsub())

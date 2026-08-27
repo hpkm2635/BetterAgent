@@ -1,21 +1,18 @@
-"""
-Thin async client for iFLYTEK streaming speech-to-text (WebAPI).
+"""Async iFLYTEK streaming STT client (WebAPI v1 / iat.xf-yun.com).
 
-Protocol reference: https://doc.xfyun.cn/rest_api/语音听写（流式版）.html
-Mirrors the official demo's frame format but adapts it to the same
-async session interface used by FunASRSession so services/stt/main.py
-can switch providers without changing its NATS bridge logic.
+Mirrors the official iFLYTEK Python demo frame format:
+  header / parameter / payload
+and adapts it to the same async session interface used by FunASRSession.
 """
 import base64
 import hashlib
 import hmac
 import json
 import logging
-import time
 from datetime import datetime
 from time import mktime
-from typing import Any, AsyncGenerator, Dict, Optional
-from urllib.parse import urlencode, urlparse
+from typing import Any, AsyncGenerator, Dict
+from urllib.parse import urlencode
 from wsgiref.handlers import format_date_time
 
 import websockets
@@ -28,17 +25,14 @@ STATUS_LAST_FRAME = 2
 
 
 class IFlytekSession:
-    """
-    One streaming ASR session over one iFLYTEK WebSocket connection, scoped to
-    a single utterance (VAD speech_start -> speech_end).
-    """
+    """One streaming ASR session over iFLYTEK WebAPI v1, scoped to one utterance."""
 
     def __init__(
         self,
         app_id: str,
         api_key: str,
         api_secret: str,
-        endpoint: str = "wss://iat-api.xfyun.cn/v2/iat",
+        endpoint: str = "wss://iat.xf-yun.com/v1",
         sample_rate: int = 16000,
         language: str = "zh_cn",
         accent: str = "mandarin",
@@ -56,12 +50,9 @@ class IFlytekSession:
         self._status = STATUS_FIRST_FRAME
 
     def _create_url(self) -> str:
-        """Build the authenticated WebSocket URL (HMAC-SHA256)."""
-        host = "iat-api.xfyun.cn"
-        path = "/v2/iat"
-        # iFLYTEK docs require GET /v2/iat with RFC1123 date. Use local time
-        # to match the official demo; the server validates the signature against
-        # the provided date, not a fixed timezone.
+        """Build the authenticated WebSocket URL (HMAC-SHA256) for v1."""
+        host = "iat.xf-yun.com"
+        path = "/v1"
         date = format_date_time(mktime(datetime.now().timetuple()))
         signature_origin = f"host: {host}\ndate: {date}\nGET {path} HTTP/1.1"
         signature_sha = hmac.new(
@@ -83,41 +74,41 @@ class IFlytekSession:
         return f"{self._endpoint}?{urlencode(params)}"
 
     def _build_frame(self, audio_b64: str, status: int) -> Dict[str, Any]:
-        # iFLYTEK WebAPI v2 expects a different frame shape than the v1 protocol:
-        # {common, business, data} instead of {header, parameter, payload}.
-        # Reference: official iFLYTEK streaming ASR WebAPI v2 docs.
-        if status == STATUS_FIRST_FRAME:
-            return {
-                "common": {
-                    "app_id": self._app_id,
-                },
-                "business": {
-                    "language": self._language,
-                    "accent": self._accent,
-                    "domain": "slm",
-                    "dwa": "wpgs",
-                },
-                "data": {
-                    "status": status,
-                    "format": f"audio/L16;rate={self._sample_rate}",
+        """Build a v1 request frame (header + parameter + payload)."""
+        iat_params = {
+            "domain": "slm",
+            "language": self._language,
+            "accent": self._accent,
+                        "result": {
+                "encoding": "utf8",
+                "compress": "raw",
+                "format": "plain",
+            },
+        }
+        return {
+            "header": {
+                "app_id": self._app_id,
+                "status": status,
+            },
+            "parameter": {
+                "iat": iat_params,
+            },
+            "payload": {
+                "audio": {
                     "encoding": "raw",
+                    "status": status,
                     "audio": audio_b64,
                 },
-            }
-        return {
-            "data": {
-                "status": status,
-                "format": f"audio/L16;rate={self._sample_rate}",
-                "encoding": "raw",
-                "audio": audio_b64,
             },
         }
 
     async def start(self) -> None:
         url = self._create_url()
+        logger.info(f"iFLYTEK v1 connecting to {url[:120]}...")
         self._ws = await websockets.connect(url, max_size=None)
         self._started = True
         self._status = STATUS_FIRST_FRAME
+        logger.info("iFLYTEK v1 connected")
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
         if self._ws is None:
@@ -126,7 +117,6 @@ class IFlytekSession:
         frame = self._build_frame(audio_b64, self._status)
         logger.info(f"iFLYTEK send_audio status={self._status} len={len(pcm_bytes)}")
         await self._ws.send(json.dumps(frame))
-        # After the first real audio frame we are in "continue" mode.
         if self._status == STATUS_FIRST_FRAME:
             self._status = STATUS_CONTINUE_FRAME
 
@@ -134,13 +124,17 @@ class IFlytekSession:
         if self._ws is None or self._finished:
             return
         self._finished = True
-        # Send an empty last frame to flush the final result.
         last_frame = self._build_frame("", STATUS_LAST_FRAME)
         await self._ws.send(json.dumps(last_frame))
+        logger.info("iFLYTEK sent last frame (status=2)")
 
     async def results(self) -> AsyncGenerator[Dict[str, Any], None]:
         if self._ws is None:
             return
+        # Accumulate words across partial results. iFLYTEK sends the full words
+        # in each partial frame, but the final frame may only contain punctuation,
+        # so we keep the last partial words and append the final punctuation.
+        accumulated_words: list[str] = []
         async for raw in self._ws:
             if isinstance(raw, (bytes, bytearray)):
                 continue
@@ -149,21 +143,20 @@ class IFlytekSession:
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            # v2 errors are top-level, not nested under header.
-            code = msg.get("code")
+            header = msg.get("header") or {}
+            code = header.get("code")
             if code is not None and code != 0:
-                logger.warning(f"iFLYTEK STT error: code={code}, message={msg.get('message')}, raw_msg={raw}")
+                logger.warning(f"iFLYTEK STT error: code={code}, message={header.get('message')}, raw_msg={raw}")
                 break
 
             logger.info(f"iFLYTEK raw response: {raw}")
 
-            # v2 successful responses nest the result under data.result.
-            payload = msg.get("data") or {}
+            payload = msg.get("payload")
             if not payload:
                 continue
 
-            result = payload.get("result", {}) or {}
-            text_b64 = result.get("text") if isinstance(result, dict) else None
+            result = payload.get("result") or {}
+            text_b64 = result.get("text")
             if not text_b64:
                 continue
 
@@ -174,15 +167,24 @@ class IFlytekSession:
                 continue
 
             words = decoded.get("ws", [])
-            transcript = "".join(
+            frame_text = "".join(
                 cw.get("w", "") for item in words for cw in item.get("cw", [])
             )
-            if not transcript:
+            if not frame_text:
                 continue
 
-            # status == 2 from iFLYTEK means the final result for this utterance.
-            status = payload.get("status")
+            status = header.get("status")
             is_final = status == 2
+            if is_final:
+                # Append final punctuation/words to the accumulated partial words.
+                accumulated_words.extend(words)
+            else:
+                accumulated_words = words
+
+            transcript = "".join(
+                cw.get("w", "") for item in accumulated_words for cw in item.get("cw", [])
+            )
+            logger.info(f"iFLYTEK transcript ({'final' if is_final else 'partial'}): {transcript}")
             yield {"text": transcript, "is_final": is_final}
 
             if is_final:
