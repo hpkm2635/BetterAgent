@@ -120,7 +120,7 @@ const userMsg = ref('')
 const userId = ref(0)
 const sessions = ref([])
 const sessionsTotal = ref(0)
-const activeChats = ref([])
+const activeChats = ref([]) // GET /api/admin/sessions/overview -- every chat with recent Redis short-term history, Telegram + Web
 
 const schedUserId = ref(0)
 const schedules = ref([])
@@ -360,11 +360,16 @@ async function loadSessions() {
   }
 }
 
+// Which chats currently have a recent conversation (Telegram or Web) --
+// lets an operator browse/pick a session instead of already knowing its
+// user_id and typing it into the box above.
 async function loadSessionOverview() {
   try {
     const data = await api('/api/admin/sessions/overview')
     activeChats.value = data.sessions || []
   } catch (e) {
+    // Non-fatal: the manual user_id lookup above still works without this.
+    console.warn('Failed to load session overview:', e.message)
     activeChats.value = []
   }
 }
@@ -372,6 +377,11 @@ async function loadSessionOverview() {
 function pickActiveChat(c) {
   userId.value = c.chat_id
   loadSessions()
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString('zh-CN')
 }
 
 // ---- Schedules ------------------------------------------------------------
@@ -760,7 +770,31 @@ onMounted(async () => {
       <section v-else-if="activeTab === 'sessions'" class="grid-2">
         <div class="card">
           <div class="card-head">
-            <h2>会话记录 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
+            <h2>活跃会话 <span class="muted small">(共 {{ activeChats.length }} 个，含 Telegram)</span></h2>
+            <button class="btn" @click="loadSessionOverview">刷新</button>
+          </div>
+          <ul class="list">
+            <li v-if="!activeChats.length" class="muted">暂无活跃会话（近期没有任何用户/Telegram 对话留在短期缓存里）</li>
+            <li
+              v-for="c in activeChats"
+              :key="c.chat_id"
+              class="list-item"
+              :class="{ selected: c.chat_id === userId }"
+              style="cursor: pointer"
+              @click="pickActiveChat(c)"
+            >
+              <div class="row">
+                <span class="tag" :class="{ 'tag-active': c.channel === 'telegram' }">{{ c.channel === 'telegram' ? 'Telegram' : 'Web' }}</span>
+                <span class="muted small">user_id={{ c.chat_id }} · {{ c.message_count }} 条 · {{ formatTimestamp(c.last_timestamp) }}</span>
+              </div>
+              <div class="bubble small">{{ c.preview || '(空)' }}</div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>会话详情 <span class="muted small">(共 {{ sessionsTotal }} 条)</span></h2>
             <div class="row">
               <input v-model.number="userId" type="number" class="input input-short" placeholder="user_id（如 5982498）" @keyup.enter="loadSessions" />
               <button class="btn btn-primary" @click="loadSessions">查询</button>
@@ -774,29 +808,6 @@ onMounted(async () => {
                 <span class="muted small">#{{ s.message_id }} · {{ s.timestamp }}</span>
               </div>
               <div class="bubble">{{ s.content }}</div>
-            </li>
-          </ul>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h2>活跃会话 <span class="muted small">({{ activeChats.length }})</span></h2>
-            <button class="btn" @click="loadSessionOverview">刷新</button>
-          </div>
-          <ul class="list">
-            <li v-if="!activeChats.length" class="muted">暂无活跃会话</li>
-            <li
-              v-for="c in activeChats"
-              :key="c.chat_id"
-              class="list-item"
-              :class="{ selected: c.chat_id === userId }"
-              @click="pickActiveChat(c)"
-            >
-              <div class="row">
-                <strong>user_id: {{ c.chat_id }}</strong>
-                <span class="tag">{{ c.message_count }} 条</span>
-              </div>
-              <div class="muted small">{{ c.preview }}</div>
             </li>
           </ul>
         </div>
