@@ -31,10 +31,19 @@ RESULT_TIMEOUT_SECONDS = 30.0
 
 # session.start() occasionally fails with a transient handshake error (e.g.
 # FunASR's wss server momentarily not accepting connections right after
-# closing a previous session) -- a couple of quick retries clears these
-# without making the user redo the whole utterance. Kept short: this delays
-# the visible "listening" state, so it shouldn't feel like a hang.
-SESSION_START_MAX_ATTEMPTS = 3
+# closing a previous session, or a flaky network path to a cloud STT
+# provider) -- a couple of quick retries clears these without making the
+# user redo the whole utterance. Each attempt is wrapped in its own
+# ATTEMPT_TIMEOUT rather than trusting websockets.connect()'s own default
+# (~10s) -- a slow-to-fail attempt (e.g. a stalled TCP handshake, not a
+# fast "connection refused") previously meant MAX_ATTEMPTS x ~10s could add
+# up to nearly 30s all on its own, which collides with the 30s watchdogs
+# both here (RESULT_TIMEOUT_SECONDS) and on the Go side
+# (StreamingSTTTimeoutDuration) -- worst case now is a bounded
+# MAX_ATTEMPTS x ATTEMPT_TIMEOUT_SECONDS, leaving real headroom before
+# those fire.
+SESSION_START_MAX_ATTEMPTS = 2
+SESSION_START_ATTEMPT_TIMEOUT_SECONDS = 5.0
 SESSION_START_RETRY_DELAY_SECONDS = 0.3
 
 
@@ -160,7 +169,7 @@ async def main():
 
             for attempt in range(1, SESSION_START_MAX_ATTEMPTS + 1):
                 try:
-                    await session.start()
+                    await asyncio.wait_for(session.start(), timeout=SESSION_START_ATTEMPT_TIMEOUT_SECONDS)
                     break
                 except Exception as e:
                     if attempt == SESSION_START_MAX_ATTEMPTS:
