@@ -7,7 +7,9 @@ inference server" role on the TTS side).
 
 Protocol (per FunASR's public wss server/client reference):
   1. Connect, send one JSON config frame: {"mode", "chunk_size",
-     "chunk_interval", "wav_name", "is_speaking": true, "itn"}.
+     "chunk_interval", "encoder_chunk_look_back", "decoder_chunk_look_back",
+     "audio_fs", "wav_name", "wav_format", "is_speaking": true, "hotwords",
+     "itn"}.
   2. Stream raw 16-bit PCM binary frames (16kHz mono).
   3. Send {"is_speaking": false} to signal end of utterance.
   4. Server streams back JSON result frames tagged by "mode":
@@ -49,12 +51,22 @@ class FunASRSession:
 
     async def start(self) -> None:
         self._ws = await websockets.connect(self._endpoint, max_size=None)
+        # Field set matches FunASR's official funasr_wss_client.py reference
+        # exactly -- encoder/decoder_chunk_look_back and audio_fs have
+        # server-side defaults that happen to match what we send anyway, but
+        # sending them explicitly rules out "incomplete config frame" as a
+        # variable when a session goes silent.
         config = {
             "mode": self._mode,
             "chunk_size": [5, 10, 5],
             "chunk_interval": 10,
+            "encoder_chunk_look_back": 4,
+            "decoder_chunk_look_back": 0,
+            "audio_fs": self._sample_rate,
             "wav_name": "betteragent",
+            "wav_format": "pcm",
             "is_speaking": True,
+            "hotwords": "",
             "itn": True,
         }
         await self._ws.send(json.dumps(config))
@@ -82,6 +94,15 @@ class FunASRSession:
                 data = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 continue
+
+            # The server only reports errors (e.g. dropped/misconfigured
+            # frames) in the end-of-session acknowledgement, which carries
+            # no "text" field -- without this check it's silently skipped
+            # below and a misbehaving session just looks like a bare timeout.
+            error = data.get("error")
+            if error:
+                logger.warning(f"FunASR reported an error for this session: {error}")
+
             text = data.get("text", "")
             if not text:
                 continue
