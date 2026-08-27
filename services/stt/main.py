@@ -82,7 +82,6 @@ async def main():
         await nc.publish(subject, json.dumps(envelope).encode())
 
     async def drain_results(chat_id: int, session: Any):
-        last_partial_text = ""
         try:
             result_iter = session.results().__aiter__()
             while True:
@@ -97,16 +96,6 @@ async def main():
                 is_final = result["is_final"]
                 text = result["text"]
 
-                # iFLYTEK\'s final frame sometimes contains only punctuation while
-                # the useful content is in the last partial. Use the last partial if
-                # the final is empty/punctuation-only.
-                if is_final:
-                    stripped = text.strip()
-                    if not stripped or all(ch in "\u3002\uff0c\uff01\uff1f,.!?;:" for ch in stripped):
-                        text = last_partial_text or text
-                else:
-                    if text.strip():
-                        last_partial_text = text
 
                 subject = SUBJECT_STT_STREAM_FINAL if is_final else SUBJECT_STT_STREAM_PARTIAL
                 await publish_transcript(subject, chat_id, text)

@@ -32,7 +32,7 @@ class IFlytekSession:
         app_id: str,
         api_key: str,
         api_secret: str,
-        endpoint: str = "ws://iat.xf-yun.com/v1",
+        endpoint: str = "wss://iat.xf-yun.com/v1",
         sample_rate: int = 16000,
         language: str = "zh_cn",
         accent: str = "mandarin",
