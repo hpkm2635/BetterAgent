@@ -102,14 +102,12 @@ const sessions = ref([])
 const sessionsTotal = ref(0)
 const activeChats = ref([])
 
-const schedChatId = ref(1001)
 const schedUserId = ref(0)
 const schedules = ref([])
 const schedulesTotal = ref(0)
 const schedMsg = ref('')
 const schedAddMsg = ref('')
 const schedForm = reactive({
-  chat_id: 1001,
   user_id: 1,
   title: '',
   remind_at: '',
@@ -341,14 +339,13 @@ function pickActiveChat(c) {
 }
 
 // ---- Schedules ------------------------------------------------------------
-// 日程支持按 user_id / chat_id 查询，均换算成命名空间 chat_id 后透传到
-// companion；两者都不填时列出全部（同步用户前端添加的日程）。
+// 日程按 user_id 查询（后端同时兼容 Telegram 原样 id 与 Web 偏移 id），
+// 不填时列出全部（同步用户前端添加的日程）。
 async function loadSchedules() {
   schedMsg.value = ''
   try {
     const params = new URLSearchParams()
     if (schedUserId.value) params.set('user_id', schedUserId.value)
-    else if (schedChatId.value) params.set('chat_id', schedChatId.value)
     const qs = params.toString()
     const data = await api(`/api/admin/schedules${qs ? `?${qs}` : ''}`)
     schedules.value = data.schedules || []
@@ -360,22 +357,15 @@ async function loadSchedules() {
 }
 
 function loadAllSchedules() {
-  schedChatId.value = 0
   schedUserId.value = 0
   loadSchedules()
 }
 
 async function addSchedule() {
   schedAddMsg.value = ''
-  const chatId = Number(schedForm.chat_id)
   const userId = Number(schedForm.user_id)
-  if (
-    schedForm.chat_id === '' ||
-    schedForm.user_id === '' ||
-    !Number.isInteger(chatId) ||
-    !Number.isInteger(userId)
-  ) {
-    schedAddMsg.value = 'chat_id / user_id 必须为整数'
+  if (schedForm.user_id === '' || !Number.isInteger(userId)) {
+    schedAddMsg.value = 'user_id 必须为整数'
     return
   }
   if (!schedForm.title.trim() || !schedForm.remind_at.trim()) {
@@ -388,10 +378,12 @@ async function addSchedule() {
   }
 
   try {
+    // 管理面板只填 user_id（基础编号）；chat_id 由 user_id 派生，后端负责
+    // 套 WebNamespaceOffset，保证日程落到该用户的命名空间会话上。
     const data = await api('/api/admin/schedules', {
       method: 'POST',
       body: JSON.stringify({
-        chat_id: chatId,
+        chat_id: userId,
         user_id: userId,
         title: schedForm.title.trim(),
         remind_at: formattedTime,
@@ -402,7 +394,7 @@ async function addSchedule() {
     schedForm.title = ''
     schedForm.remind_at = ''
     schedForm.note = ''
-    schedChatId.value = chatId
+    schedUserId.value = userId
     await loadSchedules()
   } catch (e) {
     schedAddMsg.value = `创建失败: ${e.message}`
@@ -767,13 +759,6 @@ onMounted(async () => {
                 placeholder="user_id"
                 @keyup.enter="loadSchedules"
               />
-              <input
-                v-model.number="schedChatId"
-                type="number"
-                class="input input-short"
-                placeholder="chat_id"
-                @keyup.enter="loadSchedules"
-              />
               <button class="btn btn-primary" @click="loadSchedules">查询</button>
               <button class="btn" @click="loadAllSchedules">同步全部</button>
             </div>
@@ -787,7 +772,7 @@ onMounted(async () => {
                 <span class="tag">{{ s.status }}</span>
               </div>
               <div class="muted small">
-                {{ s.remind_at }} · user_id: {{ s.user_id ?? '—' }} · chat_id: {{ s.chat_id ?? '—' }}
+                {{ s.remind_at }} · user_id: {{ s.user_id ?? '—' }}
               </div>
               <div v-if="s.note" class="bubble">{{ s.note }}</div>
               <div class="row" style="margin-top: 8px;">
@@ -799,10 +784,6 @@ onMounted(async () => {
 
         <div class="card">
           <div class="card-head"><h2>新增日程</h2></div>
-          <div class="field">
-            <label>chat_id</label>
-            <input v-model.number="schedForm.chat_id" type="number" class="input" placeholder="如：123456789" />
-          </div>
           <div class="field">
             <label>user_id</label>
             <input v-model.number="schedForm.user_id" type="number" class="input" placeholder="如：123456789" />
