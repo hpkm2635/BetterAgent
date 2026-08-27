@@ -180,6 +180,15 @@ type NatsBridge struct {
 	autonomousPlayState *engine.AutonomousPlayState
 	deferredTexts       *deferredTextManager
 	logger              *zap.Logger
+
+	// Fires once for the first binary mic-audio frame this process ever
+	// receives from a browser -- a cheap, permanent health-check line: if
+	// STT audio delivery ever silently breaks again (browser-side capture
+	// bug, WS-level issue, etc.), this line's absence in the log is the
+	// fastest way to tell "audio never left the browser/never reached Go"
+	// apart from "Go received and forwarded it fine, the provider is the
+	// problem" without needing to re-instrument anything.
+	loggedFirstAudioFrame sync.Once
 }
 
 func newNatsBridge(
@@ -334,6 +343,9 @@ func (b *NatsBridge) HandleUserWSMessage(session *ClientSession, msgType websock
 		if chatID == 0 {
 			chatID = session.ChatID
 		}
+		b.loggedFirstAudioFrame.Do(func() {
+			b.logger.Info("🎙️ First binary mic-audio frame received from browser", zap.Int64("chat_id", chatID), zap.Int("raw_frame_bytes", len(rawMsg)), zap.Int("decoded_audio_bytes", len(rawAudio)))
+		})
 		b.publishSTTStreamChunk(chatID, genID, rawAudio)
 		return
 	}
