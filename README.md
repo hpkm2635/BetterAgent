@@ -67,17 +67,19 @@ BetterAgent 是一个课程项目：给一位数字人搭一整套"能听、能�
 ## 画面预览
 
 <!--
-  实机截图占位 —— 把截图放进 docs/images/screenshots/ 目录，文件名对应下方三张图即可自动显示：
-    - stage-web-chat.png   数字人对话界面（Live2D/VRM + 实时字幕 + 打字机效果）
-    - live2d-model.png     Live2D 立绘 / 表情与口型同步
+  实机截图占位 —— 把截图放进 docs/images/screenshots/ 目录，文件名对应下方四张图即可自动显示：
+    - stage-web-chat.png   数字人对话界面（Live2D + 对话气泡历史 + 实时字幕 + 输入框/工具栏）
+    - live2d-model.png     Live2D 干净立绘
+    - live2d-settings.png  Live2D 模型自定义配置面板（缩放/位置/渲染参数）
     - admin-panel.png      后台管理面板（人设编辑 / 会话记录 / 系统配置）
 -->
 <p align="center">
   <img src="./docs/images/screenshots/stage-web-chat.png" width="90%" alt="数字人对话界面" />
 </p>
 <p align="center">
-  <img src="./docs/images/screenshots/live2d-model.png" width="44%" alt="Live2D 立绘与口型同步" />
-  <img src="./docs/images/screenshots/admin-panel.png" width="44%" alt="后台管理面板" />
+  <img src="./docs/images/screenshots/live2d-model.png" width="30%" alt="Live2D 立绘" />
+  <img src="./docs/images/screenshots/live2d-settings.png" width="30%" alt="Live2D 模型自定义配置" />
+  <img src="./docs/images/screenshots/admin-panel.png" width="30%" alt="后台管理面板" />
 </p>
 
 ---
