@@ -154,7 +154,11 @@ async def main():
             payload_dict = data.get("payload", {})
             chat_id = payload_dict.get("chat_id", 0)
             audio_b64 = payload_dict.get("audio_base64")
-            logger.info(f"STT stream_chunk received chat_id={chat_id} audio_len={len(audio_b64) if audio_b64 else 0} session_exists={chat_id in sessions}")
+            # Every mic chunk (tens of times a second while listening) hits this
+            # handler -- logging each one at INFO floods the log with routine
+            # traffic. Debug-only; real problems still surface via the
+            # WARNING/ERROR paths elsewhere in this handler and in speech_start.
+            logger.debug(f"STT stream_chunk received chat_id={chat_id} audio_len={len(audio_b64) if audio_b64 else 0} session_exists={chat_id in sessions}")
             if not chat_id or not audio_b64:
                 return
 
@@ -166,9 +170,7 @@ async def main():
                 return
 
             pcm_bytes = base64.b64decode(audio_b64)
-            logger.info(f"Forwarding {len(pcm_bytes)} bytes to {type(session).__name__}")
             await session.send_audio(pcm_bytes)
-            logger.info("Forwarded audio chunk successfully")
         except Exception as e:
             logger.error(f"Error forwarding audio chunk to STT provider: {e}", exc_info=True)
 

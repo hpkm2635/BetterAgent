@@ -35,6 +35,11 @@ SUBJECT_STREAM_STATE_CHANGE = "agent.stream.state_change"
 # core/internal/engine/urge_engine.go's Urge accumulator.
 SUBJECT_GAME_EVENT = "agent.game_event"
 
+# Published by services/companion's ScheduleService when a reminder's due
+# time arrives -- Go Core's WebGateway subscribes and turns it into a
+# proactive LLM turn via engine.PublishProactiveTurn.
+SUBJECT_SCHEDULE_FIRED = "agent.schedule.fired"
+
 
 def action_decision_subject(channel: str, chat_id: int) -> str:
     """Per-channel-per-chat action-decision publish subject

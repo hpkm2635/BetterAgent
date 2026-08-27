@@ -70,7 +70,7 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 # header; when empty, the panel stays open for local development.
 ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "")
 
-# 2.1 人设字段白名单: 仅允许通过 PATCH 修改这 6 个字段。
+# 2.1 人设字段白名单: 仅允许通过 PATCH 修改这些顶层字段。
 PERSONA_ALLOWED_FIELDS = frozenset({
     "name",
     "appearance",
@@ -78,6 +78,17 @@ PERSONA_ALLOWED_FIELDS = frozenset({
     "sleepy_prompt",
     "knowledge_scope",
     "forbidden_topics",
+    "tts",
+})
+
+# tts 是嵌套对象，只放开这几个 GPT-SoVITS 每次合成都会重新读取 persona YAML
+# 的字段（真正热更新）。provider/voice_id 是服务启动时读一次、常驻内存的，
+# 改了不会生效，必须重启对应服务，所以不开放给 PATCH 改。
+TTS_PATCHABLE_FIELDS = frozenset({
+    "prompt_audio",
+    "prompt_text",
+    "prompt_lang",
+    "text_lang",
 })
 
 # 会话历史 key 候选（契约文本为 short_term:{chat_id}，现有代码使用
@@ -316,9 +327,17 @@ async def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Bod
         if field not in PERSONA_ALLOWED_FIELDS:
             return _error(400, f"Forbidden field: {field}")
 
-    # 2) 类型校验 -- 契约规定这 6 个字段均为 string
+    # 2) 类型校验 -- 大多数字段是 string；tts 是嵌套对象，单独校验子字段白名单 + 子字段类型
     for field, value in payload.items():
-        if not isinstance(value, str):
+        if field == "tts":
+            if not isinstance(value, dict):
+                return _error(400, "Field 'tts' must be an object")
+            for sub_field, sub_value in value.items():
+                if sub_field not in TTS_PATCHABLE_FIELDS:
+                    return _error(400, f"Forbidden tts field: {sub_field}")
+                if not isinstance(sub_value, str):
+                    return _error(400, f"Field 'tts.{sub_field}' must be a string")
+        elif not isinstance(value, str):
             return _error(400, f"Field '{field}' must be a string")
 
     # 3) 原地更新，保留注释与字段顺序；先写同目录临时文件再 os.replace 原子覆盖，
@@ -330,7 +349,18 @@ async def patch_persona(persona_id: str, payload: Optional[Dict[str, Any]] = Bod
             return _error(400, "invalid persona yaml")
 
         for field, value in payload.items():
-            doc[field] = value
+            if field == "tts":
+                # Merge into the existing tts object instead of replacing it
+                # wholesale -- the submitted patch only ever carries the
+                # hot-reloadable subfields (TTS_PATCHABLE_FIELDS), so a
+                # plain `doc["tts"] = value` here would silently wipe out
+                # provider/voice_id (and any other subfield) that the
+                # frontend never sent.
+                if not isinstance(doc.get("tts"), dict):
+                    doc["tts"] = {}
+                doc["tts"].update(value)
+            else:
+                doc[field] = value
 
         tmp_path: Optional[Path] = None
         try:
@@ -940,10 +970,16 @@ def list_session_overview():
         try:
             for key in r.scan_iter(f"{prefix}*"):
                 chat_id = _chat_id_from_session_key(key)
-                base_chat_id = _from_web_chat_id(chat_id) if chat_id is not None else None
-                if base_chat_id is None or base_chat_id in seen:
+                if chat_id is None:
+                    continue
+                base_chat_id = _from_web_chat_id(chat_id)
+                if base_chat_id in seen:
                     continue
                 seen.add(base_chat_id)
+                # Computed from the raw (pre-fold) chat_id -- WebGateway is the
+                # only thing that ever writes into the 9e15+ namespace, so
+                # anything below it arrived via the Telegram adapter instead.
+                channel = "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram"
 
                 count = 0
                 preview = ""
@@ -967,7 +1003,8 @@ def list_session_overview():
                 sessions.append({
                     # Display the base id so the frontend stays consistent with
                     # the chat_id it knows (localStorage / URL query param).
-                    "chat_id": _from_web_chat_id(chat_id),
+                    "chat_id": base_chat_id,
+                    "channel": channel,
                     "message_count": count,
                     "last_timestamp": last_timestamp,
                     "preview": preview,

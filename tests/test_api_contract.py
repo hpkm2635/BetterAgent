@@ -14,12 +14,22 @@ API Contract Integration Tests — BetterAgent
 
 作者: 技术总监（维护）
 """
+import os
+
 import pytest
 import requests
 
 KB_BASE    = "http://localhost:8093"
 ADMIN_BASE = "http://localhost:8094"
 COMP_BASE  = "http://localhost:8096"
+
+# admin/backend/main.py's enforce_admin_token middleware requires this
+# whenever ADMIN_SECRET_KEY is set in the deployment's .env (which it is by
+# default -- see admin/backend/.env.example) -- without it every TestAdminPanel
+# request 401s instead of exercising the actual endpoint logic. Empty when
+# ADMIN_SECRET_KEY isn't set, matching the middleware's own no-auth-configured
+# passthrough for local dev.
+ADMIN_HEADERS = {"X-Admin-Token": os.environ.get("ADMIN_SECRET_KEY", "")}
 
 # ─── 校园知识库 ───────────────────────────────────────────────────────────────
 
@@ -87,19 +97,21 @@ class TestAdminPanel:
     """任务5 / feature: feat/admin-panel / 负责人: 谢自立"""
 
     def test_health(self):
+        # /health is intentionally exempt from enforce_admin_token (liveness
+        # probes shouldn't need a secret), so no ADMIN_HEADERS here.
         r = requests.get(f"{ADMIN_BASE}/health", timeout=5)
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
 
     def test_list_personas_contains_both(self):
-        r = requests.get(f"{ADMIN_BASE}/api/admin/personas", timeout=5)
+        r = requests.get(f"{ADMIN_BASE}/api/admin/personas", timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 200
         ids = [p["id"] for p in r.json()["personas"]]
         assert "catgirl" in ids
         assert "patra" in ids
 
     def test_get_persona_detail_shape(self):
-        r = requests.get(f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5)
+        r = requests.get(f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 200
         body = r.json()
         assert body["id"] == "catgirl"
@@ -107,41 +119,74 @@ class TestAdminPanel:
         assert "base_prompt" in body
 
     def test_get_persona_not_found(self):
-        r = requests.get(f"{ADMIN_BASE}/api/admin/personas/not_exist_xyz", timeout=5)
+        r = requests.get(f"{ADMIN_BASE}/api/admin/personas/not_exist_xyz", timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 404
 
     def test_patch_persona_allowed_field(self):
         # 备份原始 name
         original = requests.get(
-            f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5).json()["name"]
+            f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5, headers=ADMIN_HEADERS).json()["name"]
         # 修改
         r = requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
-                           json={"name": "__contract_test__"}, timeout=5)
+                           json={"name": "__contract_test__"}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "ok"
         # 验证实际写入
         updated = requests.get(
-            f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5).json()["name"]
+            f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5, headers=ADMIN_HEADERS).json()["name"]
         assert updated == "__contract_test__"
         # 恢复
         requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
-                       json={"name": original}, timeout=5)
+                       json={"name": original}, timeout=5, headers=ADMIN_HEADERS)
 
-    def test_patch_persona_forbidden_tts(self):
+    def test_patch_persona_tts_allowed_subfield(self):
+        # tts.prompt_lang/prompt_audio/prompt_text/text_lang are the fields
+        # GPT-SoVITS re-reads on every synthesis call, so these hot-reload
+        # for real; provider/voice_id are read once at TTS service startup
+        # and stay forbidden (see next test).
+        original = requests.get(
+            f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5, headers=ADMIN_HEADERS).json()["tts"]["prompt_lang"]
         r = requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
-                           json={"tts": {"provider": "evil"}}, timeout=5)
+                           json={"tts": {"prompt_lang": "__contract_test__"}}, timeout=5, headers=ADMIN_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "ok"
+        updated = requests.get(
+            f"{ADMIN_BASE}/api/admin/personas/catgirl", timeout=5, headers=ADMIN_HEADERS).json()["tts"]
+        assert updated["prompt_lang"] == "__contract_test__"
+        # A partial tts patch must merge into the existing object, not
+        # replace it -- provider/voice_id (and every other untouched
+        # subfield) must survive unchanged.
+        assert "provider" in updated
+        assert "voice_id" in updated
+        # 恢复
+        requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
+                       json={"tts": {"prompt_lang": original}}, timeout=5, headers=ADMIN_HEADERS)
+
+    def test_patch_persona_forbidden_tts_provider(self):
+        # provider/voice_id are read once at TTS service startup and cached
+        # in memory -- allowing them through PATCH would silently do nothing
+        # (or worse, look like it worked) without a service restart, so
+        # they're rejected rather than accepted-but-ineffective.
+        r = requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
+                           json={"tts": {"provider": "evil"}}, timeout=5, headers=ADMIN_HEADERS)
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    def test_patch_persona_forbidden_tts_not_an_object(self):
+        r = requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
+                           json={"tts": "not-an-object"}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 400
         assert "error" in r.json()
 
     def test_patch_persona_forbidden_id(self):
         r = requests.patch(f"{ADMIN_BASE}/api/admin/personas/catgirl",
-                           json={"id": "hacked"}, timeout=5)
+                           json={"id": "hacked"}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 400
 
     def test_sessions_graceful_without_data(self):
         """无 Redis 或无数据时，应返回空列表而非 5xx"""
         r = requests.get(
-            f"{ADMIN_BASE}/api/admin/sessions?chat_id=0&limit=10", timeout=5)
+            f"{ADMIN_BASE}/api/admin/sessions?chat_id=0&limit=10", timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 200
         body = r.json()
         assert "sessions" in body
@@ -150,7 +195,7 @@ class TestAdminPanel:
     # ─── 2.7 系统配置与 API 密钥管理（BYOK 模式）───
 
     def test_get_config_shape(self):
-        r = requests.get(f"{ADMIN_BASE}/api/admin/config", timeout=5)
+        r = requests.get(f"{ADMIN_BASE}/api/admin/config", timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 200, r.text
         body = r.json()
         assert "default_provider" in body
@@ -163,34 +208,34 @@ class TestAdminPanel:
     def test_patch_config_default_provider_roundtrip(self):
         # 备份原始 default_provider
         original = requests.get(
-            f"{ADMIN_BASE}/api/admin/config", timeout=5).json()["default_provider"]
+            f"{ADMIN_BASE}/api/admin/config", timeout=5, headers=ADMIN_HEADERS).json()["default_provider"]
         # 修改
         r = requests.patch(f"{ADMIN_BASE}/api/admin/config",
-                           json={"default_provider": "claude"}, timeout=5)
+                           json={"default_provider": "claude"}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 200, r.text
         # 验证实际写入
         updated = requests.get(
-            f"{ADMIN_BASE}/api/admin/config", timeout=5).json()["default_provider"]
+            f"{ADMIN_BASE}/api/admin/config", timeout=5, headers=ADMIN_HEADERS).json()["default_provider"]
         assert updated == "claude"
         # 恢复
         requests.patch(f"{ADMIN_BASE}/api/admin/config",
-                       json={"default_provider": original}, timeout=5)
+                       json={"default_provider": original}, timeout=5, headers=ADMIN_HEADERS)
 
     def test_patch_config_unknown_provider(self):
         r = requests.patch(f"{ADMIN_BASE}/api/admin/config",
-                           json={"providers": {"evil": {"api_key": "x"}}}, timeout=5)
+                           json={"providers": {"evil": {"api_key": "x"}}}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 400
         assert "error" in r.json()
 
     def test_patch_config_forbidden_field(self):
         r = requests.patch(f"{ADMIN_BASE}/api/admin/config",
-                           json={"unknown_field": 1}, timeout=5)
+                           json={"unknown_field": 1}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 400
         assert "error" in r.json()
 
     def test_test_key_unknown_provider(self):
         r = requests.post(f"{ADMIN_BASE}/api/admin/config/test-key",
-                          json={"provider": "evil", "api_key": "x"}, timeout=5)
+                          json={"provider": "evil", "api_key": "x"}, timeout=5, headers=ADMIN_HEADERS)
         assert r.status_code == 400
         assert "error" in r.json()
 

@@ -266,6 +266,19 @@ type StreamStateChangePayload struct {
 // observability/future consumers. Weight is always server-resolved from the
 // game_events config table, never trusted from the client -- see
 // webgateway/game_event_handler.go.
+// ScheduleFiredPayload is published by services/companion/schedule_service.py
+// when a reminder's due time arrives. ChatID is whatever's stored in the
+// schedules table -- raw Telegram id, or the Web-namespaced id (>= idspace's
+// WebNamespaceOffset) for a Web session, mirroring how the same chat_id is
+// already used to route the (now-removed) direct ActionDecision publish.
+// idspace.IsWebChat(ChatID) recovers the channel from it the normal way.
+type ScheduleFiredPayload struct {
+	BasePayload
+	ChatID int64  `json:"chat_id"`
+	Title  string `json:"title"`
+	Note   string `json:"note,omitempty"`
+}
+
 type GameEventPayload struct {
 	BasePayload
 	Game      string                 `json:"game"`
