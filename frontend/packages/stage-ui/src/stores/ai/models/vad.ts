@@ -34,15 +34,18 @@ export function resolveVADConfig(
 
   return {
     speechThreshold: resolvedThreshold,
-    // Provisional: was resolvedThreshold * 0.3 (0.18 at the default 0.6
-    // threshold). In a noisy room, background speech keeps the probability
-    // above that bar more or less continuously, so it never satisfies
-    // minSilenceDurationMs's requirement of *continuous* silence -- VAD's
-    // speech-end never fires, sessions get stuck until a watchdog kills
-    // them. Loosened to make "silence" easier to satisfy; needs a real
-    // noisy-room retest to confirm it actually helps without making the
-    // opposite failure (cutting speech-end too early) noticeably worse.
-    exitThreshold: resolvedThreshold * 0.5,
+    // Provisional, second iteration: original was resolvedThreshold * 0.3
+    // (0.18 at the default 0.6 threshold) -- never satisfied
+    // minSilenceDurationMs's *continuous* silence requirement in a noisy
+    // room, so speech-end never fired. * 0.5 (0.3) went too far the other
+    // way: a real retest showed ordinary pauses between words/phrases were
+    // now enough to trigger speech-end mid-sentence, fragmenting one
+    // utterance into several short ones and tanking recognition accuracy
+    // (FunASR gets 1-2 words of context per fragment instead of a whole
+    // sentence). Splitting the difference at 0.4 -- still needs a live
+    // retest to see whether this lands in between the two failure modes
+    // or needs another round.
+    exitThreshold: resolvedThreshold * 0.4,
     minSilenceDurationMs: minSilenceDurationMs ?? DEFAULT_VAD_MIN_SILENCE_DURATION_MS,
     speechPadMs: speechPadMs ?? DEFAULT_VAD_SPEECH_PAD_MS,
     minSpeechDurationMs: minSpeechDurationMs ?? DEFAULT_VAD_MIN_SPEECH_DURATION_MS,
