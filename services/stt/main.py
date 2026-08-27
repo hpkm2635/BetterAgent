@@ -29,6 +29,14 @@ logger = setup_logger("stt_service")
 # 30s for the same state; kept in step here).
 RESULT_TIMEOUT_SECONDS = 30.0
 
+# session.start() occasionally fails with a transient handshake error (e.g.
+# FunASR's wss server momentarily not accepting connections right after
+# closing a previous session) -- a couple of quick retries clears these
+# without making the user redo the whole utterance. Kept short: this delays
+# the visible "listening" state, so it shouldn't feel like a hang.
+SESSION_START_MAX_ATTEMPTS = 3
+SESSION_START_RETRY_DELAY_SECONDS = 0.3
+
 
 async def error_cb(e):
     logger.warning(f"NATS Connection event in STT service: {e}")
@@ -65,6 +73,17 @@ async def main():
 
     sessions: dict[int, Any] = {}
     result_tasks: dict[int, asyncio.Task] = {}
+    # Per-utterance audio volume, so a "connected fine, sent is_speaking:false,
+    # but the provider never returned a result" session can be told apart from
+    # "we never actually forwarded any audio to the provider" -- logged once
+    # as a summary on speech_end rather than per chunk (that's DEBUG-only
+    # below, to avoid flooding the log at mic-chunk rate).
+    audio_stats: dict[int, dict[str, int]] = {}
+    # Chat ids for which we've already warned about a stream_chunk arriving
+    # with no matching session, or with no usable audio payload -- logged
+    # once per session (reset on the next speech_start) instead of per
+    # chunk, for the same reason.
+    warned_missing_session: set[int] = set()
 
     async def publish_transcript(subject: str, chat_id: int, text: str):
         payload = STTTranscriptPayload(
@@ -108,6 +127,7 @@ async def main():
             await session.close()
             sessions.pop(chat_id, None)
             result_tasks.pop(chat_id, None)
+            audio_stats.pop(chat_id, None)
 
     async def close_existing_session(chat_id: int):
         old_task = result_tasks.pop(chat_id, None)
@@ -116,6 +136,7 @@ async def main():
         old_session = sessions.pop(chat_id, None)
         if old_session:
             await old_session.close()
+        audio_stats.pop(chat_id, None)
 
     async def speech_start_handler(msg):
         try:
@@ -136,13 +157,21 @@ async def main():
                 )
             else:
                 session = FunASRSession()
-            try:
-                await session.start()
-            except Exception as e:
-                logger.warning(f"Failed to start {provider} STT session for chat_id={chat_id} ({e}); STT unavailable for this utterance.")
-                return
+
+            for attempt in range(1, SESSION_START_MAX_ATTEMPTS + 1):
+                try:
+                    await session.start()
+                    break
+                except Exception as e:
+                    if attempt == SESSION_START_MAX_ATTEMPTS:
+                        logger.warning(f"Failed to start {provider} STT session for chat_id={chat_id} after {attempt} attempts ({e}); STT unavailable for this utterance.")
+                        return
+                    logger.warning(f"Attempt {attempt}/{SESSION_START_MAX_ATTEMPTS} to start {provider} STT session for chat_id={chat_id} failed ({e}); retrying.")
+                    await asyncio.sleep(SESSION_START_RETRY_DELAY_SECONDS)
 
             sessions[chat_id] = session
+            audio_stats[chat_id] = {"chunks": 0, "bytes": 0}
+            warned_missing_session.discard(chat_id)
             result_tasks[chat_id] = asyncio.create_task(drain_results(chat_id, session))
             logger.info(f"🎤 {provider} STT session started for chat_id={chat_id}")
         except Exception as e:
@@ -160,6 +189,9 @@ async def main():
             # WARNING/ERROR paths elsewhere in this handler and in speech_start.
             logger.debug(f"STT stream_chunk received chat_id={chat_id} audio_len={len(audio_b64) if audio_b64 else 0} session_exists={chat_id in sessions}")
             if not chat_id or not audio_b64:
+                if chat_id not in warned_missing_session:
+                    warned_missing_session.add(chat_id)
+                    logger.warning(f"STT stream_chunk arrived with chat_id={chat_id!r} audio_base64={audio_b64!r} (empty/missing) -- NATS message itself carried no usable audio.")
                 return
 
             session = sessions.get(chat_id)
@@ -167,10 +199,17 @@ async def main():
                 # Chunk arrived before speech_start's STT handshake finished,
                 # or after the session already closed -- drop it rather than
                 # error; the rest of the utterance still gets through.
+                if chat_id not in warned_missing_session:
+                    warned_missing_session.add(chat_id)
+                    logger.warning(f"STT stream_chunk for chat_id={chat_id} has no active session (audio_len={len(audio_b64)}); dropping this and further chunks until the next speech_start.")
                 return
 
             pcm_bytes = base64.b64decode(audio_b64)
             await session.send_audio(pcm_bytes)
+            stats = audio_stats.get(chat_id)
+            if stats is not None:
+                stats["chunks"] += 1
+                stats["bytes"] += len(pcm_bytes)
         except Exception as e:
             logger.error(f"Error forwarding audio chunk to STT provider: {e}", exc_info=True)
 
@@ -186,7 +225,8 @@ async def main():
                 return
 
             await session.finish()
-            logger.info(f"🎤 {provider} STT session finishing for chat_id={chat_id}")
+            stats = audio_stats.get(chat_id, {"chunks": 0, "bytes": 0})
+            logger.info(f"🎤 {provider} STT session finishing for chat_id={chat_id} (sent {stats['chunks']} chunks / {stats['bytes']} bytes of audio)")
         except Exception as e:
             logger.error(f"Error handling speech_end: {e}", exc_info=True)
 

@@ -18,6 +18,7 @@ const modulesLoadedFor = new WeakSet<AudioContext>()
 
 export function useSTTAudioCapture(workletUrl: string, options: STTAudioCaptureOptions) {
   let workletNode: AudioWorkletNode | null = null
+  let silentGainNode: GainNode | null = null
   const capturing = ref(false)
   const connected = ref(false)
 
@@ -39,6 +40,17 @@ export function useSTTAudioCapture(workletUrl: string, options: STTAudioCaptureO
     }
 
     sourceNode.connect(workletNode)
+
+    // A worklet node with no path to the AudioContext's destination is never
+    // pulled by the render graph, so process() simply never runs -- same
+    // "silent gain node" trick libs/audio/vad.ts already uses for its own
+    // worklet, needed here for the same reason (and gain=0 so none of this
+    // is actually audible).
+    silentGainNode = audioContext.createGain()
+    silentGainNode.gain.value = 0
+    workletNode.connect(silentGainNode)
+    silentGainNode.connect(audioContext.destination)
+
     connected.value = true
   }
 
@@ -47,6 +59,10 @@ export function useSTTAudioCapture(workletUrl: string, options: STTAudioCaptureO
       workletNode.port.onmessage = null
       workletNode.disconnect()
       workletNode = null
+    }
+    if (silentGainNode) {
+      silentGainNode.disconnect()
+      silentGainNode = null
     }
     connected.value = false
     capturing.value = false

@@ -101,8 +101,14 @@ const sttAudioCapture = useSTTAudioCapture(sttCaptureWorkletUrl, {
 
 async function connectSTTCapture() {
   const nodes = getVADAudioNodes()
-  if (!nodes)
+  if (!nodes) {
+    // Previously silent -- VAD's audio nodes not being ready yet means the
+    // STT capture worklet never connects, and every utterance for the rest
+    // of this session would send 0 bytes of audio with no other visible
+    // symptom until services/stt's logs are checked.
+    console.error('[STT Capture] getVADAudioNodes() returned undefined -- STT capture worklet was not connected this attempt.')
     return
+  }
   try {
     await sttAudioCapture.connect(nodes.audioContext, nodes.sourceNode)
   }

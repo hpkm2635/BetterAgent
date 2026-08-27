@@ -125,7 +125,15 @@ class IFlytekSession:
         audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
         frame = self._build_frame(audio_b64, self._status)
         logger.info(f"iFLYTEK send_audio status={self._status} len={len(pcm_bytes)}")
-        await self._ws.send(json.dumps(frame))
+        try:
+            await self._ws.send(json.dumps(frame))
+        except websockets.exceptions.ConnectionClosed:
+            # iFLYTEK closes its side as soon as it has sent the final
+            # result, which can race with the tail end of our own audio/
+            # finish frames -- benign (the utterance's transcript already
+            # arrived via results()), not worth an ERROR-level traceback.
+            logger.debug("iFLYTEK connection already closed while sending audio; ignoring (utterance likely already finished).")
+            return
         # After the first real audio frame we are in "continue" mode.
         if self._status == STATUS_FIRST_FRAME:
             self._status = STATUS_CONTINUE_FRAME
@@ -136,7 +144,10 @@ class IFlytekSession:
         self._finished = True
         # Send an empty last frame to flush the final result.
         last_frame = self._build_frame("", STATUS_LAST_FRAME)
-        await self._ws.send(json.dumps(last_frame))
+        try:
+            await self._ws.send(json.dumps(last_frame))
+        except websockets.exceptions.ConnectionClosed:
+            logger.debug("iFLYTEK connection already closed before finish() could send the last frame; ignoring.")
 
     async def results(self) -> AsyncGenerator[Dict[str, Any], None]:
         if self._ws is None:
