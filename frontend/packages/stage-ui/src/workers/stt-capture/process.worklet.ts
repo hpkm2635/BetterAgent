@@ -16,13 +16,14 @@ function floatTo16BitPCM(sample: number): number {
 }
 
 class STTCaptureProcessor extends AudioWorkletProcessor {
+  private readonly chunkSize: number
   private buffer: Int16Array
   private pointer = 0
 
   constructor() {
     super()
-    const chunkSize = Math.max(1, Math.floor(sampleRate * CHUNK_DURATION_MS / 1000))
-    this.buffer = new Int16Array(chunkSize)
+    this.chunkSize = Math.max(1, Math.floor(sampleRate * CHUNK_DURATION_MS / 1000))
+    this.buffer = new Int16Array(this.chunkSize)
   }
 
   process(inputs: Float32Array[][]): boolean {
@@ -36,7 +37,11 @@ class STTCaptureProcessor extends AudioWorkletProcessor {
       if (this.pointer >= this.buffer.length) {
         const outBuffer = this.buffer.buffer
         this.port.postMessage({ buffer: outBuffer }, [outBuffer])
-        this.buffer = new Int16Array(this.buffer.length)
+        // this.buffer.buffer was just transferred (and synchronously
+        // detached) by the postMessage call above, so this.buffer.length is
+        // now 0 -- must size the replacement from the stored chunkSize, not
+        // by reading the just-detached buffer's own length.
+        this.buffer = new Int16Array(this.chunkSize)
         this.pointer = 0
       }
     }
