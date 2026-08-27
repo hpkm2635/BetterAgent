@@ -194,17 +194,32 @@ class ScheduleService:
         self._register_job(schedule_id, title, remind_at, note, chat_id)
         return {"schedule_id": schedule_id, "status": "scheduled"}
 
-    def list(self, chat_id: int) -> List[Dict[str, Any]]:
-        """查询某 chat_id 下未到期的日程（已触发 / 已过期的不返回）。"""
+    def list(self, chat_id: Optional[int] = None, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """查询未到期的日程（已触发 / 已过期的不返回）。
+
+        可按 chat_id 或 user_id 过滤；两者都不给时返回全部未到期日程
+        （管理面板"同步用户前端日程"依赖全量模式）。行内同时带出 user_id，
+        方便管理端按用户展示。
+        """
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT schedule_id, title, remind_at, note, status FROM schedules "
-                "WHERE chat_id=? ORDER BY remind_at",
-                (chat_id,),
+            sql = (
+                "SELECT schedule_id, chat_id, user_id, title, remind_at, note, status "
+                "FROM schedules"
             )
-            rows = cur.fetchall()
+            where: List[str] = []
+            params: List[Any] = []
+            if chat_id is not None:
+                where.append("chat_id=?")
+                params.append(int(chat_id))
+            elif user_id is not None:
+                where.append("user_id=?")
+                params.append(int(user_id))
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            sql += " ORDER BY remind_at"
+            rows = cur.execute(sql, tuple(params)).fetchall()
             now = datetime.now(timezone(timedelta(hours=8)))
             upcoming: List[Dict[str, Any]] = []
             for row in rows:

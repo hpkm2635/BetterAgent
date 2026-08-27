@@ -52,6 +52,20 @@ class MemoryHub:
         if payload.media_type == "photo" and payload.file_path:
             content_text = f"[主人发送了一张照片: {payload.file_path}] {content_text}".strip()
 
+        # 用户一来消息就为其登记画像，否则后台用户管理永远看不到新用户
+        # （此前只有 admin 手动改画像/记忆时才写 betteragent:profile:*，
+        #  Telegram 或匿名 Web 会话聊完天后用户列表没有任何新增记录）。
+        # Web 网关把 sender_display_name 固定成 "Web Master"，对这类通用
+        # 占位名不写入，让管理端用 `用户{基础编号}` 兜底。
+        display_name = (payload.sender_display_name or "").strip()
+        if display_name in ("Web Master", "web_user", "User", ""):
+            display_name = ""
+        await self.profile_mgr.ensure_user_registered(
+            user_id,
+            display_name,
+            datetime.now(timezone.utc).isoformat(),
+        )
+
         if content_text:
             await self.short_term_buffer.add_message(
                 user_id=user_id,
