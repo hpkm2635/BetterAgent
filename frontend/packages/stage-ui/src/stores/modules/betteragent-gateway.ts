@@ -231,6 +231,7 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
       chatSession.appendSessionMessage(sessionId, {
         role: 'user',
         content: text.trim(),
+        voice: { transcript: text.trim() },
       })
     }))
   }

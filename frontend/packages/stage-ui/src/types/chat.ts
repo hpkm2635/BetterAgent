@@ -1,6 +1,9 @@
+import type { ChatHistoryItem as CoreChatHistoryItem } from '@proj-airi/core-agent'
+
+export type ChatHistoryItem = CoreChatHistoryItem & { voice?: { transcript: string } }
+
 export type {
   ChatAssistantMessage,
-  ChatHistoryItem,
   ChatMessage,
   ChatSlices,
   ChatSlicesText,
