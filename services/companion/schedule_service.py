@@ -3,8 +3,9 @@
 职责：
   1. 提供日程的新增 / 查询 / 删除（持久化到 SQLite schedules 表）
   2. 每个日程用 APScheduler 注册一个一次性定时任务，到期时把
-     ActionDecision 发布到 NATS 的 agent.action.{channel}.{chat_id}，
-     由 Go Core 的 WebGateway / GotdAdapter 推送到 Web 页面或 Telegram。
+     agent.schedule.fired 发布到 NATS，由 Go Core 的 WebGateway 接住并触发
+     一次 proactive LLM turn（engine.PublishProactiveTurn）——猫娘会用自己
+     的语气主动生成一条提醒消息，而不是发一条固定模板文本。
 """
 import asyncio
 import json
@@ -19,13 +20,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 
 from services.companion.database import get_connection
-from shared.subjects import action_decision_subject
+from shared.subjects import SUBJECT_SCHEDULE_FIRED
 
 logger = logging.getLogger("companion_schedule")
-
-# WebGateway 会话命名空间偏移（镜像 core/internal/idspace/idspace.go 的
-# WebNamespaceOffset）。chat_id >= 该值属于 Web 会话，否则为 Telegram 会话。
-_WEB_NAMESPACE_OFFSET = 9_000_000_000_000_000
 
 
 class ScheduleService:
@@ -96,41 +93,35 @@ class ScheduleService:
         )
 
     def _fire(self, schedule_id: str, title: str, note: str, chat_id: int) -> None:
-        """到期回调：先原子抢占，再推送提醒到目标会话并标记完成。
+        """到期回调：先原子抢占，再触发一次 proactive turn 并标记完成。
 
         多 Worker 模式下，同一 schedule_id 只会有一个实例抢占成功，
-        从而避免重复触发提醒。提醒不再 POST 到不存在的 8097 内部端点，
-        而是直接发布到 NATS 的 agent.action.{channel}.{chat_id} 主题。
+        从而避免重复触发提醒。
         """
         if not self._try_claim(schedule_id):
             logger.info(f"Reminder '{title}' already claimed by another worker, skip")
             return
 
         chat_id = int(chat_id)
-        channel = "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram"
-        text = f"⏰ 主人，日程提醒来啦：{title}"
-        if note:
-            text += f"（{note}）"
-
         payload = {
             "chat_id": chat_id,
-            "generation_id": 0,  # 0 跳过 WebGateway 的陈旧 generation 过滤
-            "source_channel": channel,
-            "action_type": "send_message",
-            "text_content": text,
-            "is_final": True,
+            "title": title,
+            "note": note or "",
         }
 
         try:
-            asyncio.run(self._publish_reminder_async(channel, chat_id, payload))
-            logger.info(f"Triggered reminder '{title}' for chat_id={chat_id} (channel={channel})")
+            asyncio.run(self._publish_schedule_fired_async(payload))
+            logger.info(f"Triggered proactive reminder turn for '{title}' (chat_id={chat_id})")
         except Exception as e:
             logger.warning(f"Failed to trigger reminder '{title}': {e}")
         finally:
             self._mark_done(schedule_id)
 
-    async def _publish_reminder_async(self, channel: str, chat_id: int, payload: Dict[str, Any]) -> None:
-        """把提醒 ActionDecision 发布到 NATS 的 agent.action.{channel}.{chat_id}。
+    async def _publish_schedule_fired_async(self, payload: Dict[str, Any]) -> None:
+        """发布 agent.schedule.fired；Go Core 的 WebGateway 收到后会调用
+        engine.PublishProactiveTurn 触发一次 proactive LLM turn（见
+        core/internal/webgateway/nats_bridge.go 的 handleScheduleFiredMsg），
+        而不是由这里直接拼一条固定模板消息发出去。
 
         在 `_fire`（APScheduler 线程）里通过 asyncio.run 调用；提醒触发频率极低，
         每次新建一条 NATS 连接即可，无需常驻连接。
@@ -143,14 +134,13 @@ class ScheduleService:
 
         nc = await nats.connect(nats_url, user=nats_user, password=nats_password)
         try:
-            subject = action_decision_subject(channel, chat_id)
             envelope = {
                 "id": str(uuid.uuid4()),
-                "subject": subject,
+                "subject": SUBJECT_SCHEDULE_FIRED,
                 "source": "companion_service",
                 "payload": payload,
             }
-            await nc.publish(subject, json.dumps(envelope).encode())
+            await nc.publish(SUBJECT_SCHEDULE_FIRED, json.dumps(envelope).encode())
             await nc.flush()
         finally:
             await nc.close()
