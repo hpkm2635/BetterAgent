@@ -133,3 +133,10 @@ venv_win/
 bin/python-portable/
 # scripts/build_portable_package.py 的最终组装输出目录。
 portable_package/
+
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# 忽略依赖包目录
+node_modules/

@@ -741,6 +741,7 @@ onMounted(async () => {
           <thead>
             <tr>
               <th>user_id</th>
+              <th>渠道</th>
               <th>display_name</th>
               <th>known_facts</th>
               <th>last_seen</th>
@@ -749,10 +750,14 @@ onMounted(async () => {
           </thead>
           <tbody>
             <tr v-if="!users.length">
-              <td colspan="5" class="muted">暂无数据</td>
+              <td colspan="6" class="muted">暂无数据</td>
             </tr>
             <tr v-for="u in users" :key="u.user_id">
               <td>{{ u.user_id }}</td>
+              <td>
+                <span v-if="u.channel && u.channel !== 'unknown'" class="tag" :class="{ 'tag-active': u.channel === 'telegram' }">{{ u.channel === 'telegram' ? 'Telegram' : 'Web' }}</span>
+                <span v-else class="muted">—</span>
+              </td>
               <td>{{ u.display_name }}</td>
               <td>
                 <span v-for="(f, i) in u.known_facts" :key="i" class="tag">{{ f }}</span>
