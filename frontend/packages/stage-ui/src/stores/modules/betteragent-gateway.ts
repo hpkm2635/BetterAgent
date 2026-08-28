@@ -122,6 +122,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
       return
     initialized = true
 
+    // Warm the cache early so the first isChatMatch() call (which can
+    // arrive before anything else has triggered a resolution) doesn't race
+    // against it -- resolution failing on that first call means every
+    // check falls through to the "no active chat yet, allow" branch.
+    getResolvedChatId()
+
     // Clean up previous listeners if re-initializing
     unsubs.forEach(unsub => unsub())
     unsubs = []
