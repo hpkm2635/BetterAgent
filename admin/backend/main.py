@@ -603,6 +603,7 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
     known_facts = _as_list(raw.get("known_facts"))
     if not known_facts:
         known_facts = _as_list(raw.get("likes"))
+    dislikes = _as_list(raw.get("dislikes"))
 
     display_name = (raw.get("display_name") or raw.get("preferred_name")
                     or raw.get("name") or f"用户{user_id}")
@@ -611,6 +612,7 @@ def _normalize_profile(user_id: int, raw: Any) -> Dict[str, Any]:
         "user_id": user_id,
         "display_name": display_name,
         "known_facts": known_facts,
+        "dislikes": dislikes,
         "last_seen": raw.get("last_seen"),
     }
 
@@ -747,6 +749,7 @@ def _redis_short_term_users(r: Any) -> Dict[int, Dict[str, Any]]:
                     "user_id": base_user_id,
                     "display_name": f"用户{base_user_id}",
                     "known_facts": [],
+                    "dislikes": [],
                     "last_seen": None,
                     "deleted": False,
                     "channel": "web" if chat_id >= _WEB_NAMESPACE_OFFSET else "telegram",
@@ -775,6 +778,9 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "user_id": uid,
             "display_name": c["display_name"],
             "known_facts": c["known_facts"],
+            # companion.db has no concept of dislikes -- only the Redis
+            # profile source (services/memory's UserProfileManager) does.
+            "dislikes": [],
             "last_seen": c["last_seen"],
             "deleted": False,
             # companion.db/admin SQLite store already-folded ids with no trace
@@ -788,6 +794,7 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "user_id": uid,
             "display_name": u["display_name"] or (prev["display_name"] if prev else f"用户{uid}"),
             "known_facts": u["known_facts"] or (prev["known_facts"] if prev else []),
+            "dislikes": prev["dislikes"] if prev else [],
             "last_seen": u["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": u["deleted"],
             "channel": prev["channel"] if prev else None,
@@ -798,6 +805,7 @@ def _all_records() -> Dict[int, Dict[str, Any]]:
             "user_id": uid,
             "display_name": p["display_name"] or (prev["display_name"] if prev else f"用户{uid}"),
             "known_facts": p["known_facts"] or (prev["known_facts"] if prev else []),
+            "dislikes": p.get("dislikes") or (prev["dislikes"] if prev else []),
             "last_seen": p["last_seen"] or (prev["last_seen"] if prev else None),
             "deleted": prev["deleted"] if prev else False,
             "channel": p.get("channel") or (prev["channel"] if prev else None),
@@ -1206,6 +1214,7 @@ def delete_long_term_memory(point_id: str):
 class MemoryProfileUpdatePayload(BaseModel):
     display_name: Optional[str] = None
     known_facts: Optional[List[str]] = None
+    dislikes: Optional[List[str]] = None
 
 
 @app.get("/api/admin/memory/profile")
@@ -1217,6 +1226,7 @@ def get_memory_profile(user_id: int = Query(...)):
         "user_id": user_id,
         "display_name": rec.get("display_name") or f"用户{user_id}",
         "known_facts": rec.get("known_facts") or [],
+        "dislikes": rec.get("dislikes") or [],
         "last_seen": rec.get("last_seen"),
     }
 
@@ -1239,6 +1249,11 @@ def update_memory_profile(user_id: int, payload: MemoryProfileUpdatePayload):
             # memory service's own profile prompt so both readers stay in sync.
             r.hset(key, "known_facts", encoded)
             r.hset(key, "likes", encoded)
+        if payload.dislikes is not None:
+            # Single field either way -- UserProfileManager.get_profile()
+            # (services/memory/user_profile.py) reads "dislikes" directly,
+            # no separate admin-UI-facing name to mirror like known_facts/likes.
+            r.hset(key, "dislikes", json.dumps(payload.dislikes, ensure_ascii=False))
     except Exception as exc:
         logger.warning(f"Failed to update memory profile {user_id}: {exc}")
         return _error(500, "failed to update profile")
