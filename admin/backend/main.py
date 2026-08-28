@@ -158,6 +158,19 @@ def _error(status_code: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": message})
 
 
+# Self-service memory endpoints (stage-web's "记忆体" settings page, a
+# regular chat user editing their own profile/short-term/long-term memory)
+# are deliberately exempt from ADMIN_SECRET_KEY below -- that secret is
+# baked into stage-web's public JS bundle at build time via a VITE_* env
+# var, so gating these behind it would hand every visitor full admin
+# access (persona editing, system config, all users), not just permission
+# to touch their own memory. Temporary: local-demo-only choice, made
+# without any other access control in front of these routes -- revisit
+# before any non-local deployment (e.g. a lower-privilege token scoped to
+# just these paths, or per-user auth once the app has real accounts).
+_ADMIN_TOKEN_EXEMPT_PREFIXES = ("/api/admin/memory/",)
+
+
 @app.middleware("http")
 async def enforce_admin_token(request: Request, call_next):
     """Gate /api/admin/* behind ADMIN_SECRET_KEY when it is configured.
@@ -165,7 +178,12 @@ async def enforce_admin_token(request: Request, call_next):
     Accepts either `X-Admin-Token: <secret>` or `Authorization: Bearer <secret>`.
     Unset/empty ADMIN_SECRET_KEY disables the check (local dev default).
     """
-    if ADMIN_SECRET_KEY and request.url.path.startswith("/api/admin"):
+    path = request.url.path
+    if (
+        ADMIN_SECRET_KEY
+        and path.startswith("/api/admin")
+        and not path.startswith(_ADMIN_TOKEN_EXEMPT_PREFIXES)
+    ):
         token = request.headers.get("x-admin-token")
         if not token:
             auth = request.headers.get("authorization", "")
