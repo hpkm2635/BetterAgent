@@ -92,8 +92,28 @@ type Config struct {
 }
 
 func LoadConfig() *Config {
-	_ = godotenv.Overload("../.env") // load root .env
-	_ = godotenv.Load(".env")        // load local .env if any
+	// Load the CWD-local .env first (non-overriding Load, so whatever it
+	// sets wins for the rest of this call) so it's the one that determines
+	// secrets like WEBGATEWAY_TOKEN. Only THEN fall back to "../.env" to
+	// fill in anything the local file didn't set.
+	//
+	// This order matters because "../.env" isn't just a fallback in every
+	// layout: in dev mode the Go binary's CWD is core/, so "../.env" is the
+	// real repo-root .env and there's usually no core/.env to compete with
+	// it -- fine either way. But the portable "绿化包" package runs with
+	// CWD at the package root (its own .env lives right there), and that
+	// root happens to sit *inside* the dev repo checkout -- so "../.env"
+	// silently resolves to the DEVELOPER's repo-root .env instead of being
+	// a harmless miss. Loading that first with Overload (as this used to)
+	// force-overwrote the portable package's own pinned secrets (e.g.
+	// WEBGATEWAY_TOKEN, pinned to match what the frontend bundle was
+	// compiled against) with the developer's unrelated dev-mode values,
+	// with no way for the correct local .env to win afterwards since Load
+	// doesn't override what's already set. Local-first with plain Load
+	// (never Overload) means the package's own .env is always the source
+	// of truth for anything it defines, in both layouts.
+	_ = godotenv.Load(".env")
+	_ = godotenv.Load("../.env")
 
 	apiIDStr := getEnv("TELEGRAM_API_ID", "0")
 	apiID, err := strconv.Atoi(apiIDStr)
