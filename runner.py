@@ -49,11 +49,24 @@ BIN_DIR.mkdir(exist_ok=True)
 # process (native nats-server, `docker compose`, Go core, Python services),
 # so NATS_USER/NATS_PASSWORD and other secrets are inherited consistently
 # regardless of which working directory runner.py was launched from.
+#
+# override=True is deliberate: load_dotenv() defaults to override=False,
+# which means a variable already present in the OS/shell/session environment
+# (e.g. left over from an earlier dev-mode run, or an ambient system env var)
+# silently wins over this .env file's value. For a self-contained package
+# (esp. the portable "绿化包" build, which pins WEBGATEWAY_TOKEN to a fixed
+# value that the frontend bundle was compiled against), that's exactly
+# backwards -- the .env shipped alongside runner.py must always be the
+# source of truth, or secrets can mismatch in a way that's invisible from
+# the file contents alone (Go inherits the stale env var, not the .env value).
 try:
     from dotenv import load_dotenv
-    load_dotenv(ROOT_DIR / ".env")
+    load_dotenv(ROOT_DIR / ".env", override=True)
 except ImportError:
-    pass
+    print(" [!] python-dotenv not installed -- .env will NOT be loaded. "
+          "Every secret (NATS_PASSWORD, WEBGATEWAY_TOKEN, QDRANT_API_KEY, ...) "
+          "must already be set in the process environment or child services/Go "
+          "core will fail to start or use unexpected values.", file=sys.stderr)
 
 IS_WINDOWS = os.name == "nt"
 GO_BINARY_NAME = "betteragent_core.exe" if IS_WINDOWS else "betteragent-core"
