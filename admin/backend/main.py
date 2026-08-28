@@ -152,14 +152,6 @@ _yaml_rt.width = 4096
 
 app = FastAPI(title="BetterAgent Admin Backend", version="1.0.0")
 
-# Dev-only CORS: the Admin UI runs on :8095 and calls this API directly.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 def _error(status_code: int, message: str) -> JSONResponse:
     """Contract-consistent error envelope: {"error": "..."}."""
@@ -182,6 +174,23 @@ async def enforce_admin_token(request: Request, call_next):
         if not token or not hmac.compare_digest(token, ADMIN_SECRET_KEY):
             return _error(401, "unauthorized")
     return await call_next(request)
+
+
+# Dev-only CORS: the Admin UI runs on :8095 and calls this API directly.
+# Registered *after* enforce_admin_token so it wraps as the outermost
+# middleware layer (Starlette stacks add_middleware calls in reverse
+# registration order) -- otherwise enforce_admin_token intercepts and 401s
+# the browser's own CORS preflight (an anonymous OPTIONS request, which
+# never carries a token) before it ever reaches CORSMiddleware's built-in
+# preflight short-circuit, so the preflight fails with no
+# Access-Control-Allow-Origin header and the browser reports it as a CORS
+# failure instead of the 401 it actually is.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
