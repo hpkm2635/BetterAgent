@@ -1013,6 +1013,13 @@ def list_session_overview():
     if r is None:
         return {"sessions": [], "total": 0}
 
+    # Keep this consistent with 用户列表 (list_users): a soft-deleted user
+    # shouldn't reappear here just because their Redis short-term history
+    # hasn't expired yet (it self-expires on its own 24h TTL regardless --
+    # see short_term_buffer.py -- soft-delete is purely an admin-roster
+    # visibility flag, not a data-retention mechanism).
+    deleted_ids = {uid for uid, u in _load_sqlite_users().items() if u["deleted"]}
+
     sessions: List[Dict[str, Any]] = []
     seen: set = set()
     for prefix in SHORT_TERM_KEY_PREFIXES:
@@ -1025,6 +1032,8 @@ def list_session_overview():
                 if base_chat_id in seen:
                     continue
                 seen.add(base_chat_id)
+                if base_chat_id in deleted_ids:
+                    continue
                 # Computed from the raw (pre-fold) chat_id -- WebGateway is the
                 # only thing that ever writes into the 9e15+ namespace, so
                 # anything below it arrived via the Telegram adapter instead.
