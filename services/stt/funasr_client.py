@@ -74,14 +74,24 @@ class FunASRSession:
     async def send_audio(self, pcm_bytes: bytes) -> None:
         if self._ws is None:
             raise RuntimeError("FunASR session not started")
-        await self._ws.send(pcm_bytes)
+        try:
+            await self._ws.send(pcm_bytes)
+        except websockets.exceptions.ConnectionClosed:
+            # Same benign race as iflytek_client.py's send_audio -- the
+            # server can close its side as soon as it has sent the final
+            # result, racing with the tail end of our own audio/finish
+            # frames. Not worth an ERROR-level traceback in the caller.
+            logger.debug("FunASR connection already closed while sending audio; ignoring (utterance likely already finished).")
 
     async def finish(self) -> None:
         """Signals end of utterance -- FunASR replies with the final
         punctuation-restored transcript on the results() stream after this."""
         if self._ws is None:
             return
-        await self._ws.send(json.dumps({"is_speaking": False}))
+        try:
+            await self._ws.send(json.dumps({"is_speaking": False}))
+        except websockets.exceptions.ConnectionClosed:
+            logger.debug("FunASR connection already closed before finish() could send is_speaking:false; ignoring.")
 
     async def results(self) -> AsyncGenerator[Dict[str, Any], None]:
         """Yields {"text": str, "is_final": bool} as FunASR streams results."""
