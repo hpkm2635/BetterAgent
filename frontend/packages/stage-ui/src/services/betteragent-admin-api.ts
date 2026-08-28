@@ -39,12 +39,14 @@ export interface MemoryProfile {
   user_id: number
   display_name: string
   known_facts: string[]
+  dislikes: string[]
   last_seen?: string | null
 }
 
 export interface MemoryProfilePatch {
   display_name?: string
   known_facts?: string[]
+  dislikes?: string[]
 }
 
 const ADMIN_API_BASE = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ADMIN_API_BASE)

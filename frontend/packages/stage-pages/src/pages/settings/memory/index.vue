@@ -22,6 +22,7 @@ const userId = computed(() => resolveBetterAgentWebId(chatId.value))
 const profile = ref<MemoryProfile | null>(null)
 const displayName = ref('')
 const factsText = ref('')
+const dislikesText = ref('')
 const shortTerm = ref<SessionMessage[]>([])
 const longTerm = ref<LongTermMemory[]>([])
 const longTermQuery = ref('')
@@ -34,6 +35,7 @@ async function refreshProfile() {
   if (profile.value) {
     displayName.value = profile.value.display_name ?? ''
     factsText.value = (profile.value.known_facts ?? []).join('\n')
+    dislikesText.value = (profile.value.dislikes ?? []).join('\n')
   }
 }
 
@@ -64,9 +66,14 @@ async function saveProfile() {
     .split('\n')
     .map(item => item.trim())
     .filter(Boolean)
+  const dislikes = dislikesText.value
+    .split('\n')
+    .map(item => item.trim())
+    .filter(Boolean)
   const updated = await updateMemoryProfile(userId.value, {
     display_name: displayName.value.trim(),
     known_facts: facts,
+    dislikes,
   })
   if (updated) {
     profile.value = updated
@@ -124,7 +131,8 @@ onMounted(refreshAll)
       <div class="text-lg font-medium">用户画像</div>
       <div class="mt-3 flex flex-col gap-2">
         <input v-model="displayName" type="text" placeholder="称呼" class="w-full rounded-lg border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none dark:border-neutral-800">
-        <textarea v-model="factsText" rows="3" placeholder="每行一条记忆事实" class="w-full resize-none rounded-lg border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none dark:border-neutral-800" />
+        <textarea v-model="factsText" rows="3" placeholder="每行一条记忆事实（喜好）" class="w-full resize-none rounded-lg border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none dark:border-neutral-800" />
+        <textarea v-model="dislikesText" rows="3" placeholder="每行一条厌恶的事情" class="w-full resize-none rounded-lg border border-neutral-200 bg-transparent px-3 py-2 text-sm outline-none dark:border-neutral-800" />
         <div class="flex justify-end">
           <Button @click="saveProfile">保存画像</Button>
         </div>

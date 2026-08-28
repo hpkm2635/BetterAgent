@@ -12,10 +12,11 @@ from shared.subjects import (
     SUBJECT_AUDIO_CHUNK,
     SUBJECT_TTS_STREAM_END,
     SUBJECT_STREAM_CANCEL_REQ,
+    SUBJECT_STREAM_CANCEL_ACK,
     SUBJECT_USER_INTERRUPT,
     action_decision_wildcard,
 )
-from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayload
+from shared.schema.payloads import StreamAudioChunkPayload, ActionDecisionPayload, StreamCancelPayload
 from shared.logger import setup_logger
 from shared.text_utils import clean_tts_text
 from services.tts.cosyvoice_client import CosyVoiceClient
@@ -72,7 +73,7 @@ async def main():
     queue_workers: dict[int, asyncio.Task] = {}
     tts_client = await get_tts_client()
 
-    def cancel_tts_stream(chat_id: int, gen_id: int = 0):
+    async def cancel_tts_stream(chat_id: int, gen_id: int = 0):
         if gen_id > active_generations.get(chat_id, 0):
             active_generations[chat_id] = gen_id
 
@@ -91,6 +92,26 @@ async def main():
             if not task.done():
                 task.cancel()
             logger.info(f"⚡ Cancelled TTS synthesis for chat_id={chat_id} (active_gen={active_generations.get(chat_id)})")
+
+        # Tell WebGateway right away instead of leaving it to find out via its
+        # own 2s CANCELLING auto-recovery timer -- that fallback exists for
+        # when this service never got the cancel_req at all (crashed, NATS
+        # hiccup), not as the *expected* path for the common case where
+        # cancellation actually succeeded here in well under a second.
+        ack_payload = StreamCancelPayload(
+            source_component="tts_service",
+            chat_id=chat_id,
+            generation_id=active_generations.get(chat_id, gen_id),
+            reason="barge_in_interrupt",
+            source_channel="web",
+        )
+        ack_envelope = {
+            "id": ack_payload.event_id,
+            "subject": SUBJECT_STREAM_CANCEL_ACK,
+            "source": "tts_service",
+            "payload": ack_payload.model_dump(),
+        }
+        await nc.publish(SUBJECT_STREAM_CANCEL_ACK, json.dumps(ack_envelope).encode())
 
     async def synthesize_and_publish_tts(act: ActionDecisionPayload, cancel_event: asyncio.Event):
         chat_id = act.chat_id
@@ -260,7 +281,7 @@ async def main():
             chat_id = payload_dict.get("chat_id", 0)
             gen_id = payload_dict.get("generation_id", 0)
             if chat_id:
-                cancel_tts_stream(chat_id, gen_id)
+                await cancel_tts_stream(chat_id, gen_id)
         except Exception as e:
             logger.warning(f"Error handling stream cancel request in TTS: {e}")
 
@@ -291,7 +312,7 @@ async def main():
                 # 🔧 Fix: Only trigger cancellation when new_gen_id > active_gen_id (Cross-Turn User Interrupt)!
                 if gen_id > active_gen:
                     logger.info(f"⚡ Cross-Turn Interrupt detected for chat_id={act.chat_id} (new_gen={gen_id} > active_gen={active_gen})")
-                    cancel_tts_stream(act.chat_id, gen_id)
+                    await cancel_tts_stream(act.chat_id, gen_id)
                 elif gen_id < active_gen:
                     logger.warn(f"🛡️ Skipped stale sentence at ActionDecision gate for chat_id={act.chat_id} (gen_id={gen_id} < active_gen={active_gen})")
                     return

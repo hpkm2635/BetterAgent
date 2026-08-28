@@ -102,12 +102,16 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
   }
 
   function isChatMatch(msgChatId?: number | null): boolean {
-    if (!msgChatId)
+    // !msgChatId would also match a real (but falsy) chat_id of 0.
+    if (msgChatId == null)
       return true
     const active = getResolvedChatId()
     if (!active)
       return true
-    return active === msgChatId
+    // active and msgChatId aren't guaranteed to be the same type (one may
+    // come off a URL query param as a string) -- compare as numbers so a
+    // type mismatch alone never causes a live chat_id to be filtered out.
+    return Number(active) === Number(msgChatId)
   }
 
   let unsubs: Array<() => void> = []
@@ -121,6 +125,12 @@ export const useBetterAgentGatewayStore = defineStore('betteragent-gateway', () 
     if (initialized)
       return
     initialized = true
+
+    // Warm the cache early so the first isChatMatch() call (which can
+    // arrive before anything else has triggered a resolution) doesn't race
+    // against it -- resolution failing on that first call means every
+    // check falls through to the "no active chat yet, allow" branch.
+    getResolvedChatId()
 
     // Clean up previous listeners if re-initializing
     unsubs.forEach(unsub => unsub())
