@@ -87,6 +87,43 @@ def enable_site_packages():
     print(f"Enabled site-packages support in {pth_file.name}")
 
 
+def add_repo_root_to_path():
+    """A ._pth file being present at all puts the embeddable distribution
+    into isolated path mode: sys.path is built *only* from entries listed in
+    that file (plus site-packages via `import site`) -- unlike a normal
+    Python install, it does NOT add the process's current working directory,
+    and it ignores PYTHONPATH entirely. runner.py launches every service as
+    `python -m services.X.main` with cwd set to wherever it (and, in the
+    portable package, services/ and shared/) actually live -- without an
+    explicit path entry here, that resolves to "ModuleNotFoundError: No
+    module named 'services'" regardless of cwd, since isolated mode never
+    even looks at cwd.
+
+    ._pth entries are relative to the directory containing python.exe
+    itself (bin/python-portable/), not to cwd -- ..\\..\\ from there is the
+    package root (services/, shared/, admin/ live there), a fixed structural
+    relationship this repo and the assembled portable package both share.
+    """
+    pth_candidates = list(PORTABLE_PYTHON_DIR.glob("python3*._pth"))
+    if not pth_candidates:
+        raise RuntimeError(f"No python3*._pth file found in {PORTABLE_PYTHON_DIR} -- unexpected embeddable zip layout")
+    pth_file = pth_candidates[0]
+
+    repo_root_entry = "..\\..\\"
+    content = pth_file.read_text(encoding="utf-8")
+    if any(line.strip() == repo_root_entry for line in content.splitlines()):
+        print(f"{pth_file.name} already includes the repo/package root on sys.path.")
+        return
+
+    # Prepend rather than append -- purely cosmetic (parsing doesn't care
+    # about order among plain path-entry lines), keeps this path entry
+    # grouped with python312.zip/"." at the top instead of trailing after
+    # the import-site comment block at the bottom.
+    patched = f"{repo_root_entry}\n{content}"
+    pth_file.write_text(patched, encoding="utf-8")
+    print(f"Added repo/package root ({repo_root_entry}) to {pth_file.name}")
+
+
 def bootstrap_pip():
     python_exe = PORTABLE_PYTHON_DIR / "python.exe"
     check = subprocess.run([str(python_exe), "-m", "pip", "--version"], capture_output=True)
@@ -122,6 +159,7 @@ def build():
         print("     Run it on a Windows build machine to produce a usable bin/python-portable/.")
     download_and_extract_python()
     enable_site_packages()
+    add_repo_root_to_path()
     bootstrap_pip()
     install_requirements()
     print(f"Portable Python runtime ready at {PORTABLE_PYTHON_DIR}")
